@@ -493,22 +493,6 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
   };
   
   const [customLayers, setCustomLayers] = useState<any[]>([
-    {
-      id: 'df-1',
-      name: 'Domaine Forestier - Secteur Alpha',
-      type: 'static_polygon',
-      visible: true,
-      color: '#10b981',
-      areaCoords: forestPolygon
-    },
-    {
-      id: 'df-2',
-      name: 'Forêt de Jbel Dersa',
-      type: 'static_polygon',
-      visible: true,
-      color: '#84cc16',
-      areaCoords: forestPolygon2
-    }
   ]);
 
   // Lambert converter using proj4
@@ -988,7 +972,7 @@ const officialRefs = useRef<Record<string, L.GeoJSON | null>>({});
 const OFFICIAL = [
   {
     key: 'forest',
-    label: 'Mlak Ghabi — ملك غابوي',
+    label: 'DOMAINE FORESTIER',
     file: '/assets/data/forest_limits.json',
     color: '#16a34a',
     weight: 2,
