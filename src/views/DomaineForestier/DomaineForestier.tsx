@@ -13,6 +13,7 @@ import 'leaflet-measure';
 import { kml } from '@tmcw/togeojson';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
+import { FicheModal, AttestationModal, ExpertiseModal, ChevauchementModal } from './DocumentModals';
 import proj4 from 'proj4';
 
 // Define Lambert Nord Maroc (EPSG:26191) with standard Merchich datum
@@ -800,87 +801,58 @@ function TabButton({ active, onClick, icon: Icon, label }: any) {
 // -- Rapports Tab --
 function RapportsTab() {
   const [activeReport, setActiveReport] = useState<string | null>(null);
-
+ 
   return (
     <div className="space-y-4">
       <h2 className="text-[var(--text-main)] font-semibold text-lg tracking-tight mb-3 px-1">Rapports & Documents</h2>
       <div className="space-y-3">
-        <ReportCard 
-          title="Rapport d'Expertise" 
-          subtitle="Woqof / Procès-verbal" 
-          desc="Sélectionnez un polygone"
+        <ReportCard
+          title="Rapport d'Expertise"
+          subtitle="Woqof / Procès-verbal"
+          desc="محضر التصريحات للمحكمة"
           color="#3b82f6"
           icon={FileText}
           onClick={() => setActiveReport("Rapport d'Expertise")}
         />
-        <ReportCard 
-          title="Fiche Technique Réquisition" 
-          subtitle="PDF / Word · Croquis auto" 
-          desc="Délimitation · Immatriculation"
+        <ReportCard
+          title="Fiche Technique Réquisition"
+          subtitle="PDF / Word · 7 sections"
+          desc="Délimitation · Immatriculation · Empiètement"
           color="#22c55e"
           icon={LayoutTemplate}
           onClick={() => setActiveReport("Fiche Technique Réquisition")}
         />
-        <ReportCard 
-          title="Attestation Administrative" 
-          subtitle="بطاقة معاينة - انتفاء الصبغة الغابوية" 
-          desc="ANEF · Tétouan"
+        <ReportCard
+          title="Attestation Administrative"
+          subtitle="بطاقة معاينة — انتفاء الصبغة الغابوية"
+          desc="ANEF · CPF M'diq-Fnideq · Tétouan"
           color="#8b5cf6"
           icon={Printer}
           onClick={() => setActiveReport("Attestation Administrative")}
         />
-        <ReportCard 
-          title="Analyse Chevauchement" 
-          subtitle="Intersection · Domaine Forestier" 
+        <ReportCard
+          title="Analyse Chevauchement"
+          subtitle="Intersection · Domaine Forestier"
           desc="Importez une couche → onglet « Couches »"
           color="#eab308"
           icon={Maximize}
           onClick={() => setActiveReport("Analyse Chevauchement")}
         />
       </div>
-
-       {/* Report Dialog Modal */}
-       {activeReport && (
-         <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in">
-           <div className="bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
-             <div className="flex justify-between items-center p-4 border-b border-[var(--border-color)] bg-[var(--bg-main)]">
-               <h3 className="text-[var(--text-main)] font-semibold text-sm tracking-wide">{activeReport}</h3>
-               <button onClick={() => setActiveReport(null)} className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors bg-[var(--bg-surface)] hover:bg-[var(--bg-main)] p-1.5 rounded-lg border border-[var(--border-color)]">
-                 <X className="w-4 h-4" />
-               </button>
-             </div>
-             
-             <div className="p-5 space-y-4">
-               <div>
-                 <label className="block text-xs font-semibold text-[var(--text-main)] mb-1.5 tracking-wide">Numéro de Dossier / Référence</label>
-                 <input type="text" className="w-full bg-[var(--bg-main)] border border-[var(--border-color)] rounded-lg p-2.5 text-sm text-[var(--text-main)] focus:outline-none focus:border-[var(--brand)] transition-colors" placeholder="EX: 2024/001" />
-               </div>
-               
-               <div>
-                 <label className="block text-xs font-semibold text-[var(--text-main)] mb-1.5 tracking-wide">Province / Commune</label>
-                 <input type="text" className="w-full bg-[var(--bg-main)] border border-[var(--border-color)] rounded-lg p-2.5 text-sm text-[var(--text-main)] focus:outline-none focus:border-[var(--brand)] transition-colors" placeholder="Chefchaouen, Maroc" />
-               </div>
-
-               <div>
-                 <label className="block text-xs font-semibold text-[var(--text-main)] mb-1.5 tracking-wide">Observations</label>
-                 <textarea rows={3} className="w-full bg-[var(--bg-main)] border border-[var(--border-color)] rounded-lg p-2.5 text-sm text-[var(--text-main)] focus:outline-none focus:border-[var(--brand)] transition-colors resize-none" placeholder="Détails de l'inspection..."></textarea>
-               </div>
-               
-               <div className="pt-2">
-                 <button 
-                  onClick={() => {
-                    alert(`Génération du document ${activeReport} avec succès.`);
-                    setActiveReport(null);
-                  }}
-                  className="w-full py-2.5 bg-[var(--brand)] hover:opacity-90 text-white font-semibold rounded-lg text-sm transition-opacity"
-                 >
-                   Générer le PDF
-                 </button>
-               </div>
-             </div>
-           </div>
-         </div>
-       )}
+ 
+      {/* Modals spécialisés */}
+      {activeReport === "Fiche Technique Réquisition" && (
+        <FicheModal onClose={() => setActiveReport(null)} />
+      )}
+      {activeReport === "Attestation Administrative" && (
+        <AttestationModal onClose={() => setActiveReport(null)} />
+      )}
+      {activeReport === "Rapport d'Expertise" && (
+        <ExpertiseModal onClose={() => setActiveReport(null)} />
+      )}
+      {activeReport === "Analyse Chevauchement" && (
+        <ChevauchementModal onClose={() => setActiveReport(null)} />
+      )}
     </div>
   );
 }
