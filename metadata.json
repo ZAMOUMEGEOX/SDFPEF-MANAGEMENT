@@ -1,0 +1,8 @@
+{
+  "name": "ANEF - Système Intégré de Gestion",
+  "description": "Système de gestion de l'Agence Nationale des Eaux et Forêts (Maroc). Sections : Contentieux, Police Forestière, Tableau de Bord, Biodiversité, Télédétection.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,22 @@
+@media print {
+  body {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    margin: 0;
+    padding: 0;
+  }
+  .no-print, .leaflet-control-zoom, .leaflet-control-layers {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  #print-layout-container {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    z-index: 9999 !important;
+  }
+}
