@@ -85,7 +85,7 @@ const forestPolygon2: [number, number][] = [
   [35.53, -5.37]
 ];
 
-type TabId = 'rapports' | 'recherche' | 'couches';
+type TabId = 'couches' | 'recherche' | 'geotools' | 'documents';
 
 interface DomaineForestierProps {
   setCurrentView?: (view: ViewState) => void;
@@ -220,11 +220,39 @@ const GeomanSetup = ({ setCustomLayers }: { setCustomLayers: any }) => {
   return null;
 };
 
-const MapEvents = ({ setCoords }: { setCoords: any }) => {
+// Module-level GeoJSON data store for Identify tool
+const _officialGeoData: Record<string, any> = {};
+
+const MapEvents = ({ setCoords, onIdentify }: { setCoords: any; onIdentify?: (latlng: any, results: any[]) => void }) => {
   useMapEvents({
     mousemove(e) {
       setCoords({ lat: e.latlng.lat, lng: e.latlng.lng });
-    }
+    },
+    click(e) {
+      if (!onIdentify) return;
+      const pt = turf.point([e.latlng.lng, e.latlng.lat]);
+      const LAYER_META: Record<string, { label: string; color: string }> = {
+        forest:    { label: 'Mlak Ghabi — ملك غابوي', color: '#16a34a' },
+        communes:  { label: 'Communes TTH',            color: '#3b82f6' },
+        provinces: { label: 'Provinces TTH',           color: '#f97316' },
+        region:    { label: 'Région TTH',              color: '#8b5cf6' },
+      };
+      const results: any[] = [];
+      for (const [key, data] of Object.entries(_officialGeoData)) {
+        if (!data?.features) continue;
+        for (const feature of data.features) {
+          try {
+            if ((feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') &&
+                turf.booleanPointInPolygon(pt, feature)) {
+              const meta = LAYER_META[key] || { label: key, color: '#888' };
+              results.push({ key, label: meta.label, color: meta.color, properties: feature.properties || {} });
+              break;
+            }
+          } catch {}
+        }
+      }
+      onIdentify(e.latlng, results);
+    },
   });
   return null;
 };
@@ -438,8 +466,17 @@ import { DomaineForestierProps } from '../../types';
 
 export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
-  const [activeTab, setActiveTab] = useState<'rapports' | 'recherche' | 'couches'>('rapports');
+  const [activeTab, setActiveTab] = useState<'couches' | 'recherche' | 'geotools' | 'documents'>('couches');
   const [coords, setCoords] = useState<{ lat: number, lng: number }>({ lat: 35.624793, lng: -5.329056 });
+  const [identifyPanel, setIdentifyPanel] = useState<{
+    latlng: { lat: number; lng: number };
+    results: Array<{ key: string; label: string; color: string; properties: Record<string, any> }>;
+  } | null>(null);
+
+  const handleIdentify = (latlng: any, results: any[]) => {
+    if (results.length === 0) { setIdentifyPanel(null); return; }
+    setIdentifyPanel({ latlng: { lat: latlng.lat, lng: latlng.lng }, results });
+  };
   const [mapTargetCenter, setMapTargetCenter] = useState<[number, number] | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -575,12 +612,62 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
           <FeatureGroup ref={featureGroupRef} />
           <GeomanSetup setCustomLayers={setCustomLayers} />
           <MeasureSetup />
-          <MapEvents setCoords={setCoords} />
+          <MapEvents setCoords={setCoords} onIdentify={handleIdentify} />
           <MapResizeTracker isPanelCollapsed={isPanelCollapsed} />
           <MapCenterUpdater mapTargetCenter={mapTargetCenter} setMapTargetCenter={setMapTargetCenter} />
           <CustomMapEventsHandler setCustomLayers={setCustomLayers} />
           <ScaleControl position="bottomleft" imperial={false} />
         </MapContainer>
+
+        {/* ── Identify Panel ────────────────────────────────────────────── */}
+        {identifyPanel && identifyPanel.results.length > 0 && (
+          <div className="absolute bottom-10 left-4 z-[1001] w-72 md:w-80 pointer-events-auto animate-in slide-in-from-bottom-2 duration-200">
+            <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-zinc-200 dark:border-zinc-700 overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center justify-between px-3 py-2 bg-zinc-50 dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700">
+                <div className="flex items-center gap-2">
+                  <MousePointer2 className="w-3.5 h-3.5 text-zinc-400" />
+                  <span className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300 uppercase tracking-wider">Identifier</span>
+                  <span className="text-[9px] text-zinc-400 font-mono">{identifyPanel.latlng.lat.toFixed(5)}, {identifyPanel.latlng.lng.toFixed(5)}</span>
+                </div>
+                <button onClick={() => setIdentifyPanel(null)}
+                  className="w-5 h-5 flex items-center justify-center rounded-full bg-zinc-200 dark:bg-zinc-700 text-zinc-500 hover:bg-zinc-300 transition-colors text-xs font-bold">
+                  ×
+                </button>
+              </div>
+              {/* Results */}
+              <div className="divide-y divide-zinc-100 dark:divide-zinc-800 max-h-72 overflow-y-auto">
+                {identifyPanel.results.map((result, i) => {
+                  // Filter display properties
+                  const HIDDEN = ['FID','OBJECTID','Shape_Area','Shape_Length','MERGE_SRC','MERGE_SRC_1','TextString','RefName'];
+                  const props = Object.entries(result.properties)
+                    .filter(([k]) => !HIDDEN.includes(k) && result.properties[k] !== null && result.properties[k] !== '');
+                  return (
+                    <div key={i} className="p-3">
+                      {/* Layer name */}
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: result.color }} />
+                        <span className="text-[11px] font-bold text-zinc-700 dark:text-zinc-200 uppercase tracking-wide">{result.label}</span>
+                      </div>
+                      {/* Properties table */}
+                      <table className="w-full text-[10px]">
+                        <tbody>
+                          {props.map(([key, val]) => (
+                            <tr key={key} className="border-b border-zinc-50 dark:border-zinc-800 last:border-0">
+                              <td className="py-0.5 pr-2 font-semibold text-zinc-400 dark:text-zinc-500 w-1/3 align-top truncate">{key}</td>
+                              <td className="py-0.5 text-zinc-700 dark:text-zinc-300 font-medium break-words">{String(val)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+        {/* ── Fin Identify Panel ───────────────────────────────────────── */}
 
         {/* Google Maps style Search Bar */}
         <div className="absolute top-4 left-1/2 -translate-x-1/2 md:left-6 md:translate-x-0 z-[1000] pointer-events-auto w-[90vw] md:w-[380px]">
@@ -706,17 +793,17 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                <ChevronLeft className="w-4 h-4" />
             </button>
             <div className="flex flex-col gap-2 w-full px-3 items-center">
-               <button onClick={(e) => { e.stopPropagation(); setActiveTab('rapports'); setIsPanelCollapsed(false); }} className={`p-2 rounded-lg flex items-center justify-center transition-colors ${activeTab === 'rapports' ? 'bg-[var(--bg-surface)] text-[var(--brand)] border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)]'}`} title="Rapports">
-                  <FileText className="w-4 h-4" />
+               <button onClick={(e) => { e.stopPropagation(); setActiveTab('couches'); setIsPanelCollapsed(false); }} className={`p-2 rounded-lg flex items-center justify-center transition-colors ${activeTab === 'couches' ? 'bg-[var(--bg-surface)] text-[var(--brand)] border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)]'}`} title="Couches">
+                  <Layers className="w-4 h-4" />
                </button>
                <button onClick={(e) => { e.stopPropagation(); setActiveTab('recherche'); setIsPanelCollapsed(false); }} className={`p-2 rounded-lg flex items-center justify-center transition-colors ${activeTab === 'recherche' ? 'bg-[var(--bg-surface)] text-[var(--brand)] border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)]'}`} title="Recherche">
                   <Search className="w-4 h-4" />
                </button>
-               <button onClick={(e) => { e.stopPropagation(); setActiveTab('couches'); setIsPanelCollapsed(false); }} className={`p-2 rounded-lg flex items-center justify-center transition-colors ${activeTab === 'couches' ? 'bg-[var(--bg-surface)] text-[var(--brand)] border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)]'}`} title="Couches">
-                  <Layers className="w-4 h-4" />
-               </button>
-               <button onClick={(e) => { e.stopPropagation(); setActiveTab('geotools'); setIsPanelCollapsed(false); }} className={`p-2 rounded-lg flex items-center justify-center transition-colors ${activeTab === 'geotools' ? 'bg-[var(--bg-surface)] text-[var(--brand)] border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)]'}`} title="Géotraitement">
+               <button onClick={(e) => { e.stopPropagation(); setActiveTab('geotools'); setIsPanelCollapsed(false); }} className={`p-2 rounded-lg flex items-center justify-center transition-colors ${activeTab === 'geotools' ? 'bg-[var(--bg-surface)] text-[var(--brand)] border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)]'}`} title="Outils">
                   <Wrench className="w-4 h-4" />
+               </button>
+               <button onClick={(e) => { e.stopPropagation(); setActiveTab('documents'); setIsPanelCollapsed(false); }} className={`p-2 rounded-lg flex items-center justify-center transition-colors ${activeTab === 'documents' ? 'bg-[var(--bg-surface)] text-[var(--brand)] border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)]'}`} title="Documents">
+                  <FileText className="w-4 h-4" />
                </button>
             </div>
             
@@ -745,19 +832,19 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 
               {/* Nav Tabs like image */}
               <div className="flex gap-1 bg-[var(--bg-main)] p-1 rounded-lg border border-[var(--border-color)] mt-2">
-                <TabButton active={activeTab === 'rapports'} onClick={() => setActiveTab('rapports')} icon={FileText} label="Rapports" />
-                <TabButton active={activeTab === 'recherche'} onClick={() => setActiveTab('recherche')} icon={Search} label="Recherche" />
                 <TabButton active={activeTab === 'couches'} onClick={() => setActiveTab('couches')} icon={Layers} label="Couches" />
+                <TabButton active={activeTab === 'recherche'} onClick={() => setActiveTab('recherche')} icon={Search} label="Recherche" />
                 <TabButton active={activeTab === 'geotools'} onClick={() => setActiveTab('geotools')} icon={Wrench} label="Outils" />
+                <TabButton active={activeTab === 'documents'} onClick={() => setActiveTab('documents')} icon={FileText} label="Docs" />
               </div>
             </div>
 
             {/* Tab Content */}
             <div className="flex-1 overflow-y-auto p-4 md:p-5 no-scrollbar pb-24 md:pb-6 text-left">
-               {activeTab === 'rapports' && <RapportsTab />}
-               {activeTab === 'recherche' && <RechercheTab calcLngLatFromLambert={calcLngLatFromLambert} />}
                {activeTab === 'couches' && <CouchesTab customLayers={customLayers} setCustomLayers={setCustomLayers} featureGroupRef={featureGroupRef} setIsPanelCollapsed={setIsPanelCollapsed} />}
+               {activeTab === 'recherche' && <RechercheTab calcLngLatFromLambert={calcLngLatFromLambert} />}
                {activeTab === 'geotools' && <GeotoolsTab customLayers={customLayers} setCustomLayers={setCustomLayers} featureGroupRef={featureGroupRef} />}
+               {activeTab === 'documents' && <RapportsTab />}
             </div>
           </div>
         )}
@@ -965,9 +1052,18 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
  
 // ── Couches Officielles TTH ─────────────────────────────────────────────
 const [officialVisible, setOfficialVisible] = useState<Record<string, boolean>>({
-  forest: false, communes: false, provinces: false, region: false,
+  forest: true, communes: false, provinces: false, region: false,
 });
 const officialRefs = useRef<Record<string, L.GeoJSON | null>>({});
+
+// Auto-load forest layer on mount
+useEffect(() => {
+  const forestLayer = OFFICIAL.find(l => l.key === 'forest');
+  if (forestLayer) {
+    toggleOfficial(forestLayer.key, forestLayer.file, forestLayer.color, forestLayer.weight, forestLayer.tooltip);
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
  
 const OFFICIAL = [
   {
@@ -1032,6 +1128,7 @@ const toggleOfficial = async (
     });
     fg.addLayer(layer);
     officialRefs.current[key] = layer;
+    _officialGeoData[key] = geojson;  // Store for Identify
     setOfficialVisible(p => ({ ...p, [key]: true }));
   } catch (err) {
     console.error('[OfficialLayer]', key, err);
@@ -1373,38 +1470,88 @@ const toggleOfficial = async (
     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
     Couches Officielles TTH
   </h3>
-  <div className="space-y-1">
-    {OFFICIAL.map(({ key, label, file, color, weight, tooltip }) => (
-      <button
-        key={key}
-        onClick={() => toggleOfficial(key, file, color, weight, tooltip)}
-        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border text-left text-xs font-medium transition-all ${
-          officialVisible[key]
-            ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'
-            : 'border-[var(--border-color)] bg-[var(--bg-main)] text-[var(--text-muted)] hover:border-[var(--brand)] hover:text-[var(--text-main)]'
-        }`}
-        style={officialVisible[key] ? { borderColor: color, boxShadow: `0 0 0 1px ${color}30` } : {}}
-      >
-        {/* Color indicator */}
-        <span
-          className="w-3 h-3 rounded-sm shrink-0 border-2 transition-all"
-          style={{
-            backgroundColor: officialVisible[key] ? color + '30' : 'transparent',
-            borderColor: color,
-          }}
-        />
-        <span className="flex-1 truncate">{label}</span>
-        <span
-          className="text-[8px] font-bold px-1.5 py-0.5 rounded shrink-0"
-          style={{
-            backgroundColor: officialVisible[key] ? color : 'var(--border-color)',
-            color: officialVisible[key] ? '#fff' : 'var(--text-muted)',
-          }}
-        >
-          {officialVisible[key] ? 'ON' : 'OFF'}
-        </span>
-      </button>
-    ))}
+  <div className="space-y-1.5">
+    {OFFICIAL.map(({ key, label, file, color, weight, tooltip }) => {
+      const style = officialStyles[key] || { fillColor: color+'30', strokeColor: color, weight, fillOpacity: 0.07 };
+      const isExpanded = expandedSymbo === key;
+      return (
+        <div key={key} className="rounded-lg border overflow-hidden transition-all"
+          style={officialVisible[key] ? { borderColor: color, boxShadow: `0 0 0 1px ${color}20` } : { borderColor: 'var(--border-color)' }}>
+          {/* Layer toggle row */}
+          <div className="flex items-center gap-2 px-2.5 py-2 bg-[var(--bg-main)]">
+            {/* Color dot — click to toggle ON/OFF */}
+            <button
+              onClick={() => toggleOfficial(key, file, color, weight, tooltip)}
+              className="w-4 h-4 rounded shrink-0 border-2 transition-all hover:scale-110"
+              title={officialVisible[key] ? 'Masquer' : 'Afficher'}
+              style={{
+                backgroundColor: officialVisible[key] ? style.strokeColor + '40' : 'transparent',
+                borderColor: style.strokeColor,
+              }}
+            />
+            <span className="flex-1 text-xs font-medium text-[var(--text-main)] truncate">{label}</span>
+            {/* Symbologie toggle */}
+            {officialVisible[key] && (
+              <button
+                onClick={() => setExpandedSymbo(isExpanded ? null : key)}
+                className="p-1 rounded hover:bg-[var(--bg-surface)] text-[var(--text-muted)] hover:text-[var(--brand)] transition-colors"
+                title="Symbologie"
+              >
+                <Palette className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {/* ON/OFF badge */}
+            <span className="text-[8px] font-bold px-1.5 py-0.5 rounded shrink-0 cursor-pointer"
+              onClick={() => toggleOfficial(key, file, color, weight, tooltip)}
+              style={{
+                backgroundColor: officialVisible[key] ? style.strokeColor : 'var(--border-color)',
+                color: officialVisible[key] ? '#fff' : 'var(--text-muted)',
+              }}>
+              {officialVisible[key] ? 'ON' : 'OFF'}
+            </span>
+          </div>
+          {/* Symbologie panel — expanded */}
+          {isExpanded && officialVisible[key] && (
+            <div className="px-3 py-2.5 bg-[var(--bg-surface)] border-t border-[var(--border-color)] space-y-2.5">
+              <p className="text-[9px] font-bold text-[var(--brand)] uppercase tracking-wider">Symbologie</p>
+              {/* Stroke color */}
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-[10px] text-[var(--text-muted)] w-20 shrink-0">Contour</label>
+                <input type="color" value={style.strokeColor}
+                  onChange={(e) => applyLayerStyle(key, { ...style, strokeColor: e.target.value })}
+                  className="w-8 h-6 rounded border border-[var(--border-color)] cursor-pointer p-0" />
+              </div>
+              {/* Weight */}
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-[10px] text-[var(--text-muted)] w-20 shrink-0">Épaisseur</label>
+                <div className="flex items-center gap-2 flex-1">
+                  <input type="range" min={1} max={6} step={0.5} value={style.weight}
+                    onChange={(e) => applyLayerStyle(key, { ...style, weight: Number(e.target.value) })}
+                    className="flex-1 accent-[var(--brand)]" />
+                  <span className="text-[10px] font-mono text-[var(--brand)] w-6 text-right">{style.weight}</span>
+                </div>
+              </div>
+              {/* Fill opacity */}
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-[10px] text-[var(--text-muted)] w-20 shrink-0">Transparence</label>
+                <div className="flex items-center gap-2 flex-1">
+                  <input type="range" min={0} max={0.5} step={0.01} value={style.fillOpacity}
+                    onChange={(e) => applyLayerStyle(key, { ...style, fillOpacity: Number(e.target.value) })}
+                    className="flex-1 accent-[var(--brand)]" />
+                  <span className="text-[10px] font-mono text-[var(--brand)] w-8 text-right">{Math.round(style.fillOpacity * 100)}%</span>
+                </div>
+              </div>
+              {/* Reset */}
+              <button
+                onClick={() => applyLayerStyle(key, { fillColor: color+'30', strokeColor: color, weight, fillOpacity: 0.07 })}
+                className="w-full py-1 text-[9px] font-semibold text-[var(--text-muted)] hover:text-[var(--brand)] border border-[var(--border-color)] hover:border-[var(--brand)] rounded transition-colors">
+                Réinitialiser
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    })}
   </div>
   <div className="h-px bg-[var(--border-color)] mt-3 mb-1 opacity-50" />
 </div>
