@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Check, Eye, EyeOff, AlertCircle } from 'lucide-react';
-import emailjs from '@emailjs/browser'; // ✅ EmailJS
+import emailjs from '@emailjs/browser';
 
 interface RegistrationModalProps {
   isOpen: boolean;
@@ -24,6 +24,11 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
     confirmPassword: ''
   });
 
+  // ✅ تهيئة EmailJS مرة واحدة عند تحميل الكومبوننت
+  useEffect(() => {
+    emailjs.init(import.meta.env.VITE_EMAILJS_PUBLIC_KEY);
+  }, []);
+
   if (!isOpen) return null;
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
@@ -42,6 +47,7 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
     e.preventDefault();
     setIsSubmitting(true);
     setSubmitError('');
+
     try {
       // 1️⃣ إرسال الطلب للـ API
       const res = await fetch('/api/register', {
@@ -57,14 +63,16 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
           password: formData.password,
         }),
       });
+
       const data = await res.json();
+
       if (!res.ok) {
         setSubmitError(data.error || "Erreur lors de l'envoi");
         return;
       }
 
-      // 2️⃣ إرسال إشعار البريد الإلكتروني عبر EmailJS
-      await emailjs.send(
+      // 2️⃣ إرسال إشعار EmailJS — منفصل لا يوقف التسجيل إذا فشل
+      emailjs.send(
         import.meta.env.VITE_EMAILJS_SERVICE_ID,
         import.meta.env.VITE_EMAILJS_TEMPLATE_ID,
         {
@@ -73,13 +81,20 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
           grade:      formData.grade,
           service:    formData.service,
           motif:      formData.motif || 'Non spécifié',
-        },
-        import.meta.env.VITE_EMAILJS_PUBLIC_KEY
-      );
+        }
+        // ✅ بدون public key هنا — تم تعيينه في emailjs.init()
+      ).then(() => {
+        console.log('✅ Email envoyé avec succès');
+      }).catch((err) => {
+        console.error('❌ EmailJS error (non-blocking):', err);
+        // لا يوقف التسجيل — المستخدم يرى خطوة النجاح بكل الأحوال
+      });
 
       // 3️⃣ الانتقال لخطوة النجاح
       setStep(4);
-    } catch {
+
+    } catch (err) {
+      console.error('Registration error:', err);
       setSubmitError("Erreur de connexion. Réessayez.");
     } finally {
       setIsSubmitting(false);
