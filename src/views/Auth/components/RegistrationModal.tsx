@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, Check, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import emailjs from '@emailjs/browser'; // ✅ EmailJS
 
 interface RegistrationModalProps {
   isOpen: boolean;
@@ -42,6 +43,7 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
     setIsSubmitting(true);
     setSubmitError('');
     try {
+      // 1️⃣ إرسال الطلب للـ API
       const res = await fetch('/api/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -60,6 +62,22 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
         setSubmitError(data.error || "Erreur lors de l'envoi");
         return;
       }
+
+      // 2️⃣ إرسال إشعار البريد الإلكتروني عبر EmailJS
+      await emailjs.send(
+        import.meta.env.VITE_EMAILJS_SERVICE_ID,
+        import.meta.env.VITE_EMAILJS_TEMPLATE_ID,
+        {
+          from_name:  `${formData.prenom} ${formData.nom}`,
+          from_email: formData.email,
+          grade:      formData.grade,
+          service:    formData.service,
+          motif:      formData.motif || 'Non spécifié',
+        },
+        import.meta.env.VITE_EMAILJS_PUBLIC_KEY
+      );
+
+      // 3️⃣ الانتقال لخطوة النجاح
       setStep(4);
     } catch {
       setSubmitError("Erreur de connexion. Réessayez.");
