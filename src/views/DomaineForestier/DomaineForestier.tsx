@@ -1056,14 +1056,25 @@ const [officialVisible, setOfficialVisible] = useState<Record<string, boolean>>(
 });
 const officialRefs = useRef<Record<string, L.GeoJSON | null>>({});
 
-// Auto-load forest layer on mount
-useEffect(() => {
-  const forestLayer = OFFICIAL.find(l => l.key === 'forest');
-  if (forestLayer) {
-    toggleOfficial(forestLayer.key, forestLayer.file, forestLayer.color, forestLayer.weight, forestLayer.tooltip);
+// ── Symbologie state ─────────────────────────────────────────────────────────
+const [officialStyles, setOfficialStyles] = useState<Record<string, {
+  fillColor: string; strokeColor: string; weight: number; fillOpacity: number;
+}>>({
+  forest:    { fillColor: '#16a34a', strokeColor: '#16a34a', weight: 2,   fillOpacity: 0.07 },
+  communes:  { fillColor: '#3b82f6', strokeColor: '#3b82f6', weight: 1,   fillOpacity: 0.07 },
+  provinces: { fillColor: '#f97316', strokeColor: '#f97316', weight: 2,   fillOpacity: 0.07 },
+  region:    { fillColor: '#8b5cf6', strokeColor: '#8b5cf6', weight: 2.5, fillOpacity: 0.07 },
+});
+const [expandedSymbo, setExpandedSymbo] = useState<string | null>(null);
+
+// Apply style to an existing Leaflet layer
+const applyLayerStyle = (key: string, style: { fillColor: string; strokeColor: string; weight: number; fillOpacity: number }) => {
+  setOfficialStyles(p => ({ ...p, [key]: style }));
+  const lyr = officialRefs.current[key];
+  if (lyr) {
+    lyr.setStyle({ color: style.strokeColor, fillColor: style.strokeColor, weight: style.weight, fillOpacity: style.fillOpacity, opacity: 0.85 });
   }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, []);
+};
  
 const OFFICIAL = [
   {
@@ -1461,6 +1472,38 @@ const toggleOfficial = async (
       window.dispatchEvent(new CustomEvent('flyToBounds', { detail: bounds }));
     }
   };
+
+  // Auto-load forest layer when component mounts (delayed to wait for FeatureGroup)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (officialRefs.current['forest'] === undefined || officialRefs.current['forest'] === null) {
+        const fg = featureGroupRef.current;
+        if (!fg) return;
+        fetch('/assets/data/forest_limits.json')
+          .then(r => r.json())
+          .then(geojson => {
+            const style = officialStyles['forest'] || { strokeColor: '#16a34a', weight: 2, fillOpacity: 0.07 };
+            const layer = L.geoJSON(geojson, {
+              style: { color: style.strokeColor, weight: style.weight, fillColor: style.strokeColor, fillOpacity: style.fillOpacity, opacity: 0.85 },
+              onEachFeature: (feature, lyr) => {
+                const p = feature.properties || {};
+                const text = `🌲 ${p.FORET || ''} — ${p.CANTON || ''}\n${p.STADE || ''} · ${p.SUPERFICIE ? Math.round(p.SUPERFICIE) + ' ha' : ''}`;
+                lyr.bindTooltip(text, { sticky: true });
+                lyr.on('mouseover', function () { (lyr as L.Path).setStyle({ fillOpacity: 0.22, weight: 3 }); });
+                lyr.on('mouseout',  function () { (lyr as L.Path).setStyle({ fillOpacity: 0.07, weight: 2 }); });
+              },
+            });
+            fg.addLayer(layer);
+            officialRefs.current['forest'] = layer;
+            _officialGeoData['forest'] = geojson;
+            setOfficialVisible(p => ({ ...p, forest: true }));
+          })
+          .catch(err => console.warn('[ForestAutoLoad]', err));
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="space-y-4">
