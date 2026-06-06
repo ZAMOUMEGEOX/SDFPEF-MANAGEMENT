@@ -972,7 +972,88 @@ function RechercheTab({ calcLngLatFromLambert }: { calcLngLatFromLambert: (x: nu
 // -- Couches Tab --
 function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanelCollapsed }: any) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-
+// ═══════════════════════════════════════════════════════════════════════
+// PATCH — CouchesTab في DomaineForestier.tsx
+//
+// التعديل 1: أضف هذا الكود مباشرة بعد السطر 974
+//            (بعد: const fileInputRef = useRef<HTMLInputElement>(null);)
+// ═══════════════════════════════════════════════════════════════════════
+ 
+// ── Couches Officielles TTH ─────────────────────────────────────────────
+const [officialVisible, setOfficialVisible] = useState<Record<string, boolean>>({
+  forest: false, communes: false, provinces: false, region: false,
+});
+const officialRefs = useRef<Record<string, L.GeoJSON | null>>({});
+ 
+const OFFICIAL = [
+  {
+    key: 'forest',
+    label: 'Mlak Ghabi — ملك غابوي',
+    file: '/assets/data/forest_limits.json',
+    color: '#16a34a',
+    weight: 2,
+    tooltip: (p: any) => `🌲 ${p.FORET || ''} — ${p.CANTON || ''}\n${p.STADE || ''} · ${p.SUPERFICIE ? Math.round(p.SUPERFICIE) + ' ha' : ''}`,
+  },
+  {
+    key: 'communes',
+    label: 'Communes TTH',
+    file: '/assets/data/Communes_TTH.json',
+    color: '#3b82f6',
+    weight: 1,
+    tooltip: (p: any) => `🏘 ${p.NomFr || ''}\n${p.NomAr || ''}${p.Pop__24 ? '\nSakina: ' + Number(p.Pop__24).toLocaleString() : ''}`,
+  },
+  {
+    key: 'provinces',
+    label: 'Provinces TTH',
+    file: '/assets/data/Provinces_TTH.json',
+    color: '#f97316',
+    weight: 2,
+    tooltip: (p: any) => `🏛 ${p.Nom__Fr || ''}\n${p.Nom__Ar || ''}${p.Pop__24 ? '\nSakina: ' + Number(p.Pop__24).toLocaleString() : ''}`,
+  },
+  {
+    key: 'region',
+    label: 'Région TTH',
+    file: '/assets/data/Region_TTH.json',
+    color: '#8b5cf6',
+    weight: 2.5,
+    tooltip: (p: any) => `🗺 ${p.Nom__fr || ''}\n${p.Nom__ar || ''}${p.Pop__24 ? '\nSakina: ' + Number(p.Pop__24).toLocaleString() : ''}`,
+  },
+];
+ 
+const toggleOfficial = async (
+  key: string, file: string, color: string,
+  weight: number, tooltip: (p: any) => string
+) => {
+  const fg = featureGroupRef.current;
+  if (!fg) return;
+ 
+  if (officialVisible[key]) {
+    const ref = officialRefs.current[key];
+    if (ref) { fg.removeLayer(ref); officialRefs.current[key] = null; }
+    setOfficialVisible(p => ({ ...p, [key]: false }));
+    return;
+  }
+ 
+  try {
+    const res     = await fetch(file);
+    const geojson = await res.json();
+    const layer   = L.geoJSON(geojson, {
+      style: { color, weight, fillColor: color, fillOpacity: 0.07, opacity: 0.85 },
+      onEachFeature: (feature, lyr) => {
+        const text = tooltip(feature.properties || {});
+        lyr.bindTooltip(text, { sticky: true, className: 'leaflet-tooltip' });
+        lyr.on('mouseover', function () { (lyr as L.Path).setStyle({ fillOpacity: 0.22, weight: weight + 1 }); });
+        lyr.on('mouseout',  function () { (lyr as L.Path).setStyle({ fillOpacity: 0.07, weight }); });
+      },
+    });
+    fg.addLayer(layer);
+    officialRefs.current[key] = layer;
+    setOfficialVisible(p => ({ ...p, [key]: true }));
+  } catch (err) {
+    console.error('[OfficialLayer]', key, err);
+  }
+};
+// ── Fin Couches Officielles TTH
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1302,6 +1383,48 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
 
   return (
     <div className="space-y-4">
+      {/* ── Couches Officielles TTH ──────────────────────────────────── */}
+<div className="mb-4">
+  <h3 className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 px-1 flex items-center gap-1.5">
+    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+    Couches Officielles TTH
+  </h3>
+  <div className="space-y-1">
+    {OFFICIAL.map(({ key, label, file, color, weight, tooltip }) => (
+      <button
+        key={key}
+        onClick={() => toggleOfficial(key, file, color, weight, tooltip)}
+        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border text-left text-xs font-medium transition-all ${
+          officialVisible[key]
+            ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'
+            : 'border-[var(--border-color)] bg-[var(--bg-main)] text-[var(--text-muted)] hover:border-[var(--brand)] hover:text-[var(--text-main)]'
+        }`}
+        style={officialVisible[key] ? { borderColor: color, boxShadow: `0 0 0 1px ${color}30` } : {}}
+      >
+        {/* Color indicator */}
+        <span
+          className="w-3 h-3 rounded-sm shrink-0 border-2 transition-all"
+          style={{
+            backgroundColor: officialVisible[key] ? color + '30' : 'transparent',
+            borderColor: color,
+          }}
+        />
+        <span className="flex-1 truncate">{label}</span>
+        <span
+          className="text-[8px] font-bold px-1.5 py-0.5 rounded shrink-0"
+          style={{
+            backgroundColor: officialVisible[key] ? color : 'var(--border-color)',
+            color: officialVisible[key] ? '#fff' : 'var(--text-muted)',
+          }}
+        >
+          {officialVisible[key] ? 'ON' : 'OFF'}
+        </span>
+      </button>
+    ))}
+  </div>
+  <div className="h-px bg-[var(--border-color)] mt-3 mb-1 opacity-50" />
+</div>
+{/* ── Fin Couches Officielles ───────────────────────────────────── */}
       <div className="flex justify-between items-center px-1 pb-3 border-b border-[var(--border-color)]">
         <h2 className="text-[var(--brand)] flex items-center gap-2 font-semibold text-sm tracking-wide">
           Couches
