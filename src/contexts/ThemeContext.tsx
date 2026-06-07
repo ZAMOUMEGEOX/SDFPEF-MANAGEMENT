@@ -21,14 +21,23 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
+
+  // ✅ إجبار كل المستخدمين على الثيم الجديد (يعمل مرة واحدة فقط)
+  const THEME_VERSION = 'v2';
+  if (localStorage.getItem('theme-version') !== THEME_VERSION) {
+    localStorage.removeItem('app-theme');
+    localStorage.removeItem('app-color');
+    localStorage.setItem('theme-version', THEME_VERSION);
+  }
+
   const [theme, setTheme] = useState<Theme>(() => {
     const saved = localStorage.getItem('app-theme') as Theme;
-    return saved || 'default';
+    return saved || 'ecopro'; // ✅ الثيم الافتراضي: Eco Pro
   });
   
   const [color, setColor] = useState<ThemeColor>(() => {
     const saved = localStorage.getItem('app-color') as ThemeColor;
-    return saved || 'default';
+    return saved || 'teal'; // ✅ اللون الافتراضي: Teal Clean
   });
 
   const [mode, setMode] = useState<Mode>(() => {
