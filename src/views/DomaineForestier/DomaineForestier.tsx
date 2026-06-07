@@ -363,7 +363,7 @@ const CustomMapEventsHandler = ({ setCustomLayers }: { setCustomLayers: any }) =
       
       popupDiv.querySelector('#btn-keep-marker')?.addEventListener('click', () => {
          marker.closePopup();
-         delete (map as any)._searchMarker; // detached from auto-remove
+         delete (map as any)._searchMarker;
          
          const id = `search-${Date.now()}`;
          setCustomLayers((prev: any) => [...prev, {
@@ -438,7 +438,7 @@ const CustomMapEventsHandler = ({ setCustomLayers }: { setCustomLayers: any }) =
       const query = e.detail;
       if (!query) return;
       try {
-        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`);
+        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1&countrycodes=ma`);
         const data = await res.json();
         if (data && data.length > 0) {
           executeSearchObject(data[0]);
@@ -489,24 +489,25 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
   const featureGroupRef = useRef<L.FeatureGroup>(null);
   const searchTimeoutRef = useRef<any>(null);
 
+  // ── FIX: Search bar — local GeoJSON + Nominatim (Morocco) ──────────────
   const fetchSearchResults = async (query: string) => {
-    if (!query.trim()) {
+    if (!query.trim() || query.length < 2) {
       setSearchResults([]);
       setShowDropdown(false);
       return;
     }
     setIsSearching(true);
     try {
-      // First: search local forest/commune GeoJSON data
       const localResults: any[] = [];
       const q = query.toLowerCase().trim();
 
-      // Search forest features
+      // 1. Search forest features (FORET, CANTON, STADE, CPF, DPAEF, NOM)
       if (_officialGeoData.forest?.features) {
         for (const feature of _officialGeoData.forest.features) {
           const p = feature.properties || {};
-          const name = [p.FORET, p.CANTON, p.STADE].filter(Boolean).join(' ');
-          if (name.toLowerCase().includes(q)) {
+          const searchStr = [p.FORET, p.CANTON, p.STADE, p.CPF, p.DPAEF, p.NOM, p.DOMAINE]
+            .filter(Boolean).join(' ').toLowerCase();
+          if (searchStr.includes(q)) {
             try {
               const bbox = turf.bbox(feature);
               const lat = (bbox[1] + bbox[3]) / 2;
@@ -516,18 +517,20 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                 lat: String(lat), lon: String(lon),
                 boundingbox: [String(bbox[1]), String(bbox[3]), String(bbox[0]), String(bbox[2])],
                 local: true, type: 'forest',
+                properties: p,
               });
+              if (localResults.filter(r => r.type === 'forest').length >= 6) break;
             } catch { }
           }
         }
       }
 
-      // Search communes
+      // 2. Search communes (NomFr, NomAr)
       if (_officialGeoData.communes?.features) {
         for (const feature of _officialGeoData.communes.features) {
           const p = feature.properties || {};
-          const name = (p.NomFr || '') + ' ' + (p.NomAr || '');
-          if (name.toLowerCase().includes(q)) {
+          const searchStr = ((p.NomFr || '') + ' ' + (p.NomAr || '')).toLowerCase();
+          if (searchStr.includes(q)) {
             try {
               const bbox = turf.bbox(feature);
               const lat = (bbox[1] + bbox[3]) / 2;
@@ -538,19 +541,29 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                 boundingbox: [String(bbox[1]), String(bbox[3]), String(bbox[0]), String(bbox[2])],
                 local: true, type: 'commune',
               });
+              if (localResults.filter(r => r.type === 'commune').length >= 3) break;
             } catch { }
           }
         }
       }
 
-      // Then: fetch Nominatim results
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=6&addressdetails=1`);
-      const data = await res.json();
-      const combined = [...localResults.slice(0, 3), ...(data || [])].slice(0, 8);
+      // 3. Nominatim fallback — Morocco only
+      let nominatimResults: any[] = [];
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&addressdetails=1&countrycodes=ma`,
+          { headers: { 'Accept-Language': 'fr,ar' } }
+        );
+        nominatimResults = (await res.json()) || [];
+      } catch (nominErr) {
+        console.warn('[Search] Nominatim unavailable:', nominErr);
+      }
+
+      const combined = [...localResults.slice(0, 5), ...nominatimResults.slice(0, 4)].slice(0, 8);
       setSearchResults(combined);
       setShowDropdown(combined.length > 0);
     } catch (err) {
-      console.error("Search fetch error", err);
+      console.error('Search fetch error', err);
     } finally {
       setIsSearching(false);
     }
@@ -560,9 +573,10 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     const val = e.target.value;
     setSearchQuery(val);
     if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    // FIX: reduce debounce from 500ms → 300ms for faster response
     searchTimeoutRef.current = setTimeout(() => {
       fetchSearchResults(val);
-    }, 500);
+    }, 300);
   };
   
   const handleMapSearch = (result?: any) => {
@@ -575,7 +589,6 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
        window.dispatchEvent(new CustomEvent('mapSearch', { detail: searchResults[0] }));
     } else if (searchQuery.trim()) {
        setShowDropdown(false);
-       // Fallback string search
        window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery }));
     }
   };
@@ -633,7 +646,6 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
           {customLayers.filter((l: any) => l.visible).map((layer: any) => {
             const currentOpacity = layer.opacity ?? 1;
             if (layer.type === 'static_polygon' && layer.areaCoords) {
-               // Calculate area of static polygon using turf
                const mockGeoJSON = turf.polygon([[...layer.areaCoords, layer.areaCoords[0]]] as any);
                const area = turf.area(mockGeoJSON);
                return (
@@ -675,7 +687,6 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
         {identifyPanel && identifyPanel.results.length > 0 && (
           <div className="absolute bottom-10 left-4 z-[1001] w-72 md:w-80 pointer-events-auto animate-in slide-in-from-bottom-2 duration-200">
             <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-zinc-200 dark:border-zinc-700 overflow-hidden">
-              {/* Header */}
               <div className="flex items-center justify-between px-3 py-2 bg-zinc-50 dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700">
                 <div className="flex items-center gap-2">
                   <MousePointer2 className="w-3.5 h-3.5 text-zinc-400" />
@@ -687,21 +698,17 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                   ×
                 </button>
               </div>
-              {/* Results */}
               <div className="divide-y divide-zinc-100 dark:divide-zinc-800 max-h-72 overflow-y-auto">
                 {identifyPanel.results.map((result, i) => {
-                  // Filter display properties
                   const HIDDEN = ['FID','OBJECTID','Shape_Area','Shape_Length','MERGE_SRC','MERGE_SRC_1','TextString','RefName'];
                   const props = Object.entries(result.properties)
                     .filter(([k]) => !HIDDEN.includes(k) && result.properties[k] !== null && result.properties[k] !== '');
                   return (
                     <div key={i} className="p-3">
-                      {/* Layer name */}
                       <div className="flex items-center gap-2 mb-2">
                         <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: result.color }} />
                         <span className="text-[11px] font-bold text-zinc-700 dark:text-zinc-200 uppercase tracking-wide">{result.label}</span>
                       </div>
-                      {/* Properties table */}
                       <table className="w-full text-[10px]">
                         <tbody>
                           {props.map(([key, val]) => (
@@ -729,7 +736,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
             </button>
             <input 
               type="text" 
-              placeholder="Rechercher dans la Carte" 
+              placeholder="Rechercher forêt, commune..." 
               value={searchQuery}
               onChange={onSearchInputChange}
               onKeyDown={(e) => {
@@ -741,7 +748,10 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
               onFocus={() => { if(searchResults.length > 0) setShowDropdown(true); }}
               className="flex-1 bg-transparent px-1 text-[15px] font-medium text-gray-800 placeholder-gray-500 outline-none w-full"
             />
-            {searchQuery && (
+            {isSearching && (
+              <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin mr-1" />
+            )}
+            {searchQuery && !isSearching && (
               <button 
                 onClick={() => { setSearchQuery(''); setSearchResults([]); setShowDropdown(false); }} 
                 className="p-1.5 text-gray-400 hover:text-gray-700 transition-colors"
@@ -769,6 +779,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                  const parts = result.display_name.split(',');
                  const title = parts[0];
                  const subtitle = parts.slice(1).join(',').trim();
+                 const icon = result.type === 'forest' ? '🌲' : result.type === 'commune' ? '🏘' : '📍';
                  return (
                    <div 
                      key={i} 
@@ -778,7 +789,12 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                      <MapPin className="size-5 text-gray-400 mt-0.5 shrink-0" />
                      <div className="flex flex-col flex-1 overflow-hidden">
                        <span className="text-sm font-medium text-gray-800 truncate">{title}</span>
-                       <span className="text-xs text-gray-500 truncate">{subtitle}</span>
+                       {subtitle && <span className="text-xs text-gray-500 truncate">{subtitle}</span>}
+                       {result.local && (
+                         <span className="text-[10px] text-emerald-600 font-semibold mt-0.5">
+                           {result.type === 'forest' ? '🌲 Domaine Forestier' : '🏘 Commune TTH'}
+                         </span>
+                       )}
                      </div>
                    </div>
                  );
@@ -816,7 +832,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
           </div>
         </div>
 
-        {/* Minimalist Coordinate HUD moved slightly to not overlap */}
+        {/* Coordinate HUD */}
         <div className="absolute bottom-4 left-4 md:left-[110px] z-[1000] bg-[#1a1a1c]/80 backdrop-blur-md border border-white/10 rounded-lg px-3 py-1 flex items-center gap-3 shadow-[0_2px_6px_rgba(0,0,0,0.5)] pointer-events-auto">
            <div className="flex items-center gap-1.5 cursor-crosshair">
               <div className="size-1.5 rounded-full bg-emerald-500"></div>
@@ -871,7 +887,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 
         {!isPanelCollapsed && (
           <div className="flex flex-col h-full w-full min-w-[280px] animate-in fade-in duration-300">
-            {/* Header & User Info like the image */}
+            {/* Header & Nav Tabs */}
             <div className="p-3 shrink-0 bg-[var(--bg-surface)] relative overflow-hidden flex flex-col gap-3">
               <div className="flex justify-between items-center px-1">
                  <h2 className="text-[var(--text-main)] font-semibold text-sm tracking-wide flex items-center gap-1.5">
@@ -882,7 +898,6 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                  </button>
               </div>
 
-              {/* Nav Tabs like image */}
               <div className="flex gap-1 bg-[var(--bg-main)] p-1 rounded-lg border border-[var(--border-color)] mt-2">
                 <TabButton active={activeTab === 'couches'} onClick={() => setActiveTab('couches')} icon={Layers} label="Couches" />
                 <TabButton active={activeTab === 'recherche'} onClick={() => setActiveTab('recherche')} icon={Search} label="Recherche" />
@@ -894,18 +909,36 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
             {/* Tab Content — always mounted to preserve official layer refs */}
             <div className="flex-1 overflow-y-auto p-4 md:p-5 no-scrollbar pb-24 md:pb-6 text-left">
                <div style={{ display: activeTab === 'couches' ? 'block' : 'none' }}>
-                 <CouchesTab customLayers={customLayers} setCustomLayers={setCustomLayers} featureGroupRef={featureGroupRef} setIsPanelCollapsed={setIsPanelCollapsed}
-                   onLayerImported={(name: string, geojson: any) => {
+                 <CouchesTab
+                   customLayers={customLayers}
+                   setCustomLayers={setCustomLayers}
+                   featureGroupRef={featureGroupRef}
+                   setIsPanelCollapsed={setIsPanelCollapsed}
+                   chevauchementResult={chevauchementResult}
+                   onLayerImported={async (name: string, geojson: any) => {
                      setLastImportedLayer({ name, geojson });
-                     const forestGJ = _officialGeoData.forest;
+                     // ── FIX: load forest data if not already cached ──
+                     let forestGJ = _officialGeoData.forest;
+                     if (!forestGJ) {
+                       try {
+                         const res = await fetch('/assets/data/forest_limits.json');
+                         forestGJ = await res.json();
+                         _officialGeoData['forest'] = forestGJ;
+                       } catch (fetchErr) {
+                         console.error('[ForestLoad on import]', fetchErr);
+                       }
+                     }
                      if (forestGJ) {
                        try {
                          const result = runChevauchementAnalysis(geojson, forestGJ, name);
                          setChevauchementResult(result);
-                       } catch (e) { console.error('[Chev]', e); }
+                         // Switch to couches tab to show inline result
+                         setActiveTab('couches');
+                       } catch (e) {
+                         console.error('[Chev]', e);
+                       }
                      }
                    }}
-                   chevauchementResult={chevauchementResult}
                  />
                </div>
                <div style={{ display: activeTab === 'recherche' ? 'block' : 'none' }}>
@@ -915,11 +948,13 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                  <GeotoolsTab customLayers={customLayers} setCustomLayers={setCustomLayers} featureGroupRef={featureGroupRef} />
                </div>
                <div style={{ display: activeTab === 'documents' ? 'block' : 'none' }}>
+                 {/* FIX: pass customLayers + live geodata refs to all modals */}
                  <RapportsTab
                    lastImportedLayer={lastImportedLayer}
                    chevauchementResult={chevauchementResult}
                    forestData={_officialGeoData.forest}
                    communesData={_officialGeoData.communes}
+                   customLayers={customLayers}
                  />
                </div>
             </div>
@@ -946,8 +981,8 @@ function TabButton({ active, onClick, icon: Icon, label }: any) {
   );
 }
 
-// -- Rapports Tab --
-function RapportsTab({ lastImportedLayer, chevauchementResult, forestData, communesData }: any) {
+// ── FIX: RapportsTab — pass forestData, communesData, customLayers to all modals ──
+function RapportsTab({ lastImportedLayer, chevauchementResult, forestData, communesData, customLayers }: any) {
   const [activeReport, setActiveReport] = useState<string | null>(null);
  
   return (
@@ -981,25 +1016,54 @@ function RapportsTab({ lastImportedLayer, chevauchementResult, forestData, commu
         <ReportCard
           title="Analyse Chevauchement"
           subtitle="Intersection · Domaine Forestier"
-          desc="Importez une couche → onglet « Couches »"
+          desc={customLayers.length > 0 ? `${customLayers.length} couche(s) disponible(s)` : "Importez une couche → onglet « Couches »"}
           color="#eab308"
           icon={Maximize}
           onClick={() => setActiveReport("Analyse Chevauchement")}
         />
       </div>
  
-      {/* Modals spécialisés */}
+      {/* Résultat chevauchement en lecture rapide */}
+      {chevauchementResult && (
+        <div className="mt-2">
+          <ChevauchementInlinePanel result={chevauchementResult} />
+        </div>
+      )}
+
+      {/* Modals — all receive map data */}
       {activeReport === "Fiche Technique Réquisition" && (
-        <FicheModal onClose={() => setActiveReport(null)} />
+        <FicheModal
+          onClose={() => setActiveReport(null)}
+          forestData={forestData}
+          communesData={communesData}
+          customLayers={customLayers}
+          chevauchementResult={chevauchementResult}
+        />
       )}
       {activeReport === "Attestation Administrative" && (
-        <AttestationModal onClose={() => setActiveReport(null)} />
+        <AttestationModal
+          onClose={() => setActiveReport(null)}
+          forestData={forestData}
+          communesData={communesData}
+          customLayers={customLayers}
+          chevauchementResult={chevauchementResult}
+        />
       )}
       {activeReport === "Rapport d'Expertise" && (
-        <ExpertiseModal onClose={() => setActiveReport(null)} />
+        <ExpertiseModal
+          onClose={() => setActiveReport(null)}
+          forestData={forestData}
+          communesData={communesData}
+          customLayers={customLayers}
+        />
       )}
       {activeReport === "Analyse Chevauchement" && (
-        <ChevauchementModal onClose={() => setActiveReport(null)} />
+        <ChevauchementModal
+          onClose={() => setActiveReport(null)}
+          customLayers={customLayers}
+          forestData={forestData}
+          initialResult={chevauchementResult}
+        />
       )}
     </div>
   );
@@ -1034,6 +1098,8 @@ function RechercheTab({ calcLngLatFromLambert }: { calcLngLatFromLambert: (x: nu
   const [lambertY, setLambertY] = useState('');
   
   const [searchQuery, setSearchQuery] = useState('');
+  const [localResults, setLocalResults] = useState<any[]>([]);
+  const [isSearchingLocal, setIsSearchingLocal] = useState(false);
 
   const handleCenterWGS = () => {
     const lng = parseFloat(lngVal);
@@ -1056,34 +1122,105 @@ function RechercheTab({ calcLngLatFromLambert }: { calcLngLatFromLambert: (x: nu
     }
   };
 
-  const handleSearchByName = (e?: React.KeyboardEvent<HTMLInputElement>) => {
-     if (!e || e.key === 'Enter') {
-        if (searchQuery.trim()) {
-          window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() }));
+  // FIX: search local GeoJSON data directly from RechercheTab
+  const handleLocalSearch = () => {
+    const q = searchQuery.toLowerCase().trim();
+    if (!q || q.length < 2) return;
+
+    setIsSearchingLocal(true);
+    const results: any[] = [];
+
+    if (_officialGeoData.forest?.features) {
+      for (const feature of _officialGeoData.forest.features) {
+        const p = feature.properties || {};
+        const str = [p.FORET, p.CANTON, p.STADE, p.CPF, p.DPAEF, p.NOM].filter(Boolean).join(' ').toLowerCase();
+        if (str.includes(q)) {
+          try {
+            const bbox = turf.bbox(feature);
+            results.push({
+              label: `🌲 ${p.FORET || ''} — ${p.CANTON || ''}`,
+              bbox,
+              lat: (bbox[1] + bbox[3]) / 2,
+              lon: (bbox[0] + bbox[2]) / 2,
+            });
+            if (results.length >= 8) break;
+          } catch { }
         }
-     }
+      }
+    }
+    if (_officialGeoData.communes?.features) {
+      for (const feature of _officialGeoData.communes.features) {
+        const p = feature.properties || {};
+        const str = ((p.NomFr || '') + ' ' + (p.NomAr || '')).toLowerCase();
+        if (str.includes(q)) {
+          try {
+            const bbox = turf.bbox(feature);
+            results.push({
+              label: `🏘 ${p.NomFr || ''} — ${p.NomAr || ''}`,
+              bbox,
+              lat: (bbox[1] + bbox[3]) / 2,
+              lon: (bbox[0] + bbox[2]) / 2,
+            });
+            if (results.filter((r: any) => r.label.startsWith('🏘')).length >= 3) break;
+          } catch { }
+        }
+      }
+    }
+    setLocalResults(results);
+    setIsSearchingLocal(false);
+
+    if (results.length === 0) {
+      // fallback: Nominatim
+      window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() }));
+    }
+  };
+
+  const jumpToResult = (r: any) => {
+    if (r.bbox) {
+      window.dispatchEvent(new CustomEvent('flyToBounds', { detail: [
+        [r.bbox[1], r.bbox[0]], [r.bbox[3], r.bbox[2]]
+      ]}));
+    } else {
+      window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat: r.lat, lon: r.lon, display_name: r.label } }));
+    }
+    setLocalResults([]);
   };
 
   return (
     <div className="space-y-10">
+      {/* Search by name — now also searches local forest/commune data */}
       <div className="space-y-3">
-        <label className="text-[11px] uppercase font-bold tracking-wider text-[var(--text-muted)]">Rechercher Lieu</label>
+        <label className="text-[11px] uppercase font-bold tracking-wider text-[var(--text-muted)]">Rechercher Forêt / Lieu</label>
         <div className="flex gap-2">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
             <input 
                type="text" 
-               placeholder="Ex: Forêt Jbel Dersa..." 
+               placeholder="Ex: Jbel Dersa, Mellalyen..." 
                className="w-full bg-[var(--bg-main)] border border-[var(--border-color)] rounded py-2 pl-9 pr-3 text-sm focus:outline-none focus:border-[var(--brand)] shadow-sm" 
                value={searchQuery}
-               onChange={(e) => setSearchQuery(e.target.value)}
-               onKeyDown={handleSearchByName}
+               onChange={(e) => { setSearchQuery(e.target.value); if (!e.target.value) setLocalResults([]); }}
+               onKeyDown={(e) => { if (e.key === 'Enter') handleLocalSearch(); }}
             />
           </div>
-          <button onClick={() => handleSearchByName()} className="px-3 py-2 bg-[var(--brand)] hover:opacity-90 text-white font-bold text-xs rounded shadow-sm">
+          <button onClick={handleLocalSearch} className="px-3 py-2 bg-[var(--brand)] hover:opacity-90 text-white font-bold text-xs rounded shadow-sm">
             GO
           </button>
         </div>
+        {/* Local search results */}
+        {localResults.length > 0 && (
+          <div className="bg-[var(--bg-main)] border border-[var(--border-color)] rounded-lg overflow-hidden shadow-sm">
+            {localResults.map((r: any, i: number) => (
+              <button
+                key={i}
+                onClick={() => jumpToResult(r)}
+                className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-surface)] border-b border-[var(--border-color)] last:border-0 transition-colors text-[var(--text-main)]"
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="space-y-3 pt-8 border-t border-[var(--border-color)]">
@@ -1120,13 +1257,7 @@ function RechercheTab({ calcLngLatFromLambert }: { calcLngLatFromLambert: (x: nu
 // -- Couches Tab --
 function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanelCollapsed, onLayerImported, chevauchementResult }: any) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-// ═══════════════════════════════════════════════════════════════════════
-// PATCH — CouchesTab في DomaineForestier.tsx
-//
-// التعديل 1: أضف هذا الكود مباشرة بعد السطر 974
-//            (بعد: const fileInputRef = useRef<HTMLInputElement>(null);)
-// ═══════════════════════════════════════════════════════════════════════
- 
+
 // ── Couches Officielles TTH ─────────────────────────────────────────────
 const [officialVisible, setOfficialVisible] = useState<Record<string, boolean>>({
   forest: true, communes: false, provinces: false, region: false,
@@ -1144,7 +1275,6 @@ const [officialStyles, setOfficialStyles] = useState<Record<string, {
 });
 const [expandedSymbo, setExpandedSymbo] = useState<string | null>(null);
 
-// Apply style to an existing Leaflet layer
 const applyLayerStyle = (key: string, style: { fillColor: string; strokeColor: string; weight: number; fillOpacity: number }) => {
   setOfficialStyles(p => ({ ...p, [key]: style }));
   const lyr = officialRefs.current[key];
@@ -1198,7 +1328,6 @@ const toggleOfficial = async (
   if (officialVisible[key]) {
     const ref = officialRefs.current[key];
     if (ref) {
-      // Remove from featureGroup AND from map (handles both cases)
       try { fg.removeLayer(ref); } catch {}
       try { ref.remove(); } catch {}
       officialRefs.current[key] = null;
@@ -1208,7 +1337,6 @@ const toggleOfficial = async (
   }
  
   try {
-    // Use cached data if available
     let geojson = _officialGeoData[key];
     if (!geojson) {
       const res = await fetch(file);
@@ -1233,6 +1361,7 @@ const toggleOfficial = async (
   }
 };
 // ── Fin Couches Officielles TTH
+
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1311,7 +1440,7 @@ const toggleOfficial = async (
 
       setCustomLayers((prev: any) => [...prev, {
         id,
-        name: file.name.replace(new RegExp('\\\\.[^/.]+$'), ""),
+        name: file.name.replace(new RegExp('\\.[^/.]+$'), ""),
         type: 'imported',
         visible: true,
         color: color,
@@ -1330,7 +1459,6 @@ const toggleOfficial = async (
     const ptsToPolygon = (features: any[]) => {
       if (features.length < 3) return turf.featureCollection(features);
       const coords = features.map((f: any) => f.geometry.coordinates);
-      // Ensure polygon is closed
       if (coords[0][0] !== coords[coords.length - 1][0] || coords[0][1] !== coords[coords.length - 1][1]) {
           coords.push([...coords[0]]);
       }
@@ -1362,10 +1490,8 @@ const toggleOfficial = async (
           let lng = parseFloat(String(rawLng).replace(',', '.'));
           if (isNaN(lat) || isNaN(lng)) return null;
 
-          // Auto-detect Lambert coordinates (if magnitude > 180 or 90)
           if (Math.abs(lng) > 180 || Math.abs(lat) > 90) {
             try {
-              // from EPSG:26191 (Lambert Nord Maroc) to EPSG:4326 (WGS84)
               const projected = proj4('EPSG:26191', 'EPSG:4326', [lng, lat]);
               lng = projected[0];
               lat = projected[1];
@@ -1398,7 +1524,6 @@ const toggleOfficial = async (
           complete: (results) => {
             const features = extractFeatures(results.data);
             if (features.length > 0) {
-              // Auto-convert points to polygon if ≥3 points
               const allPoints = features.every((f: any) => f.geometry?.type === 'Point');
               const finalGeojson = (allPoints && features.length >= 3)
                 ? ptsToPolygon(features)
@@ -1449,25 +1574,16 @@ const toggleOfficial = async (
         const newVisible = !l.visible;
         if (l.leafletLayer) {
           if (newVisible) {
-            // Add layer back to map
             if (featureGroupRef.current) {
               if (!featureGroupRef.current.hasLayer(l.leafletLayer)) {
                 featureGroupRef.current.addLayer(l.leafletLayer);
               }
-            } else if ((l.leafletLayer as any)._map === null || !(l.leafletLayer as any)._map) {
-              // drawn layers that aren't in featureGroup
-              try { l.leafletLayer.addTo((l.leafletLayer as any)._mapRef || l.leafletLayer._map); } catch {}
             }
           } else {
-            // Remove layer from wherever it is
-            let removed = false;
             if (featureGroupRef.current && featureGroupRef.current.hasLayer(l.leafletLayer)) {
               featureGroupRef.current.removeLayer(l.leafletLayer);
-              removed = true;
             }
-            if (!removed || (l.leafletLayer as any)._map) {
-              try { l.leafletLayer.remove(); } catch {}
-            }
+            try { l.leafletLayer.remove(); } catch {}
           }
         }
         return { ...l, visible: newVisible };
@@ -1480,11 +1596,9 @@ const toggleOfficial = async (
     setCustomLayers((prev: any) => {
       const layer = prev.find((l: any) => l.id === id);
       if (layer && layer.leafletLayer) {
-        // Remove from featureGroup if present
         if (featureGroupRef.current && featureGroupRef.current.hasLayer(layer.leafletLayer)) {
           featureGroupRef.current.removeLayer(layer.leafletLayer);
         }
-        // Also remove directly from map (for drawn layers)
         try { layer.leafletLayer.remove(); } catch {}
       }
       return prev.filter((l: any) => l.id !== id);
@@ -1501,11 +1615,9 @@ const toggleOfficial = async (
 
     if (layerState.leafletLayer.eachLayer) {
       layerState.leafletLayer.eachLayer((child: any) => {
-        // Line/Polygon
         if (child.setStyle && !child.setRadius) {
           child.setStyle({ color, opacity, weight, fillColor: color, fillOpacity });
         }
-        // Points
         if (child.feature && child.feature.geometry && child.feature.geometry.type === 'Point') {
           let radius = layerState.size ?? 6;
           
@@ -1586,8 +1698,8 @@ const toggleOfficial = async (
       try {
         const bbox = turf.bbox(layer.geojson);
         bounds = L.latLngBounds(
-          L.latLng(bbox[1], bbox[0]), // southWest (minY, minX)
-          L.latLng(bbox[3], bbox[2])  // northEast (maxY, maxX)
+          L.latLng(bbox[1], bbox[0]),
+          L.latLng(bbox[3], bbox[2])
         );
       } catch (err) {}
     } 
@@ -1601,7 +1713,7 @@ const toggleOfficial = async (
     }
   };
 
-  // Auto-load forest layer when component mounts (delayed to wait for FeatureGroup)
+  // Auto-load forest layer when component mounts
   useEffect(() => {
     const timer = setTimeout(() => {
       if (!officialRefs.current['forest']) {
@@ -1610,7 +1722,7 @@ const toggleOfficial = async (
         fetch('/assets/data/forest_limits.json')
           .then(r => r.json())
           .then(geojson => {
-            if (officialRefs.current['forest']) return; // already loaded
+            if (officialRefs.current['forest']) return;
             const style = officialStyles['forest'] || { strokeColor: '#16a34a', weight: 2, fillOpacity: 0.07 };
             const layer = L.geoJSON(geojson, {
               style: { color: style.strokeColor, weight: style.weight, fillColor: style.strokeColor, fillOpacity: style.fillOpacity ?? 0.07, opacity: 0.85 },
@@ -1649,9 +1761,7 @@ const toggleOfficial = async (
       return (
         <div key={key} className="rounded-lg border overflow-hidden transition-all"
           style={officialVisible[key] ? { borderColor: color, boxShadow: `0 0 0 1px ${color}20` } : { borderColor: 'var(--border-color)' }}>
-          {/* Layer toggle row */}
           <div className="flex items-center gap-2 px-2.5 py-2 bg-[var(--bg-main)]">
-            {/* Color dot — click to toggle ON/OFF */}
             <button
               onClick={() => toggleOfficial(key, file, color, weight, tooltip)}
               className="w-4 h-4 rounded shrink-0 border-2 transition-all hover:scale-110"
@@ -1662,7 +1772,6 @@ const toggleOfficial = async (
               }}
             />
             <span className="flex-1 text-xs font-medium text-[var(--text-main)] truncate">{label}</span>
-            {/* Symbologie toggle */}
             {officialVisible[key] && (
               <button
                 onClick={() => setExpandedSymbo(isExpanded ? null : key)}
@@ -1672,7 +1781,6 @@ const toggleOfficial = async (
                 <Palette className="w-3.5 h-3.5" />
               </button>
             )}
-            {/* ON/OFF badge */}
             <span className="text-[8px] font-bold px-1.5 py-0.5 rounded shrink-0 cursor-pointer"
               onClick={() => toggleOfficial(key, file, color, weight, tooltip)}
               style={{
@@ -1682,18 +1790,15 @@ const toggleOfficial = async (
               {officialVisible[key] ? 'ON' : 'OFF'}
             </span>
           </div>
-          {/* Symbologie panel — expanded */}
           {isExpanded && officialVisible[key] && (
             <div className="px-3 py-2.5 bg-[var(--bg-surface)] border-t border-[var(--border-color)] space-y-2.5">
               <p className="text-[9px] font-bold text-[var(--brand)] uppercase tracking-wider">Symbologie</p>
-              {/* Stroke color */}
               <div className="flex items-center justify-between gap-2">
                 <label className="text-[10px] text-[var(--text-muted)] w-20 shrink-0">Contour</label>
                 <input type="color" value={style.strokeColor}
                   onChange={(e) => applyLayerStyle(key, { ...style, strokeColor: e.target.value })}
                   className="w-8 h-6 rounded border border-[var(--border-color)] cursor-pointer p-0" />
               </div>
-              {/* Weight */}
               <div className="flex items-center justify-between gap-2">
                 <label className="text-[10px] text-[var(--text-muted)] w-20 shrink-0">Épaisseur</label>
                 <div className="flex items-center gap-2 flex-1">
@@ -1703,7 +1808,6 @@ const toggleOfficial = async (
                   <span className="text-[10px] font-mono text-[var(--brand)] w-6 text-right">{style.weight}</span>
                 </div>
               </div>
-              {/* Fill opacity */}
               <div className="flex items-center justify-between gap-2">
                 <label className="text-[10px] text-[var(--text-muted)] w-20 shrink-0">Transparence</label>
                 <div className="flex items-center gap-2 flex-1">
@@ -1713,7 +1817,6 @@ const toggleOfficial = async (
                   <span className="text-[10px] font-mono text-[var(--brand)] w-8 text-right">{Math.round(style.fillOpacity * 100)}%</span>
                 </div>
               </div>
-              {/* Reset */}
               <button
                 onClick={() => applyLayerStyle(key, { fillColor: color+'30', strokeColor: color, weight, fillOpacity: 0.07 })}
                 className="w-full py-1 text-[9px] font-semibold text-[var(--text-muted)] hover:text-[var(--brand)] border border-[var(--border-color)] hover:border-[var(--brand)] rounded transition-colors">
@@ -1728,6 +1831,7 @@ const toggleOfficial = async (
   <div className="h-px bg-[var(--border-color)] mt-3 mb-1 opacity-50" />
 </div>
 {/* ── Fin Couches Officielles ───────────────────────────────────── */}
+
       <div className="flex justify-between items-center px-1 pb-3 border-b border-[var(--border-color)]">
         <h2 className="text-[var(--brand)] flex items-center gap-2 font-semibold text-sm tracking-wide">
           Couches
@@ -1798,7 +1902,6 @@ const toggleOfficial = async (
                    const l = newLayers[idx];
                    const updated = { ...l, symbol: symbol };
                    
-                   // For shapes, we must recreate the leaflet layer
                    if (l.leafletLayer && featureGroupRef.current) {
                       featureGroupRef.current.removeLayer(l.leafletLayer);
                       
@@ -1809,13 +1912,7 @@ const toggleOfficial = async (
                       const radius = updated.size ?? 6;
 
                       const newLeafletLayer = L.geoJSON(l.geojson, {
-                         style: {
-                            color,
-                            opacity,
-                            weight,
-                            fillColor: color,
-                            fillOpacity
-                         },
+                         style: { color, opacity, weight, fillColor: color, fillOpacity },
                          pointToLayer: (feature, latlng) => {
                             if (symbol === 'square') {
                                return L.marker(latlng, {
@@ -1939,9 +2036,6 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
         alert("Fichier Excel téléchargé avec succès.");
         return;
       } else if (tool === 'reproject_lambert') {
-        // From map (WGS84) to Lambert Nord Maroc
-        // We cannot just display it on map since coordinates will be in meters.
-        // We will transform, serialize to geojson and triggering download.
         const transformed = structuredClone(g1);
         turf.coordEach(transformed, (currentCoord) => {
           const projected = proj4('EPSG:4326', 'EPSG:26191', currentCoord);
@@ -1959,7 +2053,6 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
         alert("Fichier projeté en Lambert Nord téléchargé avec succès.");
         return;
       } else if (tool === 'reproject_wgs84') {
-        // From Lambert to WGS84
         const transformed = structuredClone(g1);
         turf.coordEach(transformed, (currentCoord) => {
           const projected = proj4('EPSG:26191', 'EPSG:4326', currentCoord);
