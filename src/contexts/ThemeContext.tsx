@@ -23,10 +23,11 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   // ✅ إجبار كل المستخدمين على الثيم الجديد (يعمل مرة واحدة فقط)
-  const THEME_VERSION = 'v2';
+  const THEME_VERSION = 'v3';
   if (localStorage.getItem('theme-version') !== THEME_VERSION) {
     localStorage.removeItem('app-theme');
     localStorage.removeItem('app-color');
+    localStorage.removeItem('app-mode');
     localStorage.setItem('theme-version', THEME_VERSION);
   }
 
@@ -42,7 +43,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   const [mode, setMode] = useState<Mode>(() => {
     const saved = localStorage.getItem('app-mode') as Mode;
-    return saved || 'system';
+    return saved || 'light'; // ✅ الوضع الافتراضي: Light
   });
 
   const [layout, setLayout] = useState<Layout>(() => {
