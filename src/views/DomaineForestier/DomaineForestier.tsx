@@ -13,7 +13,11 @@ import 'leaflet-measure';
 import { kml } from '@tmcw/togeojson';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
-import { FicheModal, AttestationModal, ExpertiseModal, ChevauchementModal } from './DocumentModals';
+import {
+  FicheModal, AttestationModal, ExpertiseModal, ChevauchementModal,
+  ChevauchementInlinePanel, runChevauchementAnalysis,
+} from './DocumentModals';
+import type { ChevauchementResult } from './DocumentModals';
 import proj4 from 'proj4';
 
 // Define Lambert Nord Maroc (EPSG:26191) with standard Merchich datum
@@ -493,11 +497,58 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     }
     setIsSearching(true);
     try {
-      // Add more comprehensive parameters for Nominatim OpenStreetMap search
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=8&addressdetails=1`);
+      // First: search local forest/commune GeoJSON data
+      const localResults: any[] = [];
+      const q = query.toLowerCase().trim();
+
+      // Search forest features
+      if (_officialGeoData.forest?.features) {
+        for (const feature of _officialGeoData.forest.features) {
+          const p = feature.properties || {};
+          const name = (p.FORET || '') + ' ' + (p.CANTON || '');
+          if (name.toLowerCase().includes(q)) {
+            try {
+              const bbox = turf.bbox(feature);
+              const lat = (bbox[1] + bbox[3]) / 2;
+              const lon = (bbox[0] + bbox[2]) / 2;
+              localResults.push({
+                display_name: `🌲 ${p.FORET || ''} — ${p.CANTON || ''} (Domaine Forestier)`,
+                lat: String(lat), lon: String(lon),
+                boundingbox: [String(bbox[1]), String(bbox[3]), String(bbox[0]), String(bbox[2])],
+                local: true, type: 'forest',
+              });
+            } catch { }
+          }
+        }
+      }
+
+      // Search communes
+      if (_officialGeoData.communes?.features) {
+        for (const feature of _officialGeoData.communes.features) {
+          const p = feature.properties || {};
+          const name = (p.NomFr || '') + ' ' + (p.NomAr || '');
+          if (name.toLowerCase().includes(q)) {
+            try {
+              const bbox = turf.bbox(feature);
+              const lat = (bbox[1] + bbox[3]) / 2;
+              const lon = (bbox[0] + bbox[2]) / 2;
+              localResults.push({
+                display_name: `🏘 ${p.NomFr || ''} — ${p.NomAr || ''} (Commune TTH)`,
+                lat: String(lat), lon: String(lon),
+                boundingbox: [String(bbox[1]), String(bbox[3]), String(bbox[0]), String(bbox[2])],
+                local: true, type: 'commune',
+              });
+            } catch { }
+          }
+        }
+      }
+
+      // Then: fetch Nominatim results
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=6&addressdetails=1`);
       const data = await res.json();
-      setSearchResults(data || []);
-      setShowDropdown(true);
+      const combined = [...localResults.slice(0, 3), ...(data || [])].slice(0, 8);
+      setSearchResults(combined);
+      setShowDropdown(combined.length > 0);
     } catch (err) {
       console.error("Search fetch error", err);
     } finally {
@@ -529,8 +580,9 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     }
   };
   
-  const [customLayers, setCustomLayers] = useState<any[]>([
-  ]);
+  const [customLayers, setCustomLayers] = useState<any[]>([]);
+  const [chevauchementResult, setChevauchementResult] = useState<ChevauchementResult | null>(null);
+  const [lastImportedLayer, setLastImportedLayer] = useState<{ name: string; geojson: any } | null>(null);
 
   // Lambert converter using proj4
   const calcLambert = (lat: number, lng: number) => {
@@ -839,12 +891,37 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
               </div>
             </div>
 
-            {/* Tab Content */}
+            {/* Tab Content — always mounted to preserve official layer refs */}
             <div className="flex-1 overflow-y-auto p-4 md:p-5 no-scrollbar pb-24 md:pb-6 text-left">
-               {activeTab === 'couches' && <CouchesTab customLayers={customLayers} setCustomLayers={setCustomLayers} featureGroupRef={featureGroupRef} setIsPanelCollapsed={setIsPanelCollapsed} />}
-               {activeTab === 'recherche' && <RechercheTab calcLngLatFromLambert={calcLngLatFromLambert} />}
-               {activeTab === 'geotools' && <GeotoolsTab customLayers={customLayers} setCustomLayers={setCustomLayers} featureGroupRef={featureGroupRef} />}
-               {activeTab === 'documents' && <RapportsTab />}
+               <div style={{ display: activeTab === 'couches' ? 'block' : 'none' }}>
+                 <CouchesTab customLayers={customLayers} setCustomLayers={setCustomLayers} featureGroupRef={featureGroupRef} setIsPanelCollapsed={setIsPanelCollapsed}
+                   onLayerImported={(name: string, geojson: any) => {
+                     setLastImportedLayer({ name, geojson });
+                     const forestGJ = _officialGeoData.forest;
+                     if (forestGJ) {
+                       try {
+                         const result = runChevauchementAnalysis(geojson, forestGJ, name);
+                         setChevauchementResult(result);
+                       } catch (e) { console.error('[Chev]', e); }
+                     }
+                   }}
+                   chevauchementResult={chevauchementResult}
+                 />
+               </div>
+               <div style={{ display: activeTab === 'recherche' ? 'block' : 'none' }}>
+                 <RechercheTab calcLngLatFromLambert={calcLngLatFromLambert} />
+               </div>
+               <div style={{ display: activeTab === 'geotools' ? 'block' : 'none' }}>
+                 <GeotoolsTab customLayers={customLayers} setCustomLayers={setCustomLayers} featureGroupRef={featureGroupRef} />
+               </div>
+               <div style={{ display: activeTab === 'documents' ? 'block' : 'none' }}>
+                 <RapportsTab
+                   lastImportedLayer={lastImportedLayer}
+                   chevauchementResult={chevauchementResult}
+                   forestData={_officialGeoData.forest}
+                   communesData={_officialGeoData.communes}
+                 />
+               </div>
             </div>
           </div>
         )}
