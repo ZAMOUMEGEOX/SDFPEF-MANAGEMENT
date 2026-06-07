@@ -822,26 +822,39 @@ function ChevauchementLayerPanel({
         )}
 
         {/* Breakdown per forest/canton */}
-        {result.intersections?.length > 0 && (
-          <div className="space-y-1.5 pt-0.5">
-            {result.intersections.map((inter: any, i: number) => (
-              <div key={i} className="flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: statusColor }} />
-                <span className="text-[10px] text-[var(--text-main)] font-medium flex-1 truncate">
-                  {inter.foret}{inter.canton ? ` — ${inter.canton}` : ''}
-                </span>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <div className="w-14 h-1.5 rounded-full bg-[var(--border-color)] overflow-hidden">
-                    <div className="h-full rounded-full" style={{ width: `${Math.min(100, Number(inter.percentage) || 0)}%`, backgroundColor: statusColor }} />
-                  </div>
-                  <span className="text-[10px] font-black font-mono w-10 text-right" style={{ color: statusColor }}>
-                    {Number(inter.percentage || 0).toFixed(1)}%
-                  </span>
-                </div>
-              </div>
-            ))}
+   {/* Breakdown per forest/canton */}
+{(result.intersections?.length ?? 0) > 0 && (
+  <div className="space-y-1.5 pt-0.5">
+    {result.intersections?.map((inter: any, i: number) => (
+      <div key={i} className="flex items-center gap-2">
+        <div 
+          className="w-1.5 h-1.5 rounded-full shrink-0" 
+          style={{ backgroundColor: statusColor }} 
+        />
+        <span className="text-[10px] text-(--text-main)] font-medium flex-1 truncate">
+          {inter.foret}{inter.canton ? ` – ${inter.canton}` : ''}
+        </span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <div className="w-14 h-1.5 rounded-full bg-(--border-color)] overflow-hidden">
+            <div 
+              className="h-full rounded-full" 
+              style={{ 
+                width: `${Math.min(100, Number(inter.percentage) || 0)}%`, 
+                backgroundColor: statusColor 
+              }} 
+            />
           </div>
-        )}
+          <span 
+            className="text-[10px] font-black font-mono w-10 text-right" 
+            style={{ color: statusColor }}
+          >
+            {Number(inter.percentage || 0).toFixed(1)}%
+          </span>
+        </div>
+      </div>
+    ))}
+  </div>
+)}
 
         {/* PDF report button */}
         {onOpenReport && (
@@ -887,6 +900,9 @@ function RapportsTab({ lastImportedLayer, forestData, communesData }: {
           </span>
         )}
       </div>
+
+
+
 
       <div className="space-y-2.5">
         <ReportCard

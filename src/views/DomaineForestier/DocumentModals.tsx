@@ -50,6 +50,7 @@ export interface ChevauchementResult {
   globalPosition: 'داخل الملك الغابوي' | 'جزئيا داخل الملك الغابوي' | 'خارج الملك الغابوي';
   hits: ChevauchementHit[];
   importedGeoJSON: any; forestGeoJSON: any;
+  intersections?: any[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
