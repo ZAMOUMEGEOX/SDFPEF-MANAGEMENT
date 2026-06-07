@@ -6,33 +6,78 @@ import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
 import { createClient } from "@supabase/supabase-js";
-
+import nodemailer from 'nodemailer';
 dotenv.config();
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-// ─── EmailJS Helper ─────────────────────────────────────────────
-async function sendAdminEmail(templateParams: Record<string, string>) {
+// ── Nodemailer Helper ──────────────────────────────────────────
+async function sendAdminEmail(params: {
+  user_name: string; user_email: string; user_grade: string;
+  user_service: string; user_motif: string; user_date: string;
+  approve_url: string; reject_url: string;
+}) {
   try {
-    const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        service_id:  process.env.VITE_EMAILJS_SERVICE_ID,
-        template_id: process.env.VITE_EMAILJS_TEMPLATE_ID,
-        user_id:     process.env.VITE_EMAILJS_PUBLIC_KEY,
-        template_params: templateParams,
-      }),
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: 'sdfpeftth@gmail.com',
+        pass: process.env.GMAIL_APP_PASSWORD,
+      },
     });
-    if (res.ok) {
-      console.log('✅ Email admin envoyé via EmailJS');
-    } else {
-      const err = await res.text();
-      console.error('❌ EmailJS error:', err);
-    }
-  } catch (e) {
-    console.error('❌ EmailJS fetch error:', e);
+
+    await transporter.sendMail({
+      from: '"AtlasForest 🌿" <sdfpeftth@gmail.com>',
+      to: 'sdfpeftth@gmail.com',
+      subject: `🌳 AtlasForest — Nouvelle demande : ${params.user_name}`,
+      html: `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+body{margin:0;padding:0;background:#f5f5f5;font-family:Arial,sans-serif}
+.wrap{max-width:600px;margin:30px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.1)}
+.hdr{background:#1a3a2a;padding:24px 32px}
+.hdr h1{margin:0;color:#4ade80;font-size:18px;font-weight:800;letter-spacing:2px}
+.hdr p{margin:4px 0 0;color:#86efac;font-size:12px}
+.body{padding:32px}
+.body h2{color:#1a3a2a;font-size:20px;margin:0 0 20px}
+table{width:100%;border-collapse:collapse;margin-bottom:28px}
+td{padding:12px 16px;font-size:14px;border-bottom:1px solid #e5e7eb}
+td:first-child{color:#666;font-weight:600;width:40%;background:#f9fafb}
+td:last-child{color:#111;font-weight:500}
+.actions{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:20px;text-align:center;margin-bottom:24px}
+.actions p{margin:0 0 16px;font-size:14px;font-weight:700;color:#166534}
+.btn{display:inline-block;padding:14px 28px;border-radius:8px;font-weight:700;font-size:14px;text-decoration:none;margin:0 8px}
+.approve{background:#16a34a;color:#fff}
+.reject{background:#dc2626;color:#fff}
+.warn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;font-size:12px;color:#92400e;margin-bottom:20px}
+.foot{text-align:center;padding:16px;font-size:11px;color:#9ca3af;border-top:1px solid #e5e7eb}
+</style></head><body>
+<div class="wrap">
+  <div class="hdr"><h1>🌿 AtlasForest</h1><p>Système de Gestion Forestière · ANEF Tétouan</p></div>
+  <div class="body">
+    <h2>Nouvelle demande d'accès agent</h2>
+    <table>
+      <tr><td>Nom complet</td><td>${params.user_name}</td></tr>
+      <tr><td>Email</td><td>${params.user_email}</td></tr>
+      <tr><td>Grade / Poste</td><td>${params.user_grade}</td></tr>
+      <tr><td>Service</td><td>${params.user_service}</td></tr>
+      <tr><td>Motif</td><td>${params.user_motif}</td></tr>
+      <tr><td>Date</td><td>${params.user_date}</td></tr>
+    </table>
+    <div class="actions">
+      <p>Action requise — Approuver ou rejeter la demande :</p>
+      <a href="${params.approve_url}" class="btn approve">✅ Approuver l'accès</a>
+      <a href="${params.reject_url}" class="btn reject">❌ Rejeter la demande</a>
+    </div>
+    <div class="warn">⚠️ Ces liens sont sécurisés et à usage unique. Ne les partagez pas.</div>
+  </div>
+  <div class="foot">AtlasForest · ANEF Tétouan · Système automatique</div>
+</div></body></html>`,
+    });
+    console.log('✅ Email admin envoyé via Nodemailer');
+  } catch (err) {
+    console.error('❌ Nodemailer error:', err);
   }
 }
+// ───────────────────────────────────────────────────────────────
 async function startServer() {
   const app = express();
   const PORT = 3000;
