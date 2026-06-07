@@ -505,7 +505,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       if (_officialGeoData.forest?.features) {
         for (const feature of _officialGeoData.forest.features) {
           const p = feature.properties || {};
-          const name = (p.FORET || '') + ' ' + (p.CANTON || '');
+          const name = [p.FORET, p.CANTON, p.STADE].filter(Boolean).join(' ');
           if (name.toLowerCase().includes(q)) {
             try {
               const bbox = turf.bbox(feature);
@@ -947,7 +947,7 @@ function TabButton({ active, onClick, icon: Icon, label }: any) {
 }
 
 // -- Rapports Tab --
-function RapportsTab() {
+function RapportsTab({ lastImportedLayer, chevauchementResult, forestData, communesData }: any) {
   const [activeReport, setActiveReport] = useState<string | null>(null);
  
   return (
@@ -1118,7 +1118,7 @@ function RechercheTab({ calcLngLatFromLambert }: { calcLngLatFromLambert: (x: nu
 }
 
 // -- Couches Tab --
-function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanelCollapsed }: any) {
+function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanelCollapsed, onLayerImported, chevauchementResult }: any) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 // ═══════════════════════════════════════════════════════════════════════
 // PATCH — CouchesTab في DomaineForestier.tsx
@@ -1197,26 +1197,36 @@ const toggleOfficial = async (
  
   if (officialVisible[key]) {
     const ref = officialRefs.current[key];
-    if (ref) { fg.removeLayer(ref); officialRefs.current[key] = null; }
+    if (ref) {
+      // Remove from featureGroup AND from map (handles both cases)
+      try { fg.removeLayer(ref); } catch {}
+      try { ref.remove(); } catch {}
+      officialRefs.current[key] = null;
+    }
     setOfficialVisible(p => ({ ...p, [key]: false }));
     return;
   }
  
   try {
-    const res     = await fetch(file);
-    const geojson = await res.json();
-    const layer   = L.geoJSON(geojson, {
-      style: { color, weight, fillColor: color, fillOpacity: 0.07, opacity: 0.85 },
+    // Use cached data if available
+    let geojson = _officialGeoData[key];
+    if (!geojson) {
+      const res = await fetch(file);
+      geojson = await res.json();
+    }
+    const style = officialStyles[key] || { strokeColor: color, weight, fillOpacity: 0.07 };
+    const layer = L.geoJSON(geojson, {
+      style: { color: style.strokeColor, weight: style.weight, fillColor: style.strokeColor, fillOpacity: style.fillOpacity ?? 0.07, opacity: 0.85 },
       onEachFeature: (feature, lyr) => {
         const text = tooltip(feature.properties || {});
         lyr.bindTooltip(text, { sticky: true, className: 'leaflet-tooltip' });
-        lyr.on('mouseover', function () { (lyr as L.Path).setStyle({ fillOpacity: 0.22, weight: weight + 1 }); });
-        lyr.on('mouseout',  function () { (lyr as L.Path).setStyle({ fillOpacity: 0.07, weight }); });
+        lyr.on('mouseover', function () { (lyr as L.Path).setStyle({ fillOpacity: 0.22, weight: (style.weight ?? weight) + 1 }); });
+        lyr.on('mouseout',  function () { (lyr as L.Path).setStyle({ fillOpacity: style.fillOpacity ?? 0.07, weight: style.weight ?? weight }); });
       },
     });
     fg.addLayer(layer);
     officialRefs.current[key] = layer;
-    _officialGeoData[key] = geojson;  // Store for Identify
+    _officialGeoData[key] = geojson;
     setOfficialVisible(p => ({ ...p, [key]: true }));
   } catch (err) {
     console.error('[OfficialLayer]', key, err);
@@ -1309,6 +1319,12 @@ const toggleOfficial = async (
         geojson: geojson,
         leafletLayer: layer
       }]);
+
+      // ── Auto chevauchement après import ──────────────────────────────
+      if (onLayerImported) {
+        const layerName = file.name.replace(/\.[^/.]+$/, "");
+        onLayerImported(layerName, geojson);
+      }
     };
 
     const ptsToPolygon = (features: any[]) => {
@@ -1381,8 +1397,16 @@ const toggleOfficial = async (
           skipEmptyLines: true,
           complete: (results) => {
             const features = extractFeatures(results.data);
-            if(features.length > 0) addLayer(turf.featureCollection(features));
-            else alert("Coordonnées non trouvées (nommez les colonnes X, Y ou lat, lng)");
+            if (features.length > 0) {
+              // Auto-convert points to polygon if ≥3 points
+              const allPoints = features.every((f: any) => f.geometry?.type === 'Point');
+              const finalGeojson = (allPoints && features.length >= 3)
+                ? ptsToPolygon(features)
+                : turf.featureCollection(features);
+              addLayer(finalGeojson);
+            } else {
+              alert("Coordonnées non trouvées (nommez les colonnes X, Y ou lat, lng)");
+            }
           }
         });
       } else if (extension === 'xlsx' || extension === 'xls') {
@@ -1395,8 +1419,15 @@ const toggleOfficial = async (
             const data: any = XLSX.utils.sheet_to_json(firstSheet);
             
             const features = extractFeatures(data);
-            if(features.length > 0) addLayer(turf.featureCollection(features));
-            else alert("Coordonnées non trouvées (nommez les colonnes X, Y ou lat, lng)");
+            if (features.length > 0) {
+              const allPoints = features.every((f: any) => f.geometry?.type === 'Point');
+              const finalGeojson = (allPoints && features.length >= 3)
+                ? ptsToPolygon(features)
+                : turf.featureCollection(features);
+              addLayer(finalGeojson);
+            } else {
+              alert("Coordonnées non trouvées (nommez les colonnes X, Y ou lat, lng)");
+            }
           } catch (err) {
             console.error(err);
             alert("Erreur de parsing du fichier Excel");
@@ -1416,9 +1447,28 @@ const toggleOfficial = async (
     setCustomLayers((prev: any) => prev.map((l: any) => {
       if (l.id === id) {
         const newVisible = !l.visible;
-        if (l.leafletLayer && featureGroupRef.current) {
-          if (newVisible) featureGroupRef.current.addLayer(l.leafletLayer);
-          else featureGroupRef.current.removeLayer(l.leafletLayer);
+        if (l.leafletLayer) {
+          if (newVisible) {
+            // Add layer back to map
+            if (featureGroupRef.current) {
+              if (!featureGroupRef.current.hasLayer(l.leafletLayer)) {
+                featureGroupRef.current.addLayer(l.leafletLayer);
+              }
+            } else if ((l.leafletLayer as any)._map === null || !(l.leafletLayer as any)._map) {
+              // drawn layers that aren't in featureGroup
+              try { l.leafletLayer.addTo((l.leafletLayer as any)._mapRef || l.leafletLayer._map); } catch {}
+            }
+          } else {
+            // Remove layer from wherever it is
+            let removed = false;
+            if (featureGroupRef.current && featureGroupRef.current.hasLayer(l.leafletLayer)) {
+              featureGroupRef.current.removeLayer(l.leafletLayer);
+              removed = true;
+            }
+            if (!removed || (l.leafletLayer as any)._map) {
+              try { l.leafletLayer.remove(); } catch {}
+            }
+          }
         }
         return { ...l, visible: newVisible };
       }
@@ -1430,11 +1480,12 @@ const toggleOfficial = async (
     setCustomLayers((prev: any) => {
       const layer = prev.find((l: any) => l.id === id);
       if (layer && layer.leafletLayer) {
+        // Remove from featureGroup if present
         if (featureGroupRef.current && featureGroupRef.current.hasLayer(layer.leafletLayer)) {
-            featureGroupRef.current.removeLayer(layer.leafletLayer);
-        } else {
-            layer.leafletLayer.remove();
+          featureGroupRef.current.removeLayer(layer.leafletLayer);
         }
+        // Also remove directly from map (for drawn layers)
+        try { layer.leafletLayer.remove(); } catch {}
       }
       return prev.filter((l: any) => l.id !== id);
     });
@@ -1553,21 +1604,22 @@ const toggleOfficial = async (
   // Auto-load forest layer when component mounts (delayed to wait for FeatureGroup)
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (officialRefs.current['forest'] === undefined || officialRefs.current['forest'] === null) {
+      if (!officialRefs.current['forest']) {
         const fg = featureGroupRef.current;
         if (!fg) return;
         fetch('/assets/data/forest_limits.json')
           .then(r => r.json())
           .then(geojson => {
+            if (officialRefs.current['forest']) return; // already loaded
             const style = officialStyles['forest'] || { strokeColor: '#16a34a', weight: 2, fillOpacity: 0.07 };
             const layer = L.geoJSON(geojson, {
-              style: { color: style.strokeColor, weight: style.weight, fillColor: style.strokeColor, fillOpacity: style.fillOpacity, opacity: 0.85 },
+              style: { color: style.strokeColor, weight: style.weight, fillColor: style.strokeColor, fillOpacity: style.fillOpacity ?? 0.07, opacity: 0.85 },
               onEachFeature: (feature, lyr) => {
                 const p = feature.properties || {};
                 const text = `🌲 ${p.FORET || ''} — ${p.CANTON || ''}\n${p.STADE || ''} · ${p.SUPERFICIE ? Math.round(p.SUPERFICIE) + ' ha' : ''}`;
                 lyr.bindTooltip(text, { sticky: true });
                 lyr.on('mouseover', function () { (lyr as L.Path).setStyle({ fillOpacity: 0.22, weight: 3 }); });
-                lyr.on('mouseout',  function () { (lyr as L.Path).setStyle({ fillOpacity: 0.07, weight: 2 }); });
+                lyr.on('mouseout',  function () { (lyr as L.Path).setStyle({ fillOpacity: style.fillOpacity ?? 0.07, weight: style.weight ?? 2 }); });
               },
             });
             fg.addLayer(layer);
@@ -1687,6 +1739,7 @@ const toggleOfficial = async (
           <button 
              onClick={() => fileInputRef.current?.click()} 
              className="text-[11px] flex items-center gap-1.5 bg-[var(--brand)] hover:opacity-90 text-white px-3 py-1.5 rounded-lg transition-all font-semibold shadow-sm"
+             title="Importer GeoJSON, KML, CSV, Excel, Shapefile (ZIP) — les points CSV/Excel sont auto-convertis en polygone"
           >
              <Upload size={14} /> 
              <span>Importer</span>
@@ -1701,6 +1754,13 @@ const toggleOfficial = async (
           className="hidden" 
         />
       </div>
+
+      {/* ── Résultat Chevauchement inline (auto après import) ─────────── */}
+      {chevauchementResult && (
+        <div className="mt-1">
+          <ChevauchementInlinePanel result={chevauchementResult} />
+        </div>
+      )}
 
       <div className="space-y-2.5 max-h-[400px] overflow-y-auto pr-1 select-none">
         {customLayers.length === 0 && (
