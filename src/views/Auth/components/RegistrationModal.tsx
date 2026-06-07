@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { X, Check, Eye, EyeOff, AlertCircle } from 'lucide-react';
-import emailjs from '@emailjs/browser';
 
 interface RegistrationModalProps {
   isOpen: boolean;
@@ -24,11 +23,6 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
     confirmPassword: ''
   });
 
-  // ✅ تهيئة EmailJS مرة واحدة عند تحميل الكومبوننت
-  useEffect(() => {
-    emailjs.init(import.meta.env.VITE_EMAILJS_PUBLIC_KEY);
-  }, []);
-
   if (!isOpen) return null;
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
@@ -49,17 +43,17 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
     setSubmitError('');
 
     try {
-      // 1️⃣ إرسال الطلب للـ API
+      // ✅ إرسال الطلب للـ API — server.ts يتولى إرسال الإيميل تلقائياً
       const res = await fetch('/api/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prenom: formData.prenom,
-          nom: formData.nom,
-          email: formData.email,
-          grade: formData.grade,
-          service: formData.service,
-          motif: formData.motif,
+          prenom:   formData.prenom,
+          nom:      formData.nom,
+          email:    formData.email,
+          grade:    formData.grade,
+          service:  formData.service,
+          motif:    formData.motif,
           password: formData.password,
         }),
       });
@@ -71,26 +65,7 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
         return;
       }
 
-      // 2️⃣ إرسال إشعار EmailJS — منفصل لا يوقف التسجيل إذا فشل
-      emailjs.send(
-        import.meta.env.VITE_EMAILJS_SERVICE_ID,
-        import.meta.env.VITE_EMAILJS_TEMPLATE_ID,
-        {
-          from_name:  `${formData.prenom} ${formData.nom}`,
-          from_email: formData.email,
-          grade:      formData.grade,
-          service:    formData.service,
-          motif:      formData.motif || 'Non spécifié',
-        }
-        // ✅ بدون public key هنا — تم تعيينه في emailjs.init()
-      ).then(() => {
-        console.log('✅ Email envoyé avec succès');
-      }).catch((err) => {
-        console.error('❌ EmailJS error (non-blocking):', err);
-        // لا يوقف التسجيل — المستخدم يرى خطوة النجاح بكل الأحوال
-      });
-
-      // 3️⃣ الانتقال لخطوة النجاح
+      // ✅ الانتقال لخطوة النجاح — الإيميل يُرسَل من server.ts
       setStep(4);
 
     } catch (err) {
@@ -149,42 +124,83 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
 
         {/* Form Body */}
         <div className="p-8 overflow-y-auto">
+
+          {/* ── STEP 1: Identité ── */}
           {step === 1 && (
             <div className="space-y-6 animate-in slide-in-from-right-4 fade-in duration-300">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <label className="text-[10px] text-white/50 uppercase tracking-widest font-bold">Prénom *</label>
-                  <input type="text" name="prenom" value={formData.prenom} onChange={handleChange} placeholder="Votre prénom" className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors" />
+                  <input
+                    name="prenom"
+                    value={formData.prenom}
+                    onChange={handleChange}
+                    placeholder="Votre prénom"
+                    className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors"
+                  />
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] text-white/50 uppercase tracking-widest font-bold">Nom *</label>
-                  <input type="text" name="nom" value={formData.nom} onChange={handleChange} placeholder="Votre nom" className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors" />
+                  <input
+                    name="nom"
+                    value={formData.nom}
+                    onChange={handleChange}
+                    placeholder="Votre nom"
+                    className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors"
+                  />
                 </div>
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] text-white/50 uppercase tracking-widest font-bold">Email Professionnel *</label>
-                <input type="email" name="email" value={formData.email} onChange={handleChange} placeholder="prenom.nom@anef.gov.ma" className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors" />
+                <label className="text-[10px] text-white/50 uppercase tracking-widest font-bold">Email professionnel *</label>
+                <input
+                  name="email"
+                  type="email"
+                  value={formData.email}
+                  onChange={handleChange}
+                  placeholder="exemple@eaux-forets.ma"
+                  className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors"
+                />
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <label className="text-[10px] text-white/50 uppercase tracking-widest font-bold">Grade / Poste *</label>
-                  <input type="text" name="grade" value={formData.grade} onChange={handleChange} placeholder="Ingénieur Forestier" className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors" />
+                  <input
+                    name="grade"
+                    value={formData.grade}
+                    onChange={handleChange}
+                    placeholder="Ex: Ingénieur des Eaux et Forêts"
+                    className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors"
+                  />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[10px] text-white/50 uppercase tracking-widest font-bold">Service / مصلحة</label>
-                  <input type="text" name="service" value={formData.service} onChange={handleChange} placeholder="ANEF Tétouan" className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors" />
+                  <label className="text-[10px] text-white/50 uppercase tracking-widest font-bold">Service</label>
+                  <input
+                    name="service"
+                    value={formData.service}
+                    onChange={handleChange}
+                    placeholder="Ex: Brigade de Tétouan"
+                    className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors"
+                  />
                 </div>
               </div>
 
               <div className="space-y-2">
                 <label className="text-[10px] text-white/50 uppercase tracking-widest font-bold">Motif de la demande</label>
-                <textarea name="motif" value={formData.motif} onChange={handleChange} placeholder="Décrivez brièvement votre rôle..." rows={3} className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors resize-none"></textarea>
+                <textarea
+                  name="motif"
+                  value={formData.motif}
+                  onChange={handleChange}
+                  placeholder="Décrivez brièvement votre rôle..."
+                  rows={3}
+                  className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl px-4 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors resize-none"
+                />
               </div>
             </div>
           )}
 
+          {/* ── STEP 2: Mot de passe ── */}
           {step === 2 && (
             <div className="space-y-6 animate-in slide-in-from-right-4 fade-in duration-300">
               <div className="bg-[#0a1f14] border border-[#1a3a2a] p-5 rounded-xl">
@@ -197,7 +213,14 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
                 <div className="space-y-2 relative">
                   <label className="text-[10px] text-white/50 uppercase tracking-widest font-bold">Mot de passe * (8 caractères min.)</label>
                   <div className="relative">
-                    <input type={showPassword ? "text" : "password"} name="password" value={formData.password} onChange={handleChange} placeholder="••••••••" className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl pl-4 pr-12 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors tracking-widest" />
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      name="password"
+                      value={formData.password}
+                      onChange={handleChange}
+                      placeholder="••••••••"
+                      className="w-full bg-[#0a1f14] border border-[#1a3a2a] text-white rounded-xl pl-4 pr-12 py-3 focus:outline-none focus:border-emerald-500 font-medium placeholder:text-white/20 transition-colors tracking-widest"
+                    />
                     <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute inset-y-0 right-0 pr-4 flex items-center text-white/40 hover:text-white">
                       {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                     </button>
@@ -207,7 +230,18 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
                 <div className="space-y-2 relative">
                   <label className="text-[10px] text-white/50 uppercase tracking-widest font-bold">Confirmer le mot de passe *</label>
                   <div className="relative">
-                    <input type={showConfirmPassword ? "text" : "password"} name="confirmPassword" value={formData.confirmPassword} onChange={handleChange} placeholder="••••••••" className={`w-full bg-[#0a1f14] border text-white rounded-xl pl-4 pr-12 py-3 focus:outline-none font-medium placeholder:text-white/20 transition-colors tracking-widest ${formData.password && formData.confirmPassword && formData.password !== formData.confirmPassword ? 'border-red-500 focus:border-red-500' : 'border-[#1a3a2a] focus:border-emerald-500'}`} />
+                    <input
+                      type={showConfirmPassword ? "text" : "password"}
+                      name="confirmPassword"
+                      value={formData.confirmPassword}
+                      onChange={handleChange}
+                      placeholder="••••••••"
+                      className={`w-full bg-[#0a1f14] border text-white rounded-xl pl-4 pr-12 py-3 focus:outline-none font-medium placeholder:text-white/20 transition-colors tracking-widest ${
+                        formData.password && formData.confirmPassword && formData.password !== formData.confirmPassword
+                          ? 'border-red-500 focus:border-red-500'
+                          : 'border-[#1a3a2a] focus:border-emerald-500'
+                      }`}
+                    />
                     <button type="button" onClick={() => setShowConfirmPassword(!showConfirmPassword)} className="absolute inset-y-0 right-0 pr-4 flex items-center text-white/40 hover:text-white">
                       {showConfirmPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                     </button>
@@ -223,6 +257,7 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
             </div>
           )}
 
+          {/* ── STEP 3: Récapitulatif ── */}
           {step === 3 && (
             <div className="space-y-6 animate-in slide-in-from-right-4 fade-in duration-300">
               <div className="text-[10px] text-white/50 uppercase tracking-widest font-bold mb-4">Récapitulatif de votre demande</div>
@@ -258,6 +293,7 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
             </div>
           )}
 
+          {/* ── STEP 4: Succès ── */}
           {step === 4 && (
             <div className="flex flex-col items-center justify-center py-8 gap-4 text-center animate-in fade-in duration-300">
               <div className="size-16 bg-emerald-500/10 border border-emerald-500/20 rounded-full flex items-center justify-center">
@@ -265,7 +301,7 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
               </div>
               <h3 className="text-xl font-bold text-white">Demande envoyée !</h3>
               <p className="text-white/50 text-sm max-w-xs leading-relaxed">
-                Votre demande a bien été enregistrée. L'administrateur sera notifié et vous contactera sous 48h.
+                Votre demande a bien été enregistrée. L'administrateur sera notifié par email et vous contactera sous 48h.
               </p>
               <button
                 onClick={() => {
@@ -291,20 +327,20 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
           )}
           <div className="flex justify-between items-center">
             {step > 1 && step < 4 ? (
-               <button onClick={handlePrev} className="px-6 py-3 rounded-xl border border-[#1a3a2a] text-white/70 hover:text-white hover:bg-white/5 transition-colors font-medium text-sm flex items-center gap-2">
-                 ← Retour
-               </button>
+              <button onClick={handlePrev} className="px-6 py-3 rounded-xl border border-[#1a3a2a] text-white/70 hover:text-white hover:bg-white/5 transition-colors font-medium text-sm flex items-center gap-2">
+                ← Retour
+              </button>
             ) : step === 4 ? (
               <div />
             ) : (
-               <button onClick={onClose} className="px-6 py-3 rounded-xl border border-[#1a3a2a] text-white/70 hover:text-white hover:bg-white/5 transition-colors font-medium text-sm">
-                 Annuler
-               </button>
+              <button onClick={onClose} className="px-6 py-3 rounded-xl border border-[#1a3a2a] text-white/70 hover:text-white hover:bg-white/5 transition-colors font-medium text-sm">
+                Annuler
+              </button>
             )}
 
             {step < 3 ? (
-              <button 
-                onClick={handleNext} 
+              <button
+                onClick={handleNext}
                 disabled={
                   (step === 1 && (!formData.prenom || !formData.nom || !formData.email || !formData.grade)) ||
                   (step === 2 && (!formData.password || formData.password !== formData.confirmPassword))

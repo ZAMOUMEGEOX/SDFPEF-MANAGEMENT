@@ -10,7 +10,29 @@ import { createClient } from "@supabase/supabase-js";
 dotenv.config();
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
+// ─── EmailJS Helper ─────────────────────────────────────────────
+async function sendAdminEmail(templateParams: Record<string, string>) {
+  try {
+    const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        service_id:  process.env.VITE_EMAILJS_SERVICE_ID,
+        template_id: process.env.VITE_EMAILJS_TEMPLATE_ID,
+        user_id:     process.env.VITE_EMAILJS_PUBLIC_KEY,
+        template_params: templateParams,
+      }),
+    });
+    if (res.ok) {
+      console.log('✅ Email admin envoyé via EmailJS');
+    } else {
+      const err = await res.text();
+      console.error('❌ EmailJS error:', err);
+    }
+  } catch (e) {
+    console.error('❌ EmailJS fetch error:', e);
+  }
+}
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -196,7 +218,16 @@ app.post("/api/register", async (req, res) => {
     console.log(`\n✅ NOUVELLE DEMANDE: ${prenom} ${nom} (${email})`);
     console.log(`👍 Approuver: ${baseUrl}/api/approve?id=${data.id}&action=approve&secret=${secret}`);
     console.log(`👎 Rejeter:   ${baseUrl}/api/approve?id=${data.id}&action=reject&secret=${secret}\n`);
-
+await sendAdminEmail({
+  user_name:    `${prenom} ${nom}`,
+  user_email:   email,
+  user_grade:   grade   || 'Non précisé',
+  user_service: service || 'Non précisé',
+  user_motif:   motif   || 'Non précisé',
+  user_date:    new Date().toLocaleDateString('fr-FR'),
+  approve_url:  `${baseUrl}/api/approve?id=${data.id}&action=approve&secret=${secret}`,
+  reject_url:   `${baseUrl}/api/approve?id=${data.id}&action=reject&secret=${secret}`,
+});
     return res.json({ success: true, message: "Demande enregistrée. Vous serez notifié sous 48h." });
   } catch (err) {
     console.error("Register error:", err);
@@ -426,6 +457,71 @@ app.all("/api/gee/*", async (req: any, res: any) => {
   }
 });
 // ─── FIN GEE PROXY ────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// أضف هذا الـ endpoint في server.ts قبل: app.post("/api/logout", ...)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── POST /api/change-password ─────────────────────────────────────────────────
+app.post("/api/change-password", async (req: any, res: any) => {
+  const sessionId = req.cookies?.["atlasforest-session"];
+  if (!sessionId) return res.status(401).json({ error: "Non authentifié" });
+
+  const { oldPassword, newPassword } = req.body;
+  if (!oldPassword || !newPassword) return res.status(400).json({ error: "Champs manquants" });
+  if (newPassword.length < 8) return res.status(400).json({ error: "Minimum 8 caractères" });
+
+  try {
+    const supabase = getSupabaseAdmin();
+
+    // Récupérer l'utilisateur par session (email stocké dans le cookie)
+    // Pour admin hardcodé
+    if (sessionId === "admin") {
+      return res.status(400).json({ error: "Le compte admin ne peut pas changer de mot de passe ici." });
+    }
+
+    // Récupérer l'email depuis la session (stored as email in cookie OR lookup)
+    // On suppose que sessionId === email de l'utilisateur
+    const { data: userRow, error: fetchErr } = await supabase
+      .from("users_requests")
+      .select("id, password, email")
+      .eq("email", sessionId)
+      .single();
+
+    if (fetchErr || !userRow) {
+      // Essai avec sessionId comme id
+      const { data: byId } = await supabase
+        .from("users_requests")
+        .select("id, password, email")
+        .eq("id", sessionId)
+        .single();
+
+      if (!byId) return res.status(404).json({ error: "Utilisateur non trouvé" });
+
+      const valid = await bcrypt.compare(oldPassword, byId.password);
+      if (!valid) return res.status(401).json({ error: "Ancien mot de passe incorrect" });
+
+      const hashed = await bcrypt.hash(newPassword, 10);
+      await supabase.from("users_requests").update({ password: hashed }).eq("id", byId.id);
+      return res.json({ success: true });
+    }
+
+    const valid = await bcrypt.compare(oldPassword, userRow.password);
+    if (!valid) return res.status(401).json({ error: "Ancien mot de passe incorrect" });
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    const { error: updateErr } = await supabase
+      .from("users_requests")
+      .update({ password: hashed })
+      .eq("id", userRow.id);
+
+    if (updateErr) throw updateErr;
+    res.json({ success: true, message: "Mot de passe modifié avec succès" });
+
+  } catch (err: any) {
+    console.error("[change-password]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
 // ─── POST /api/logout ────────────────────────────────────────────────────────
 app.post("/api/logout", (req, res) => {
   res.clearCookie("atlasforest-session", { path: "/" });
