@@ -18,29 +18,9 @@ try {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const QIADAS = [
-  // Province de Tétouan
-  'تطوان المدينة',
-  'عليين',
-  'الملاليين',
-  'مرتيل',
-  'الجبل الكبير',
-  'المضيق',
-  'الفنيدق',
-  'درة العروس',
-  'وادي لاو',
-  'بلِيونَش',
-  'بني يدر',
-  'بني سعيد',
-  'زيانة',
-  'حمارة',
-  'تغرامت',
-  'الغزاوة',
-  'الصويني',
-  'أزلا',
-  'عين لحصن',
-  'صنهاجة سراير',
-  'بختي',
-  'تامرانت',
+  'عليين', 'الملاليين', 'الجبل الكبير', 'مرتيل', 'وادي لاو',
+  'بلِيونَش', 'بني يدر', 'زيانة', 'حمارة', 'تغرامت',
+  'الغزاوة', 'الصويني', 'المضيق', 'الفنيدق', 'درة العروس', 'تطوان المدينة'
 ];
 
 const RAPPORTEURS_LIST = [
@@ -48,36 +28,9 @@ const RAPPORTEURS_LIST = [
 ];
 
 const FORET_AR: Record<string, string> = {
-  // Beni Hassan / Anjra area
-  'BENI HASSAN': 'بني حسن',
-  'ANJRA': 'أنجرة',
-  'ANJRA NORD': 'أنجرة الشمالية',
-  'ANJRA CHAMALIYA': 'أنجرة الشمالية',
-  // Major forests
-  'BOUHACHEM': 'بوهشم',
-  'RHOMARA': 'غمارة',
-  'TALEMBOTE': 'تالمبوت',
-  'JBEL DARSA': 'جبل درسة',
-  'ZBEL DARSA': 'جبل درسة',
-  'FNIDEQ': 'الفنيدق',
-  'BENSLIMANE': 'بن سليمان',
-  // User-specified
-  'HAOUZ': 'الحوز',
-  'ZAMZAM': 'زمزم',
-  'KDIET TAYFOUR': 'كدية الطيفور',
-  'KDIET EL TAYFOUR': 'كدية الطيفور',
-  'AL BUYUT': 'البيوت',
-  'LES BUYUT': 'البيوت',
-  'RASEM KHALIFI': 'الرسم الخليفي',
-  'MELLALYEN': 'الملاليين',
-  'ALLIYEN': 'عليين',
-  // Others common in TTH
-  'BRIKCHA': 'بريكشة',
-  'KSAR SGHIR': 'القصر الصغير',
-  'OUED LAOU': 'وادي لاو',
-  'MDIQ': 'المضيق',
-  'GHARB': 'الغرب',
-  'TANGER': 'طنجة',
+  'BENI HASSAN': 'بني حسن', 'BOUHACHEM': 'بوهشم', 'RHOMARA': 'غمارة',
+  'TALEMBOTE': 'تالمبوت', 'JBEL DARSA': 'جبل درسة',
+  'FNIDEQ': 'الفنيدق', 'BENSLIMANE': 'بن سليمان',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -240,29 +193,19 @@ export function ChevauchementInlinePanel({ result }: { result: ChevauchementResu
 <title>تقرير تحليل التداخل</title>
 <style>
   body{font-family:'Arial',sans-serif;direction:rtl;padding:1.5cm 2cm;font-size:10pt;color:#111;line-height:1.7}
-  .header{text-align:center;margin-bottom:16px;padding-bottom:10px;border-bottom:2px solid #166534}
-  .header img{height:60px;width:auto;display:block;margin:0 auto 4px}
-  .header .agency-ar{font-size:9.5pt;font-weight:bold}
-  .header .agency-ama{font-size:6.5pt;color:#666;letter-spacing:0.5px;margin:1px 0}
-  .header .agency-fr{font-size:8pt;color:#166534;font-weight:bold;margin-bottom:6px}
-  .header .hierarchy{font-size:7.5pt;line-height:1.8;color:#333}
+  .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;padding-bottom:10px;border-bottom:2px solid #166534}
   .title{font-size:15pt;font-weight:bold;text-align:center;margin:14px 0;color:#1a1a1a;text-decoration:underline}
   table{width:100%;border-collapse:collapse;margin:10px 0;font-size:9.5pt}
   th{background:#e8f5e9;border:1px solid #ccc;padding:5px 8px;font-weight:bold;text-align:center}
   td{vertical-align:middle}
   .badge{display:inline-block;border:2px solid ${col.border};color:${col.border};background:${col.bg};padding:3px 14px;font-weight:bold;font-size:13pt;letter-spacing:1.5px;border-radius:3px}
+  .logo-circle{width:55px;height:55px;border:2px solid #166534;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:7pt;font-weight:bold;color:#166534;text-align:center;margin:0 auto 4px}
   @media print{@page{size:A4;margin:1cm 1.5cm}body{padding:0}}
 </style></head><body>
 <div class="header">
-  <img src="/images/logo-anef.png" alt="ANEF" onerror="this.style.display='none'"/>
-  <div class="agency-ar">الوكالة الوطنية للمياه والغابات</div>
-  <div class="agency-ama">ⵜⴰⵎⴰⵡⴰⵙⵜ ⵜⴰⵏⴰⵎⵓⵔⵜ ⵏ ⵉⵎⴰⵏ ⴷ ⵉⵖⵔⵎⴰⵏ</div>
-  <div class="agency-fr">AGENCE NATIONALE DES EAUX ET FORÊTS</div>
-  <div class="hierarchy">
-    المديرية الجهوية للوكالة الوطنية للمياه والغابات طنجة-تطوان-الحسيمة<br/>
-    المديرية الإقليمية للوكالة الوطنية للمياه والغابات لتطوان<br/>
-    مركز حماية الغابات للمضيق-الفنيدق
-  </div>
+  <div style="font-size:8.5pt;line-height:1.8"><strong>المملكة المغربية</strong><br>الوكالة الوطنية للمياه والغابات<br>المديرية الجهوية طنجة-تطوان-الحسيمة<br>المديرية الإقليمية تطوان<br>مركز حماية الغابات المضيق-الفنيدق</div>
+  <div style="text-align:center;padding:0 10px"><div class="logo-circle">ANEF</div><div style="font-size:7pt;color:#555">الوكالة الوطنية<br>للمياه والغابات</div></div>
+  <div style="text-align:left;direction:ltr;font-size:8.5pt;line-height:1.8"><strong>Royaume du Maroc</strong><br>Agence Nationale des Eaux et Forêts<br>Direction Régionale TTH<br>Direction Provinciale de Tétouan<br>Centre de Protection des Forêts<br>M'diq-Fnideq</div>
 </div>
 <div class="title">تقرير تحليل التداخل مع الملك الغابوي</div>
 <table><tr><th colspan="2">معلومات عامة — Informations générales</th></tr>
@@ -462,11 +405,6 @@ function buildFicheHTML(c: FicheConfig): string {
   <div class="col-left">
     <div class="header-row">
       <div style="font-size:9pt;line-height:1.7"><strong>DRANEF : TTH</strong><br><strong>DPANEF : Tétouan</strong><br><strong>CPF : M'diq-Fnideq</strong><br><strong>BM : M'diq-Fnideq</strong></div>
-      <div style="text-align:center;flex:1">
-        <img src="/images/logo-anef.png" alt="ANEF" style="height:52px;width:auto;display:block;margin:0 auto 3px"
-             onerror="this.style.display='none'"/>
-        <div style="font-size:7pt;font-weight:bold;color:#166534">AGENCE NATIONALE DES EAUX ET FORÊTS</div>
-      </div>
       <div style="font-size:9pt;text-align:right;line-height:1.7">N° <strong>${c.numero||'___'}</strong><br>Le, <strong>${c.date||''}</strong><br>Réf : Envoi CPF n°<strong>${c.refEnvoi||'___'}</strong></div>
     </div>
     <h2>- RÉQUISITION DE LA DÉLIMITATION OU D'IMMATRICULATION -<br><span style="font-size:10pt">- FICHE DE RECONNAISSANCE -</span></h2>
@@ -749,9 +687,9 @@ function buildAttestationHTML(cfg: AttestConfig): string {
   const chk = (val: string, opt: string) =>
     `<span style="display:inline-block;width:13px;height:13px;border:1.5px solid #333;border-radius:2px;background:${val===opt?'#166534':'white'};margin-left:4px;vertical-align:middle"></span>`;
   const pointsRows = cfg.coordPoints.filter(p => p.x||p.y).map(p =>
-    `<tr><td style="border:1px solid #999;padding:3px 8px;text-align:center;font-size:9pt;font-weight:bold">B${p.num}</td>
-     <td style="border:1px solid #999;padding:3px 8px;text-align:center;font-size:9pt;direction:ltr;font-family:monospace">${p.x ? Number(p.x).toLocaleString('fr-FR', {minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td>
-     <td style="border:1px solid #999;padding:3px 8px;text-align:center;font-size:9pt;direction:ltr;font-family:monospace">${p.y ? Number(p.y).toLocaleString('fr-FR', {minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td></tr>`).join('');
+    `<tr><td style="border:1px solid #999;padding:3px 8px;text-align:center;font-size:9pt">${p.num}</td>
+     <td style="border:1px solid #999;padding:3px 8px;text-align:center;font-size:9pt;direction:ltr">${p.x||'—'}</td>
+     <td style="border:1px solid #999;padding:3px 8px;text-align:center;font-size:9pt;direction:ltr">${p.y||'—'}</td></tr>`).join('');
 
   const rapporteursSig = cfg.rapporteurs.length > 0
     ? cfg.rapporteurs.map(r => `<td style="border:1px solid #555;padding:6px 8px;text-align:center;font-size:8.5pt;vertical-align:top;height:70px"><strong>${r}</strong></td>`).join('')
@@ -763,12 +701,7 @@ function buildAttestationHTML(cfg: AttestConfig): string {
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'Arial',sans-serif;font-size:10pt;color:#111;direction:rtl}
   .page{width:210mm;min-height:297mm;padding:12mm 15mm 10mm;margin:auto;background:#fff}
-  .header{text-align:center;margin-bottom:12px;padding-bottom:10px;border-bottom:2px solid #166534}
-  .header-logo{height:68px;width:auto;display:block;margin:0 auto 5px}
-  .header-agency-ar{font-size:9.5pt;font-weight:bold;color:#111;margin-bottom:1px}
-  .header-agency-ama{font-size:7pt;color:#666;letter-spacing:0.5px;margin-bottom:1px}
-  .header-agency-fr{font-size:8pt;color:#166534;font-weight:bold;margin-bottom:8px}
-  .header-hierarchy{font-size:8pt;line-height:1.9;color:#222}
+  .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;font-size:7.5pt;line-height:1.7}
   .title{text-align:center;font-size:14pt;font-weight:bold;text-decoration:underline;margin:12px 0 14px}
   .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:10px}
   .field{margin-bottom:5px;font-size:9.5pt}
@@ -787,23 +720,19 @@ function buildAttestationHTML(cfg: AttestConfig): string {
 </style>
 </head><body><div class="page">
   <div class="header">
-    <img src="/images/logo-anef.png" alt="ANEF" class="header-logo"
-         onerror="this.style.display='none'"/>
-    <div class="header-agency-ar">الوكالة الوطنية للمياه والغابات</div>
-    <div class="header-agency-ama">ⵜⴰⵎⴰⵡⴰⵙⵜ ⵜⴰⵏⴰⵎⵓⵔⵜ ⵏ ⵉⵎⴰⵏ ⴷ ⵉⵖⵔⵎⴰⵏ</div>
-    <div class="header-agency-fr">AGENCE NATIONALE DES EAUX ET FORÊTS</div>
-    <div class="header-hierarchy">
-      المديرية الجهوية للوكالة الوطنية للمياه والغابات طنجة-تطوان-الحسيمة<br/>
-      المديرية الإقليمية للوكالة الوطنية للمياه والغابات لتطوان<br/>
-      مركز حماية الغابات للمضيق-الفنيدق
+    <div style="flex:1;line-height:1.8">المملكة المغربية<br/>الوكالة الوطنية للمياه والغابات<br/>المديرية الجهوية طنجة-تطوان-الحسيمة<br/>المديرية الإقليمية تطوان<br/>مركز حماية الغابات المضيق-الفنيدق</div>
+    <div style="text-align:center;padding:0 12px;flex-shrink:0">
+      <img src="/images/logo-anef.png" alt="ANEF" style="height:60px;width:auto" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/>
+      <div style="display:none;width:60px;height:60px;border:2px solid #166534;border-radius:50%;align-items:center;justify-content:center;margin:0 auto 4px;font-size:7pt;font-weight:bold;color:#166534;text-align:center;flex-shrink:0">ANEF</div>
+      <div style="font-size:7pt;color:#555;line-height:1.4;margin-top:4px">الوكالة الوطنية للمياه والغابات<br/>Agence Nationale des Eaux et Forêts</div>
     </div>
+    <div style="text-align:left;direction:ltr;font-size:7.5pt;flex:1;line-height:1.8">Royaume du Maroc<br/>Agence Nationale des Eaux et Forêts<br/>Direction Régionale Tanger-Tétouan-Al Hoceima<br/>Direction Provinciale de Tétouan<br/>Centre de Protection des Forêts: ${cfg.cpf||"M'diq-Fnideq"}</div>
   </div>
   <div class="title">بطاقة معاينة حول إنتفاء الصبغة الغابوية</div>
   <div class="two-col">
     <div>
-      <div class="field"><span class="field-label">اسم العقار: </span><span class="uline">${cfg.foret||''}</span>${cfg.foretAr ? ` &nbsp;/&nbsp; <span class="uline">${cfg.foretAr}</span>` : ''}</div>
-      <div class="field"><span class="field-label">القسم الغابوي: </span><span class="uline">${cfg.canton||''}</span></div>
-      <div class="field"><span class="field-label">المرجع: </span><span class="ref-box">${cfg.referenceParcel||'&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;'}</span></div>
+      <div class="field"><span class="field-label">اسم العقار: </span><span class="uline">${cfg.foret||''}</span>${cfg.foretAr ? ` / <span class="uline">${cfg.foretAr}</span>` : ''}</div>
+      <div class="field"><span class="field-label">المرجع: </span><span class="ref-box">${cfg.referenceParcel||'...... م ح غ / م ف'}</span></div>
       <div class="field"><span class="field-label">الجماعة: </span><span class="uline">${cfg.commune||''}</span></div>
       <div class="field"><span class="field-label">قيادة: </span><span class="uline">${cfg.qiada||''}</span></div>
       <div class="field"><span class="field-label">اسم صاحب العقار: </span><span class="uline">${cfg.nomProprietaire||''}</span></div>
@@ -870,7 +799,7 @@ export function AttestationModal({ onClose, forestData, communesData, importedLa
     ? [...new Set(forestData.features.filter((f: any) => f.properties?.FORET === c.foret).map((f: any) => f.properties?.CANTON || '').filter(Boolean))].sort() as string[]
     : [];
   const communes: string[] = communesData?.features
-    ? ([...new Set(communesData.features.map((f: any) => f.properties?.NomAr || f.properties?.NomFr || '').filter(Boolean))] as string[]).sort((a, b) => a.localeCompare(b, 'ar'))
+    ? [...new Set(communesData.features.map((f: any) => f.properties?.NomAr || f.properties?.NomFr || '').filter(Boolean))].sort() as string[]
     : [];
 
   // Auto-fill from chevauchementResult
@@ -919,12 +848,6 @@ export function AttestationModal({ onClose, forestData, communesData, importedLa
       {chevauchementResult && (
         <div className="mb-2">
           <ChevauchementInlinePanel result={chevauchementResult} />
-        </div>
-      )}
-      {importedLayer && (
-        <div className="text-[10px] text-[var(--brand)] bg-[var(--brand)]/5 border border-[var(--brand)]/20 rounded-lg px-3 py-1.5 mb-1 flex items-center gap-2" style={{direction:'rtl'}}>
-          <span>✓</span>
-          <span>تم ملء المساحة والإحداثيات تلقائياً من طبقة: <strong>{importedLayer.name}</strong></span>
         </div>
       )}
 
@@ -983,7 +906,7 @@ export function AttestationModal({ onClose, forestData, communesData, importedLa
         <div className="space-y-2">
           {c.coordPoints.map((pt, i) => (
             <div key={i} className="flex gap-2 items-center">
-              <span className="text-[10px] text-[var(--text-muted)] w-8 shrink-0 text-center font-mono font-bold bg-[var(--bg-main)] border border-[var(--border-color)] rounded px-1 py-1">B{pt.num}</span>
+              <span className="text-[10px] text-[var(--text-muted)] w-5 shrink-0 text-center font-mono font-bold">{pt.num}</span>
               <input value={pt.x} onChange={e => updatePoint(i,'x',e.target.value)} placeholder="X Lambert" className={`${inp} flex-1`} />
               <input value={pt.y} onChange={e => updatePoint(i,'y',e.target.value)} placeholder="Y Lambert" className={`${inp} flex-1`} />
             </div>
