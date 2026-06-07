@@ -1,6 +1,9 @@
 // src/views/DomaineForestier/DomaineForestier.tsx
 import React, { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Polygon, useMapEvents, useMap, ZoomControl, Tooltip, LayersControl, Marker, FeatureGroup, Popup, GeoJSON, ScaleControl } from 'react-leaflet';
+import {
+  MapContainer, TileLayer, Polygon, useMapEvents, useMap,
+  Tooltip, LayersControl, FeatureGroup, Popup, ScaleControl,
+} from 'react-leaflet';
 import * as turf from '@turf/turf';
 import L from 'leaflet';
 (window as any).L = L;
@@ -16,43 +19,56 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
 import {
   FicheModal, AttestationModal, ExpertiseModal, ChevauchementModal,
-  ChevauchementInlinePanel, runChevauchementAnalysis,
+  runChevauchementAnalysis,
 } from './DocumentModals';
 import type { ChevauchementResult } from './DocumentModals';
 import proj4 from 'proj4';
 
-// Define Lambert Nord Maroc (EPSG:26191)
 proj4.defs("EPSG:26191", "+proj=lcc +lat_1=33.3 +lat_0=33.3 +lon_0=-5.4 +k_0=0.999625769 +x_0=500000 +y_0=300000 +a=6378249.2 +b=6356515 +towgs84=31,146,47,0,0,0,0 +units=m +no_defs");
 
 import icon from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 
 let DefaultIcon = L.icon({
-    iconUrl: icon, shadowUrl: iconShadow,
-    iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34],
-    tooltipAnchor: [16, -28], shadowSize: [41, 41]
+  iconUrl: icon, shadowUrl: iconShadow,
+  iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34],
+  tooltipAnchor: [16, -28], shadowSize: [41, 41],
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
 import {
-  FileText, Search, Map as MapIcon, Layers, ChevronRight, ChevronLeft, X, User,
-  Target, Crosshair, Upload, Download, Eye, EyeOff, LayoutTemplate,
-  PlusSquare, Trash2, Maximize, AlertCircle, ShieldAlert,
-  Ruler, Printer, Share2, MapPin, MousePointer2, Settings, DownloadCloud, Palette,
-  PanelRightOpen, ChevronDown, Menu, Navigation, Plus, Minus, LocateFixed, Hammer, Wrench, Scissors, Combine, Circle, Square, Triangle
+  FileText, Search, Layers, ChevronRight, ChevronLeft, X,
+  Target, Upload, Eye, EyeOff, LayoutTemplate,
+  Trash2, Maximize, Palette, Printer,
+  Menu, Navigation, Plus, Minus, LocateFixed, Wrench, Combine,
+  Circle, Square, Triangle, Settings, MapPin, MousePointer2,
+  Zap,
 } from 'lucide-react';
 import { ViewState } from '../../types';
 import { cn } from '../../lib/utils';
 
-const { BaseLayer, Overlay } = LayersControl;
+const { BaseLayer } = LayersControl;
 
+// ─── Custom Marker Icon ───────────────────────────────────────────────────────
 const customIcon = new L.Icon({
   iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
   iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-  iconSize: [25, 41], iconAnchor: [12, 41]
+  iconSize: [25, 41], iconAnchor: [12, 41],
 });
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+type TabId = 'couches' | 'recherche' | 'geotools' | 'documents';
+interface DomaineForestierProps { setCurrentView?: (view: ViewState) => void; }
+export interface MapLayer {
+  id: string; name: string; type: string; visible: boolean; color: string;
+  areaCoords?: [number, number][]; geojson?: any; leafletLayer?: any;
+}
+
+// ─── Module-level GeoJSON data store ─────────────────────────────────────────
+const _officialGeoData: Record<string, any> = {};
+
+// ─── Map helper components (unchanged) ───────────────────────────────────────
 function MapResizeHandler() {
   const map = useMap();
   useEffect(() => {
@@ -62,17 +78,6 @@ function MapResizeHandler() {
     return () => observer.disconnect();
   }, [map]);
   return null;
-}
-
-type TabId = 'couches' | 'recherche' | 'geotools' | 'documents';
-
-interface DomaineForestierProps {
-  setCurrentView?: (view: ViewState) => void;
-}
-
-export interface MapLayer {
-  id: string; name: string; type: string; visible: boolean; color: string;
-  areaCoords?: [number, number][]; geojson?: any; leafletLayer?: any;
 }
 
 const MeasureSetup = () => {
@@ -128,21 +133,16 @@ const GeomanSetup = ({ setCustomLayers }: { setCustomLayers: any }) => {
         setCustomLayers((prev: any) => [...prev, { id, name: `Couche dessinée (${typeName})`, type: 'drawn', visible: true, color: '#3388ff', leafletLayer: layer }]);
       } catch (err) { console.error("Error creating layer", err); }
     };
-
     const handleRemove = (e: any) => {
       const id = `drawn-${L.stamp(e.layer)}`;
       setCustomLayers((prev: any) => prev.filter((l: any) => l.id !== id));
     };
-
     map.on('pm:create', handleCreate);
     map.on('pm:remove', handleRemove);
     return () => { map.pm.removeControls(); map.off('pm:create', handleCreate); map.off('pm:remove', handleRemove); };
   }, [map, setCustomLayers]);
   return null;
 };
-
-// Module-level GeoJSON data store
-const _officialGeoData: Record<string, any> = {};
 
 const MapEvents = ({ setCoords, onIdentify }: { setCoords: any; onIdentify?: (latlng: any, results: any[]) => void }) => {
   useMapEvents({
@@ -175,7 +175,7 @@ const MapEvents = ({ setCoords, onIdentify }: { setCoords: any; onIdentify?: (la
   return null;
 };
 
-const MapCenterUpdater = ({ mapTargetCenter, setMapTargetCenter }: { mapTargetCenter: any, setMapTargetCenter: any }) => {
+const MapCenterUpdater = ({ mapTargetCenter, setMapTargetCenter }: { mapTargetCenter: any; setMapTargetCenter: any }) => {
   const map = useMap();
   useEffect(() => {
     if (mapTargetCenter) { map.setView(mapTargetCenter, 14); setMapTargetCenter(null); }
@@ -186,7 +186,7 @@ const MapCenterUpdater = ({ mapTargetCenter, setMapTargetCenter }: { mapTargetCe
     return () => window.removeEventListener('mapCenterExtent', handle);
   }, [map]);
   useEffect(() => {
-    const handle = (e: Event) => { const bounds = (e as CustomEvent).detail; if (bounds) map.fitBounds(bounds, { padding: [20,20], maxZoom: 16 }); };
+    const handle = (e: Event) => { const bounds = (e as CustomEvent).detail; if (bounds) map.fitBounds(bounds, { padding: [20, 20], maxZoom: 16 }); };
     window.addEventListener('flyToBounds', handle);
     return () => window.removeEventListener('flyToBounds', handle);
   }, [map]);
@@ -215,20 +215,19 @@ const CustomMapEventsHandler = ({ setCustomLayers }: { setCustomLayers: any }) =
   useEffect(() => {
     const handleZoomIn  = () => map.zoomIn();
     const handleZoomOut = () => map.zoomOut();
-
     const executeSearchObject = (data: any) => {
       const lat = parseFloat(data.lat), lon = parseFloat(data.lon);
       if (data.boundingbox) {
-        map.fitBounds([[parseFloat(data.boundingbox[0]), parseFloat(data.boundingbox[2])],[parseFloat(data.boundingbox[1]), parseFloat(data.boundingbox[3])]]);
+        map.fitBounds([[parseFloat(data.boundingbox[0]), parseFloat(data.boundingbox[2])], [parseFloat(data.boundingbox[1]), parseFloat(data.boundingbox[3])]]);
       } else if (data._bounds) {
-        map.fitBounds(data._bounds, { padding: [20,20], maxZoom: 15 });
+        map.fitBounds(data._bounds, { padding: [20, 20], maxZoom: 15 });
       } else {
         map.flyTo([lat, lon], 14);
       }
       if ((map as any)._searchMarker) map.removeLayer((map as any)._searchMarker);
       const popupDiv = document.createElement('div');
       popupDiv.className = 'p-1 min-w-[200px]';
-      popupDiv.innerHTML = `<h4 class="font-bold text-sm mb-1 text-stone-800">${data.display_name||'Point'}</h4>
+      popupDiv.innerHTML = `<h4 class="font-bold text-sm mb-1 text-stone-800">${data.display_name || 'Point'}</h4>
         <p class="text-xs text-stone-500 mb-3 font-mono">Lat: ${lat.toFixed(6)}<br/>Lng: ${lon.toFixed(6)}</p>
         <div class="flex gap-2">
           <button id="btn-keep-marker" class="flex-1 px-2 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold rounded shadow-sm">Conserver</button>
@@ -240,12 +239,11 @@ const CustomMapEventsHandler = ({ setCustomLayers }: { setCustomLayers: any }) =
         marker.closePopup();
         delete (map as any)._searchMarker;
         const id = `search-${Date.now()}`;
-        setCustomLayers((prev: any) => [...prev, { id, name: `Recherche: ${data.display_name?.substring(0,20)||'Point'}`, type: 'drawn', visible: true, color: '#10b981', leafletLayer: marker }]);
+        setCustomLayers((prev: any) => [...prev, { id, name: `Recherche: ${data.display_name?.substring(0, 20) || 'Point'}`, type: 'drawn', visible: true, color: '#10b981', leafletLayer: marker }]);
       });
       popupDiv.querySelector('#btn-remove-marker')?.addEventListener('click', () => { map.removeLayer(marker); delete (map as any)._searchMarker; });
       (map as any)._searchMarker = marker;
     };
-
     const handleSearchEvent = (e: any) => { if (e.detail?.lat) executeSearchObject(e.detail); };
     const handleSearchString = async (e: any) => {
       const query = e.detail; if (!query) return;
@@ -257,20 +255,23 @@ const CustomMapEventsHandler = ({ setCustomLayers }: { setCustomLayers: any }) =
     };
     const handleLocateUser = () => {
       if (!navigator.geolocation) { alert("Géolocalisation non supportée."); return; }
-      navigator.geolocation.getCurrentPosition((position) => {
-        const { latitude, longitude, accuracy } = position.coords;
-        map.flyTo([latitude, longitude], 17, { duration: 1 });
-        if ((map as any)._userLocationMarker) map.removeLayer((map as any)._userLocationMarker);
-        if ((map as any)._userLocationCircle) map.removeLayer((map as any)._userLocationCircle);
-        const userIcon = L.divIcon({ className:'user-location-marker', html:`<div style="width:16px;height:16px;background-color:#3b82f6;border-radius:50%;border:2px solid white;box-shadow:0 0 10px rgba(0,0,0,0.3)"></div>`, iconSize:[16,16], iconAnchor:[8,8] });
-        const marker = L.marker([latitude, longitude], { icon: userIcon }).addTo(map);
-        const circle = L.circle([latitude, longitude], { radius: accuracy, color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.15 }).addTo(map);
-        marker.bindTooltip("Votre Position", { permanent: false, direction: "top", offset: [0,-10] });
-        (map as any)._userLocationMarker = marker;
-        (map as any)._userLocationCircle = circle;
-      }, (err) => { alert("Erreur de géolocalisation: " + err.message); }, { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 });
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude, accuracy } = position.coords;
+          map.flyTo([latitude, longitude], 17, { duration: 1 });
+          if ((map as any)._userLocationMarker) map.removeLayer((map as any)._userLocationMarker);
+          if ((map as any)._userLocationCircle) map.removeLayer((map as any)._userLocationCircle);
+          const userIcon = L.divIcon({ className: 'user-location-marker', html: `<div style="width:16px;height:16px;background-color:#3b82f6;border-radius:50%;border:2px solid white;box-shadow:0 0 10px rgba(0,0,0,0.3)"></div>`, iconSize: [16, 16], iconAnchor: [8, 8] });
+          const marker = L.marker([latitude, longitude], { icon: userIcon }).addTo(map);
+          const circle = L.circle([latitude, longitude], { radius: accuracy, color: '#3b82f6', weight: 1, fillColor: '#3b82f6', fillOpacity: 0.15 }).addTo(map);
+          marker.bindTooltip("Votre Position", { permanent: false, direction: "top", offset: [0, -10] });
+          (map as any)._userLocationMarker = marker;
+          (map as any)._userLocationCircle = circle;
+        },
+        (err) => { alert("Erreur de géolocalisation: " + err.message); },
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 },
+      );
     };
-
     window.addEventListener('locateUser', handleLocateUser);
     window.addEventListener('zoomIn', handleZoomIn);
     window.addEventListener('zoomOut', handleZoomOut);
@@ -287,12 +288,34 @@ const CustomMapEventsHandler = ({ setCustomLayers }: { setCustomLayers: any }) =
   return null;
 };
 
+// ─── Utility: detect province from geojson centroid ──────────────────────────
+function detectProvinceFromGeojson(geojson: any): string | null {
+  if (!_officialGeoData.provinces?.features) return null;
+  try {
+    const centroid = turf.centroid(geojson);
+    const PRIORITY = ['M\'diq-Fnideq', 'Fnideq', 'M\'diq', 'Tétouan', 'Tetouan', 'Mdiq'];
+    const matches: { name: string; priority: number }[] = [];
+    for (const feat of _officialGeoData.provinces.features) {
+      if (turf.booleanPointInPolygon(centroid, feat)) {
+        const name = feat.properties?.Nom__Fr || feat.properties?.NomFr || '';
+        const priority = PRIORITY.findIndex(p => name.toLowerCase().includes(p.toLowerCase()));
+        matches.push({ name, priority: priority === -1 ? 99 : priority });
+      }
+    }
+    if (matches.length === 0) return null;
+    matches.sort((a, b) => a.priority - b.priority);
+    return matches[0].name;
+  } catch { return null; }
+}
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ═══════════════════════════════════════════════════════════════════════════════
 
 export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>('couches');
-  const [coords, setCoords] = useState<{ lat: number, lng: number }>({ lat: 35.624793, lng: -5.329056 });
+  const [coords, setCoords] = useState<{ lat: number; lng: number }>({ lat: 35.624793, lng: -5.329056 });
   const [identifyPanel, setIdentifyPanel] = useState<{
     latlng: { lat: number; lng: number };
     results: Array<{ key: string; label: string; color: string; properties: Record<string, any> }>;
@@ -311,79 +334,63 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
   const featureGroupRef = useRef<L.FeatureGroup>(null);
   const searchTimeoutRef = useRef<any>(null);
 
-  // ── NEW: chevauchement state ──────────────────────────────────────────────
-  const [chevauchementResult, setChevauchementResult] = useState<ChevauchementResult | null>(null);
-  const [lastImportedLayer, setLastImportedLayer] = useState<{ name: string; geojson: any } | null>(null);
+  // ── Per-layer chevauchement results ──────────────────────────────────────
+  const [chevauchementResults, setChevauchementResults] = useState<Record<string, ChevauchementResult>>({});
 
-  // ── Enhanced search: local GIS first, then Nominatim ─────────────────────
+  // ── Last imported layer for document generation ───────────────────────────
+  const [lastImportedLayer, setLastImportedLayer] = useState<{
+    id: string; name: string; geojson: any;
+    chevauchement: ChevauchementResult | null;
+    province?: string | null;
+  } | null>(null);
+
+  const [customLayers, setCustomLayers] = useState<any[]>([]);
+
+  // ── Enhanced search ───────────────────────────────────────────────────────
   const fetchSearchResults = async (query: string) => {
     if (!query.trim()) { setSearchResults([]); setShowDropdown(false); return; }
     setIsSearching(true);
     try {
       const q = query.toLowerCase();
       const localResults: any[] = [];
-
-      // Search forest layer
       if (_officialGeoData.forest?.features) {
         for (const feat of _officialGeoData.forest.features) {
           const p = feat.properties || {};
-          const foret = (p.FORET || '').toLowerCase();
-          const canton = (p.CANTON || '').toLowerCase();
-          if (foret.includes(q) || canton.includes(q)) {
+          if ((p.FORET || '').toLowerCase().includes(q) || (p.CANTON || '').toLowerCase().includes(q)) {
             try {
               const centroid = turf.centroid(feat);
               const [lng, lat] = centroid.geometry.coordinates;
               const bounds = turf.bbox(feat);
-              localResults.push({
-                display_name: `🌲 ${p.FORET}${p.CANTON ? ' — ' + p.CANTON : ''}`,
-                lat: String(lat), lon: String(lng),
-                _bounds: [[bounds[1],bounds[0]],[bounds[3],bounds[2]]],
-                _local: true, _type: 'forest'
-              });
+              localResults.push({ display_name: `🌲 ${p.FORET}${p.CANTON ? ' — ' + p.CANTON : ''}`, lat: String(lat), lon: String(lng), _bounds: [[bounds[1], bounds[0]], [bounds[3], bounds[2]]], _local: true });
             } catch {}
             if (localResults.length >= 4) break;
           }
         }
       }
-
-      // Search communes layer
       if (_officialGeoData.communes?.features) {
         for (const feat of _officialGeoData.communes.features) {
           const p = feat.properties || {};
-          const nomFr = (p.NomFr || '').toLowerCase();
-          const nomAr = (p.NomAr || '').toLowerCase();
-          if (nomFr.includes(q) || nomAr.includes(q)) {
+          if ((p.NomFr || '').toLowerCase().includes(q) || (p.NomAr || '').toLowerCase().includes(q)) {
             try {
               const centroid = turf.centroid(feat);
               const [lng, lat] = centroid.geometry.coordinates;
               const bounds = turf.bbox(feat);
-              localResults.push({
-                display_name: `🏘 ${p.NomFr || ''}${p.NomAr ? ' / ' + p.NomAr : ''}`,
-                lat: String(lat), lon: String(lng),
-                _bounds: [[bounds[1],bounds[0]],[bounds[3],bounds[2]]],
-                _local: true, _type: 'commune'
-              });
+              localResults.push({ display_name: `🏘 ${p.NomFr || ''}${p.NomAr ? ' / ' + p.NomAr : ''}`, lat: String(lat), lon: String(lng), _bounds: [[bounds[1], bounds[0]], [bounds[3], bounds[2]]], _local: true });
             } catch {}
             if (localResults.length >= 6) break;
           }
         }
       }
-
-      // Nominatim for non-local results
       let nominatimResults: any[] = [];
       try {
         const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&addressdetails=1`);
         nominatimResults = await res.json() || [];
       } catch {}
-
       const combined = [...localResults, ...nominatimResults].slice(0, 8);
       setSearchResults(combined);
       setShowDropdown(combined.length > 0);
-    } catch (err) {
-      console.error("Search error", err);
-    } finally {
-      setIsSearching(false);
-    }
+    } catch (err) { console.error("Search error", err); }
+    finally { setIsSearching(false); }
   };
 
   const onSearchInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -407,39 +414,57 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     }
   };
 
-  const [customLayers, setCustomLayers] = useState<any[]>([]);
-
   const calcLambert = (lat: number, lng: number) => {
-    const projected = proj4('EPSG:4326', 'EPSG:26191', [lng, lat]);
-    return { x: projected[0].toFixed(2), y: projected[1].toFixed(2) };
+    const p = proj4('EPSG:4326', 'EPSG:26191', [lng, lat]);
+    return { x: p[0].toFixed(2), y: p[1].toFixed(2) };
   };
   const calcLngLatFromLambert = (x: number, y: number) => {
-    const projected = proj4('EPSG:26191', 'EPSG:4326', [x, y]);
-    return { lng: projected[0], lat: projected[1] };
+    const p = proj4('EPSG:26191', 'EPSG:4326', [x, y]);
+    return { lng: p[0], lat: p[1] };
   };
 
-  // ── onLayerImported callback ──────────────────────────────────────────────
-  const handleLayerImported = (name: string, geojson: any) => {
-    setLastImportedLayer({ name, geojson });
-    if (_officialGeoData.forest) {
+  // ── Layer imported: run chevauchement, auto-load forest if needed ──────────
+  const handleLayerImported = (layerId: string, name: string, geojson: any) => {
+    const runAnalysis = (forestData: any) => {
+      let chev: ChevauchementResult | null = null;
       try {
-        const result = runChevauchementAnalysis(geojson, _officialGeoData.forest, name);
-        setChevauchementResult(result);
-      } catch (e) {
-        console.warn('[Chevauchement] Could not run analysis:', e);
-        setChevauchementResult(null);
-      }
+        chev = runChevauchementAnalysis(geojson, forestData, name);
+        setChevauchementResults(prev => ({ ...prev, [layerId]: chev! }));
+      } catch (e) { console.warn('[Chevauchement]', e); }
+      const province = detectProvinceFromGeojson(geojson);
+      setLastImportedLayer({ id: layerId, name, geojson, chevauchement: chev, province });
+    };
+
+    if (_officialGeoData.forest) {
+      runAnalysis(_officialGeoData.forest);
+    } else {
+      setLastImportedLayer({ id: layerId, name, geojson, chevauchement: null, province: detectProvinceFromGeojson(geojson) });
+      // Auto-load forest and run analysis
+      fetch('/assets/data/forest_limits.json')
+        .then(r => r.json())
+        .then(forestData => {
+          _officialGeoData.forest = forestData;
+          runAnalysis(forestData);
+        })
+        .catch(() => console.warn('[AutoForestLoad] Failed'));
     }
   };
 
+  const handleLayerDeleted = (id: string) => {
+    setChevauchementResults(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    if (lastImportedLayer?.id === id) setLastImportedLayer(null);
+  };
+
+  // ─── RENDER ────────────────────────────────────────────────────────────────
   return (
     <div className="flex w-full h-full font-sans bg-[var(--bg-main)] flex-col md:flex-row">
-      {/* Main Map Area */}
+      {/* ── Map Area ── */}
       <div className="relative bg-[#121214] border-b md:border-b-0 md:border-r border-[var(--border-color)] overflow-hidden h-[35vh] md:h-full md:flex-1 shrink-0 z-10 md:shrink">
-        <MapContainer
-          center={[35.6, -5.35]} zoom={12} zoomControl={false}
-          className="h-full w-full cursor-crosshair outline-none bg-[#e5e7eb]"
-        >
+        <MapContainer center={[35.6, -5.35]} zoom={12} zoomControl={false} className="h-full w-full cursor-crosshair outline-none bg-[#e5e7eb]">
           <MapResizeHandler />
           <LayersControl position="topright">
             <BaseLayer name="Satellite (Google)">
@@ -456,19 +481,16 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
             </BaseLayer>
           </LayersControl>
 
-          {/* Render static polygon layers */}
           {customLayers.filter((l: any) => l.visible && l.type === 'static_polygon' && l.areaCoords).map((layer: any) => {
             const mockGeoJSON = turf.polygon([[...layer.areaCoords, layer.areaCoords[0]]] as any);
             const area = turf.area(mockGeoJSON);
-            const currentOpacity = layer.opacity ?? 1;
+            const op = layer.opacity ?? 1;
             return (
-              <Polygon key={layer.id} positions={layer.areaCoords}
-                pathOptions={{ color: layer.color, fillColor: layer.color, opacity: currentOpacity, fillOpacity: currentOpacity * 0.4, weight: 2 }}>
-                <Tooltip sticky className="custom-tooltip">{layer.name}</Tooltip>
+              <Polygon key={layer.id} positions={layer.areaCoords} pathOptions={{ color: layer.color, fillColor: layer.color, opacity: op, fillOpacity: op * 0.4, weight: 2 }}>
+                <Tooltip sticky>{layer.name}</Tooltip>
                 <Popup>
-                  <div style={{ maxHeight: '250px', overflowY: 'auto' }}>
-                    <b style={{ fontSize: '14px', display: 'block', marginBottom: '8px', borderBottom: '1px solid #eee', paddingBottom: '4px' }}>{layer.name}</b>
-                    <b>Géométrie (Polygone)</b><br/>
+                  <div style={{ maxHeight: 250, overflowY: 'auto' }}>
+                    <b style={{ fontSize: 14, display: 'block', marginBottom: 8, borderBottom: '1px solid #eee', paddingBottom: 4 }}>{layer.name}</b>
                     {area < 10000 ? <>Surface: {area.toFixed(2)} m²<br/></> : <>Surface: {(area/10000).toFixed(2)} Ha<br/></>}
                     Périmètre: {turf.length(mockGeoJSON, { units: 'kilometers' }).toFixed(2)} km
                   </div>
@@ -489,7 +511,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 
         {/* Identify Panel */}
         {identifyPanel && identifyPanel.results.length > 0 && (
-          <div className="absolute bottom-10 left-4 z-[1001] w-72 md:w-80 pointer-events-auto animate-in slide-in-from-bottom-2 duration-200">
+          <div className="absolute bottom-10 left-4 z-[1001] w-72 md:w-80 pointer-events-auto">
             <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-zinc-200 dark:border-zinc-700 overflow-hidden">
               <div className="flex items-center justify-between px-3 py-2 bg-zinc-50 dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700">
                 <div className="flex items-center gap-2">
@@ -525,7 +547,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
           </div>
         )}
 
-        {/* Google Maps style Search Bar */}
+        {/* Search Bar */}
         <div className="absolute top-4 left-1/2 -translate-x-1/2 md:left-6 md:translate-x-0 z-[1000] pointer-events-auto w-[90vw] md:w-[380px]">
           <div className="flex items-center bg-white rounded-full shadow-[0_2px_8px_rgba(0,0,0,0.2)] pl-3 pr-2 py-2 w-full">
             <button className="p-2 text-gray-700 hover:text-black transition-colors rounded-full hover:bg-gray-100 mr-2"><Menu className="size-5" /></button>
@@ -534,36 +556,30 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
               value={searchQuery} onChange={onSearchInputChange}
               onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleMapSearch(); } }}
               onFocus={() => { if (searchResults.length > 0) setShowDropdown(true); }}
-              className="flex-1 bg-transparent px-1 text-[15px] font-medium text-gray-800 placeholder-gray-500 outline-none w-full"
+              className="flex-1 bg-transparent px-1 text-[15px] font-medium text-gray-800 placeholder-gray-500 outline-none"
             />
             {isSearching && <div className="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin mr-1" />}
             {searchQuery && !isSearching && (
-              <button onClick={() => { setSearchQuery(''); setSearchResults([]); setShowDropdown(false); }} className="p-1.5 text-gray-400 hover:text-gray-700">
-                <X className="size-4" />
-              </button>
+              <button onClick={() => { setSearchQuery(''); setSearchResults([]); setShowDropdown(false); }} className="p-1.5 text-gray-400 hover:text-gray-700"><X className="size-4" /></button>
             )}
             <button onClick={() => handleMapSearch()} className="p-2 text-gray-600 hover:text-gray-900"><Search className="size-5" /></button>
-            <div className="w-[1px] h-6 bg-gray-300 mx-1"></div>
-            <button className="p-2 text-blue-600 hover:bg-blue-50 rounded-full" title="Itinéraire / Actions Spatiales">
+            <div className="w-[1px] h-6 bg-gray-300 mx-1" />
+            <button className="p-2 text-blue-600 hover:bg-blue-50 rounded-full" title="Itinéraire">
               <Navigation className="size-5" style={{ transform: 'rotate(45deg)' }} />
             </button>
           </div>
           {showDropdown && searchResults.length > 0 && (
             <div className="absolute top-[calc(100%+8px)] left-0 right-0 bg-white rounded-xl shadow-xl border border-gray-100 overflow-hidden z-[1001]">
               {searchResults.map((result: any, i: number) => {
-                const isLocal = result._local;
                 const parts = result.display_name.split(',');
-                const title = parts[0];
-                const subtitle = parts.slice(1).join(',').trim();
                 return (
-                  <div key={i} onClick={() => handleMapSearch(result)}
-                    className="flex items-start gap-3 p-3 hover:bg-gray-50 cursor-pointer border-b border-gray-50 last:border-0">
-                    <MapPin className={`size-5 mt-0.5 shrink-0 ${isLocal ? 'text-emerald-500' : 'text-gray-400'}`} />
+                  <div key={i} onClick={() => handleMapSearch(result)} className="flex items-start gap-3 p-3 hover:bg-gray-50 cursor-pointer border-b border-gray-50 last:border-0">
+                    <MapPin className={`size-5 mt-0.5 shrink-0 ${result._local ? 'text-emerald-500' : 'text-gray-400'}`} />
                     <div className="flex flex-col flex-1 overflow-hidden">
-                      <span className="text-sm font-medium text-gray-800 truncate">{title}</span>
-                      {subtitle && <span className="text-xs text-gray-500 truncate">{subtitle}</span>}
+                      <span className="text-sm font-medium text-gray-800 truncate">{parts[0]}</span>
+                      {parts[1] && <span className="text-xs text-gray-500 truncate">{parts.slice(1).join(',').trim()}</span>}
                     </div>
-                    {isLocal && <span className="text-[9px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-bold shrink-0">LOCAL</span>}
+                    {result._local && <span className="text-[9px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-bold shrink-0">LOCAL</span>}
                   </div>
                 );
               })}
@@ -571,18 +587,27 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
           )}
         </div>
 
-        {/* Custom Zoom Controls */}
+        {/* IA Shortcut floating button */}
+        <button
+          onClick={() => { setActiveTab('documents'); setIsPanelCollapsed(false); }}
+          title="Ouvrir les documents"
+          className="absolute bottom-16 right-6 z-[1001] w-12 h-12 rounded-full flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 text-white shadow-[0_4px_14px_rgba(16,185,129,0.5)] border-2 border-emerald-400/30 transition-all active:scale-95"
+        >
+          <span className="text-[11px] font-black tracking-tighter leading-none">IA</span>
+        </button>
+
+        {/* Zoom Controls */}
         <div className="absolute bottom-6 right-6 flex flex-col gap-3 z-[1000] pointer-events-auto">
           <button onClick={() => window.dispatchEvent(new CustomEvent('locateUser'))}
-            className="w-[42px] h-[42px] flex items-center justify-center bg-[#1a1a1c] hover:bg-[#2a2a2c] text-blue-400 hover:text-blue-300 transition-colors border border-white/5 rounded-[14px] shadow-[0_2px_8px_rgba(0,0,0,0.4)]" title="Ma Localisation">
+            className="w-[42px] h-[42px] flex items-center justify-center bg-[#1a1a1c] hover:bg-[#2a2a2c] text-blue-400 hover:text-blue-300 transition-colors border border-white/5 rounded-[14px] shadow-[0_2px_8px_rgba(0,0,0,0.4)]">
             <LocateFixed className="size-5" />
           </button>
           <div className="flex flex-col bg-[#1a1a1c] rounded-[14px] shadow-[0_2px_8px_rgba(0,0,0,0.4)] overflow-hidden border border-white/5">
-            <button onClick={() => window.dispatchEvent(new CustomEvent('zoomIn'))} className="w-[42px] h-[42px] flex items-center justify-center hover:bg-[#2a2a2c] text-neutral-300 hover:text-white transition-colors" title="Zoom In">
+            <button onClick={() => window.dispatchEvent(new CustomEvent('zoomIn'))} className="w-[42px] h-[42px] flex items-center justify-center hover:bg-[#2a2a2c] text-neutral-300 hover:text-white transition-colors">
               <Plus className="size-6" strokeWidth={2.5} />
             </button>
-            <div className="w-5 h-[1px] bg-white/10 mx-auto"></div>
-            <button onClick={() => window.dispatchEvent(new CustomEvent('zoomOut'))} className="w-[42px] h-[42px] flex items-center justify-center hover:bg-[#2a2a2c] text-neutral-300 hover:text-white transition-colors" title="Zoom Out">
+            <div className="w-5 h-[1px] bg-white/10 mx-auto" />
+            <button onClick={() => window.dispatchEvent(new CustomEvent('zoomOut'))} className="w-[42px] h-[42px] flex items-center justify-center hover:bg-[#2a2a2c] text-neutral-300 hover:text-white transition-colors">
               <Minus className="size-6" strokeWidth={2.5} />
             </button>
           </div>
@@ -590,20 +615,16 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 
         {/* Coordinate HUD */}
         <div className="absolute bottom-4 left-4 md:left-[110px] z-[1000] bg-[#1a1a1c]/80 backdrop-blur-md border border-white/10 rounded-lg px-3 py-1 flex items-center gap-3 shadow-[0_2px_6px_rgba(0,0,0,0.5)] pointer-events-auto">
-          <div className="flex items-center gap-1.5 cursor-crosshair">
-            <div className="size-1.5 rounded-full bg-emerald-500"></div>
+          <div className="flex items-center gap-1.5">
+            <div className="size-1.5 rounded-full bg-emerald-500" />
             <span className="text-white font-mono text-[10px] tracking-wide">{coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}</span>
           </div>
-          <div className="w-px h-3 bg-white/20 my-auto"></div>
-          <div className="flex items-center cursor-crosshair">
-            <span className="text-emerald-400 font-mono text-[10px] tracking-wide">
-              X: {calcLambert(coords.lat, coords.lng).x} | Y: {calcLambert(coords.lat, coords.lng).y}
-            </span>
-          </div>
+          <div className="w-px h-3 bg-white/20 my-auto" />
+          <span className="text-emerald-400 font-mono text-[10px] tracking-wide">X: {calcLambert(coords.lat, coords.lng).x} | Y: {calcLambert(coords.lat, coords.lng).y}</span>
         </div>
       </div>
 
-      {/* Sidebar Container */}
+      {/* ── Sidebar ── */}
       <div
         className={cn(
           "flex-[0_0_auto] flex flex-col bg-[var(--bg-surface)] border-l border-[var(--border-color)] text-[var(--text-main)] transition-all duration-300 relative z-10 shrink-0",
@@ -613,28 +634,20 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       >
         {isPanelCollapsed && (
           <div className="flex flex-col items-center py-5 h-full w-full" onClick={() => setIsPanelCollapsed(false)}>
-            <button className="p-2 text-[var(--text-muted)] hover:text-[var(--text-main)] bg-[var(--bg-main)] hover:bg-[var(--bg-surface)] rounded-lg border border-[var(--border-color)] shadow-sm mb-6">
+            <button className="p-2 text-[var(--text-muted)] hover:text-[var(--text-main)] bg-[var(--bg-main)] rounded-lg border border-[var(--border-color)] shadow-sm mb-6">
               <ChevronLeft className="w-4 h-4" />
             </button>
             <div className="flex flex-col gap-2 w-full px-3 items-center">
-              {[
-                { id:'couches',    icon: Layers,   title: 'Couches'   },
-                { id:'recherche',  icon: Search,   title: 'Recherche' },
-                { id:'geotools',   icon: Wrench,   title: 'Outils'    },
-                { id:'documents',  icon: FileText, title: 'Documents' },
-              ].map(({ id, icon: Icon, title }) => (
-                <button key={id}
-                  onClick={(e) => { e.stopPropagation(); setActiveTab(id as TabId); setIsPanelCollapsed(false); }}
-                  className={`p-2 rounded-lg flex items-center justify-center transition-colors ${activeTab===id ? 'bg-[var(--bg-surface)] text-[var(--brand)] border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)]'}`}
-                  title={title}>
+              {[{ id:'couches', icon: Layers, title:'Couches'}, { id:'recherche', icon: Search, title:'Recherche'}, { id:'geotools', icon: Wrench, title:'Outils'}, { id:'documents', icon: FileText, title:'Documents'}].map(({ id, icon: Icon, title }) => (
+                <button key={id} onClick={(e) => { e.stopPropagation(); setActiveTab(id as TabId); setIsPanelCollapsed(false); }}
+                  className={`p-2 rounded-lg flex items-center justify-center transition-colors ${activeTab===id ? 'bg-[var(--bg-surface)] text-[var(--brand)] border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)]'}`} title={title}>
                   <Icon className="w-4 h-4" />
                 </button>
               ))}
             </div>
             <div className="mt-auto px-3 w-full flex justify-center">
               {setCurrentView && (
-                <button onClick={(e) => { e.stopPropagation(); setCurrentView('dashboard'); }}
-                  className="p-2 text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)] rounded-lg" title="Retour à l'accueil">
+                <button onClick={(e) => { e.stopPropagation(); setCurrentView('dashboard'); }} className="p-2 text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)] rounded-lg">
                   <LayoutTemplate className="w-4 h-4" />
                 </button>
               )}
@@ -643,8 +656,9 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
         )}
 
         {!isPanelCollapsed && (
-          <div className="flex flex-col h-full w-full min-w-[280px] animate-in fade-in duration-300">
-            <div className="p-3 shrink-0 bg-[var(--bg-surface)] relative overflow-hidden flex flex-col gap-3">
+          <div className="flex flex-col h-full w-full min-w-[280px]">
+            {/* Header */}
+            <div className="p-3 shrink-0 bg-[var(--bg-surface)] flex flex-col gap-3">
               <div className="flex justify-between items-center px-1">
                 <h2 className="text-[var(--text-main)] font-semibold text-sm tracking-wide flex items-center gap-1.5">
                   <Settings className="w-4 h-4 text-[var(--text-muted)]" /> Outils
@@ -653,7 +667,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                   <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
-              <div className="flex gap-1 bg-[var(--bg-main)] p-1 rounded-lg border border-[var(--border-color)] mt-2">
+              <div className="flex gap-1 bg-[var(--bg-main)] p-1 rounded-lg border border-[var(--border-color)] mt-1">
                 <TabButton active={activeTab==='couches'}   onClick={() => setActiveTab('couches')}   icon={Layers}   label="Couches" />
                 <TabButton active={activeTab==='recherche'} onClick={() => setActiveTab('recherche')} icon={Search}   label="Recherche" />
                 <TabButton active={activeTab==='geotools'}  onClick={() => setActiveTab('geotools')}  icon={Wrench}   label="Outils" />
@@ -661,7 +675,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
               </div>
             </div>
 
-            {/* Tab Content — display:none keeps CouchesTab mounted (preserves officialRefs) */}
+            {/* Tab Content */}
             <div className="flex-1 overflow-y-auto p-4 md:p-5 no-scrollbar pb-24 md:pb-6 text-left">
               <div style={{ display: activeTab === 'couches' ? 'block' : 'none' }}>
                 <CouchesTab
@@ -670,7 +684,8 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                   featureGroupRef={featureGroupRef}
                   setIsPanelCollapsed={setIsPanelCollapsed}
                   onLayerImported={handleLayerImported}
-                  chevauchementResult={chevauchementResult}
+                  onLayerDeleted={handleLayerDeleted}
+                  chevauchementResults={chevauchementResults}
                 />
               </div>
               <div style={{ display: activeTab === 'recherche' ? 'block' : 'none' }}>
@@ -682,7 +697,6 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
               <div style={{ display: activeTab === 'documents' ? 'block' : 'none' }}>
                 <RapportsTab
                   lastImportedLayer={lastImportedLayer}
-                  chevauchementResult={chevauchementResult}
                   forestData={_officialGeoData.forest}
                   communesData={_officialGeoData.communes}
                 />
@@ -695,17 +709,13 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
   );
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // TabButton
 // ─────────────────────────────────────────────────────────────────────────────
-
 function TabButton({ active, onClick, icon: Icon, label }: any) {
   return (
     <button onClick={onClick}
-      className={`flex-1 flex flex-col items-center justify-center p-2 rounded-md transition-all ${
-        active ? 'bg-[var(--bg-surface)] text-[var(--text-main)] shadow-sm border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-main)]'
-      }`}>
+      className={`flex-1 flex flex-col items-center justify-center p-2 rounded-md transition-all ${active ? 'bg-[var(--bg-surface)] text-[var(--text-main)] shadow-sm border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-main)]'}`}>
       <Icon className="w-4 h-4 mb-1" />
       <span className="text-[10px] font-semibold tracking-wide">{label}</span>
     </button>
@@ -713,65 +723,204 @@ function TabButton({ active, onClick, icon: Icon, label }: any) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RapportsTab — accepts GIS props and passes to modals
+// ExcelSheetModal — NEW: select worksheet when Excel has multiple sheets
 // ─────────────────────────────────────────────────────────────────────────────
+function ExcelSheetModal({ sheets, fileName, onSelect, onClose }: {
+  sheets: string[]; fileName: string;
+  onSelect: (sheet: string) => void; onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-2xl shadow-2xl w-80 overflow-hidden">
+        <div className="px-4 py-3 border-b border-[var(--border-color)] flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-[var(--text-main)]">Sélectionner une feuille</h3>
+            <p className="text-[10px] text-[var(--text-muted)] mt-0.5 truncate max-w-[220px]">{fileName}</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)] rounded-lg transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-3 space-y-1.5 max-h-64 overflow-y-auto">
+          {sheets.map((s, i) => (
+            <button key={s} onClick={() => { onSelect(s); onClose(); }}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--bg-main)] hover:bg-[var(--brand)]/10 border border-[var(--border-color)] hover:border-[var(--brand)]/40 text-left transition-all group">
+              <div className="w-7 h-7 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 flex items-center justify-center shrink-0">
+                <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">{i + 1}</span>
+              </div>
+              <span className="text-sm font-medium text-[var(--text-main)] group-hover:text-[var(--brand)] flex-1 truncate">{s}</span>
+              <ChevronRight className="w-4 h-4 text-[var(--text-muted)] opacity-0 group-hover:opacity-100 group-hover:text-[var(--brand)] transition-all" />
+            </button>
+          ))}
+        </div>
+        <div className="px-4 pb-3">
+          <button onClick={onClose} className="w-full py-2 text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)] font-medium">Annuler</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-function RapportsTab({ lastImportedLayer, chevauchementResult, forestData, communesData }: {
-  lastImportedLayer?: { name: string; geojson: any } | null;
-  chevauchementResult?: ChevauchementResult | null;
-  forestData?: any;
-  communesData?: any;
+// ─────────────────────────────────────────────────────────────────────────────
+// ChevauchementLayerPanel — NEW: per-layer professional bilingual panel
+// ─────────────────────────────────────────────────────────────────────────────
+function ChevauchementLayerPanel({
+  result, layerName, onOpenReport,
+}: {
+  result: ChevauchementResult;
+  layerName: string;
+  onOpenReport?: () => void;
+}) {
+  const r = result as any;
+  const isInside  = result.globalPosition === 'داخل الملك الغابوي';
+  const isPartial = result.globalPosition === 'جزئيا داخل الملك الغابوي';
+
+  const statusColor = isInside ? '#ef4444' : isPartial ? '#f97316' : '#22c55e';
+  const labelFr    = isInside ? 'INCLUSION TOTALE' : isPartial ? 'CHEVAUCHEMENT PARTIEL' : 'HORS DOMAINE FORESTIER';
+  const descFr     = isInside
+    ? `La parcelle «\u00a0${layerName}\u00a0» tombe entièrement dans le Domaine Forestier`
+    : isPartial
+    ? `La parcelle «\u00a0${layerName}\u00a0» tombe partiellement dans le Domaine Forestier`
+    : `La parcelle «\u00a0${layerName}\u00a0» se situe en dehors du Domaine Forestier`;
+
+  const descAr = isInside
+    ? `القطعة «${layerName}» تقع كلياً داخل الملك الغابوي`
+    : isPartial
+    ? `القطعة «${layerName}» تقع جزئياً داخل الملك الغابوي`
+    : `القطعة «${layerName}» تقع خارج الملك الغابوي`;
+
+  return (
+    <div className="rounded-xl border overflow-hidden" style={{ borderColor: statusColor + '55' }}>
+      {/* Header row */}
+      <div className="px-3 py-2 flex items-center justify-between" style={{ backgroundColor: statusColor + '18' }}>
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: statusColor }} />
+          <span className="text-[9px] font-black tracking-[0.08em] uppercase" style={{ color: statusColor }}>{labelFr}</span>
+        </div>
+        <span className="text-base font-black font-mono leading-none" style={{ color: statusColor }}>
+          {result.totalPercentage.toFixed(1)}%
+        </span>
+      </div>
+
+      {/* Body */}
+      <div className="px-3 py-2.5 space-y-2 bg-[var(--bg-main)]">
+        <p className="text-[11px] text-[var(--text-main)] leading-relaxed">{descFr}.</p>
+        <p className="text-[10px] text-[var(--text-muted)] text-right leading-relaxed font-medium" dir="rtl">{descAr}.</p>
+
+        {/* Stats */}
+        {(r.totalArea != null || r.intersectionArea != null) && (
+          <div className="bg-[var(--bg-surface)] rounded-lg border border-[var(--border-color)] px-2.5 py-2 grid grid-cols-2 gap-x-4 gap-y-0.5">
+            {r.totalArea != null && <>
+              <span className="text-[10px] text-[var(--text-muted)]">Surface totale</span>
+              <span className="text-[10px] font-mono font-bold text-[var(--text-main)] text-right">{Number(r.totalArea).toFixed(3)} ha</span>
+            </>}
+            {r.intersectionArea != null && <>
+              <span className="text-[10px] text-[var(--text-muted)]">Intersection</span>
+              <span className="text-[10px] font-mono font-bold text-right" style={{ color: statusColor }}>{Number(r.intersectionArea).toFixed(3)} ha</span>
+            </>}
+          </div>
+        )}
+
+        {/* Breakdown per forest/canton */}
+        {result.intersections?.length > 0 && (
+          <div className="space-y-1.5 pt-0.5">
+            {result.intersections.map((inter: any, i: number) => (
+              <div key={i} className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: statusColor }} />
+                <span className="text-[10px] text-[var(--text-main)] font-medium flex-1 truncate">
+                  {inter.foret}{inter.canton ? ` — ${inter.canton}` : ''}
+                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="w-14 h-1.5 rounded-full bg-[var(--border-color)] overflow-hidden">
+                    <div className="h-full rounded-full" style={{ width: `${Math.min(100, Number(inter.percentage) || 0)}%`, backgroundColor: statusColor }} />
+                  </div>
+                  <span className="text-[10px] font-black font-mono w-10 text-right" style={{ color: statusColor }}>
+                    {Number(inter.percentage || 0).toFixed(1)}%
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* PDF report button */}
+        {onOpenReport && (
+          <button
+            onClick={onOpenReport}
+            className="w-full mt-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border text-[10px] font-bold tracking-wide transition-all hover:opacity-90 active:scale-95"
+            style={{ borderColor: statusColor + '55', backgroundColor: statusColor + '15', color: statusColor }}
+          >
+            <Printer className="w-3 h-3" />
+            تقرير PDF / Rapport
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RapportsTab — cleaned up: no inline chevauchement panel
+// ─────────────────────────────────────────────────────────────────────────────
+function RapportsTab({ lastImportedLayer, forestData, communesData }: {
+  lastImportedLayer?: { id: string; name: string; geojson: any; chevauchement: ChevauchementResult | null; province?: string | null } | null;
+  forestData?: any; communesData?: any;
 }) {
   const [activeReport, setActiveReport] = useState<string | null>(null);
+  const chev = lastImportedLayer?.chevauchement;
 
-  const posStatus = chevauchementResult
-    ? { 'داخل الملك الغابوي': '🔴', 'جزئيا داخل الملك الغابوي': '🟡', 'خارج الملك الغابوي': '🟢' }[chevauchementResult.globalPosition]
+  const chevBadge = chev
+    ? (chev.globalPosition === 'داخل الملك الغابوي'
+        ? { label: 'Inclusion totale', color: '#ef4444' }
+        : chev.globalPosition === 'جزئيا داخل الملك الغابوي'
+        ? { label: 'Chevauchement partiel', color: '#f97316' }
+        : { label: 'Hors domaine', color: '#22c55e' })
     : null;
 
   return (
     <div className="space-y-4">
-      <h2 className="text-[var(--text-main)] font-semibold text-lg tracking-tight mb-3 px-1">Rapports & Documents</h2>
+      <div className="flex items-center justify-between px-1 mb-2">
+        <h2 className="text-[var(--text-main)] font-semibold text-base tracking-tight">Rapports & Documents</h2>
+        {lastImportedLayer && (
+          <span className="text-[10px] bg-[var(--bg-main)] px-2 py-0.5 rounded-full border border-[var(--border-color)] text-[var(--text-muted)] font-medium truncate max-w-[120px]">
+            {lastImportedLayer.name}
+          </span>
+        )}
+      </div>
 
-      {chevauchementResult && (
-        <div className="mb-2">
-          <ChevauchementInlinePanel result={chevauchementResult} />
-        </div>
-      )}
-
-      <div className="space-y-3">
+      <div className="space-y-2.5">
         <ReportCard
           title="Rapport d'Expertise"
-          subtitle="Woqof / Procès-verbal"
-          desc="محضر التصريحات للمحكمة"
-          color="#3b82f6"
-          icon={FileText}
+          subtitle="Woqof · Procès-verbal"
+          desc="محضر التصريحات — وقوف على المكان"
+          color="#3b82f6" icon={FileText}
           onClick={() => setActiveReport("Rapport d'Expertise")}
         />
         <ReportCard
           title="Fiche Technique Réquisition"
           subtitle="PDF / Word · 7 sections"
           desc="Délimitation · Immatriculation · Empiètement"
-          color="#22c55e"
-          icon={LayoutTemplate}
+          color="#22c55e" icon={LayoutTemplate}
           onClick={() => setActiveReport("Fiche Technique Réquisition")}
         />
         <ReportCard
           title="Attestation Administrative"
           subtitle="بطاقة معاينة — إنتفاء الصبغة الغابوية"
           desc="ANEF · CPF M'diq-Fnideq · Tétouan"
-          color="#8b5cf6"
-          icon={Printer}
+          color="#8b5cf6" icon={Palette}
           onClick={() => setActiveReport("Attestation Administrative")}
         />
         <ReportCard
           title="Analyse Chevauchement"
           subtitle="Intersection · Domaine Forestier"
-          desc={chevauchementResult
-            ? `${posStatus} ${chevauchementResult.globalPosition} — ${chevauchementResult.totalPercentage.toFixed(1)}%`
-            : "Importez une couche → résultat automatique"}
-          color="#eab308"
-          icon={Maximize}
+          desc={chevBadge
+            ? `${chevBadge.label} — ${chev!.totalPercentage.toFixed(1)}%`
+            : lastImportedLayer
+            ? "Calcul en cours…"
+            : "Importez une couche → résultat auto"}
+          color={chevBadge?.color ?? "#eab308"} icon={Maximize}
           onClick={() => setActiveReport("Analyse Chevauchement")}
+          badge={chevBadge ? { label: `${chev!.totalPercentage.toFixed(1)}%`, color: chevBadge.color } : undefined}
         />
       </div>
 
@@ -779,41 +928,45 @@ function RapportsTab({ lastImportedLayer, chevauchementResult, forestData, commu
         <FicheModal onClose={() => setActiveReport(null)} forestData={forestData} communesData={communesData} importedLayer={lastImportedLayer} />
       )}
       {activeReport === "Attestation Administrative" && (
-        <AttestationModal onClose={() => setActiveReport(null)} forestData={forestData} communesData={communesData} importedLayer={lastImportedLayer} chevauchementResult={chevauchementResult} />
+        <AttestationModal onClose={() => setActiveReport(null)} forestData={forestData} communesData={communesData} importedLayer={lastImportedLayer} chevauchementResult={lastImportedLayer?.chevauchement} />
       )}
       {activeReport === "Rapport d'Expertise" && (
-        <ExpertiseModal onClose={() => setActiveReport(null)} />
+        <ExpertiseModal onClose={() => setActiveReport(null)} importedLayer={lastImportedLayer} forestData={forestData} />
       )}
       {activeReport === "Analyse Chevauchement" && (
-        <ChevauchementModal onClose={() => setActiveReport(null)} result={chevauchementResult} />
+        <ChevauchementModal onClose={() => setActiveReport(null)} result={lastImportedLayer?.chevauchement} />
       )}
     </div>
   );
 }
 
-function ReportCard({ title, subtitle, desc, icon: Icon, color, onClick }: any) {
+function ReportCard({ title, subtitle, desc, icon: Icon, color, onClick, badge }: any) {
   return (
     <div onClick={onClick} className="group bg-[var(--bg-main)] border border-[var(--border-color)] hover:border-[var(--brand)] rounded-xl p-3 cursor-pointer transition-all hover:shadow-sm">
       <div className="flex gap-3 items-center">
-        <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 border border-[var(--border-color)] group-hover:border-[var(--brand)] bg-[var(--bg-surface)] text-[var(--text-main)]" style={{ color }}>
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 bg-[var(--bg-surface)] border border-[var(--border-color)] group-hover:border-[var(--brand)]" style={{ color }}>
           <Icon className="w-4 h-4" />
         </div>
-        <div className="flex-1">
-          <h4 className="text-[var(--text-main)] font-semibold text-[13px] leading-tight flex items-center justify-between">{title}</h4>
-          <div className="text-[9px] uppercase tracking-wider mb-0.5 text-[var(--text-muted)] mt-0.5">{subtitle}</div>
-          <p className="text-[10px] text-[var(--text-muted)] leading-snug">{desc}</p>
+        <div className="flex-1 min-w-0">
+          <h4 className="text-[var(--text-main)] font-semibold text-[13px] leading-tight">{title}</h4>
+          <div className="text-[9px] uppercase tracking-wider text-[var(--text-muted)] mt-0.5">{subtitle}</div>
+          <p className="text-[10px] text-[var(--text-muted)] leading-snug mt-0.5">{desc}</p>
         </div>
-        <ChevronRight className="w-3.5 h-3.5 text-[var(--text-muted)] group-hover:text-[var(--text-main)] opacity-0 group-hover:opacity-100" />
+        {badge && (
+          <span className="text-[9px] font-black px-1.5 py-0.5 rounded shrink-0" style={{ backgroundColor: badge.color + '20', color: badge.color }}>
+            {badge.label}
+          </span>
+        )}
+        <ChevronRight className="w-3.5 h-3.5 text-[var(--text-muted)] group-hover:text-[var(--text-main)] opacity-0 group-hover:opacity-100 shrink-0" />
       </div>
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RechercheTab
+// RechercheTab (unchanged)
 // ─────────────────────────────────────────────────────────────────────────────
-
-function RechercheTab({ calcLngLatFromLambert }: { calcLngLatFromLambert: (x: number, y: number) => {lat: number, lng: number} }) {
+function RechercheTab({ calcLngLatFromLambert }: { calcLngLatFromLambert: (x: number, y: number) => { lat: number; lng: number } }) {
   const [lngVal, setLngVal] = useState('');
   const [latVal, setLatVal] = useState('');
   const [lambertX, setLambertX] = useState('');
@@ -822,24 +975,16 @@ function RechercheTab({ calcLngLatFromLambert }: { calcLngLatFromLambert: (x: nu
 
   const handleCenterWGS = () => {
     const lng = parseFloat(lngVal), lat = parseFloat(latVal);
-    if (!isNaN(lng) && !isNaN(lat)) {
-      window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat, lon: lng, display_name: `Point WGS84 (Lng: ${lng}, Lat: ${lat})` } }));
-    }
+    if (!isNaN(lng) && !isNaN(lat)) window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat, lon: lng, display_name: `Point WGS84 (${lng}, ${lat})` } }));
   };
   const handleCenterLambert = () => {
     const x = parseFloat(lambertX), y = parseFloat(lambertY);
     if (!isNaN(x) && !isNaN(y)) {
-      const coords = calcLngLatFromLambert(x, y);
-      window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat: coords.lat, lon: coords.lng, display_name: `Point Lambert (X: ${x}, Y: ${y})` } }));
+      const c = calcLngLatFromLambert(x, y);
+      window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat: c.lat, lon: c.lng, display_name: `Lambert (X:${x}, Y:${y})` } }));
     }
   };
-  const handleSearchByName = (e?: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!e || e.key === 'Enter') {
-      if (searchQuery.trim()) window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() }));
-    }
-  };
-
-  const inp2 = "w-full bg-[var(--bg-main)] border border-[var(--border-color)] rounded py-2 px-2 text-sm font-mono focus:outline-none focus:border-[var(--brand)] shadow-sm";
+  const inp = "w-full bg-[var(--bg-main)] border border-[var(--border-color)] rounded py-2 px-2 text-sm font-mono focus:outline-none focus:border-[var(--brand)] shadow-sm";
 
   return (
     <div className="space-y-10">
@@ -848,27 +993,26 @@ function RechercheTab({ calcLngLatFromLambert }: { calcLngLatFromLambert: (x: nu
         <div className="flex gap-2">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
-            <input type="text" placeholder="Ex: Forêt Jbel Dersa..."
-              className="w-full bg-[var(--bg-main)] border border-[var(--border-color)] rounded py-2 pl-9 pr-3 text-sm focus:outline-none focus:border-[var(--brand)] shadow-sm"
-              value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={handleSearchByName} />
+            <input type="text" placeholder="Ex: Forêt Jbel Dersa…" className="w-full bg-[var(--bg-main)] border border-[var(--border-color)] rounded py-2 pl-9 pr-3 text-sm focus:outline-none focus:border-[var(--brand)] shadow-sm"
+              value={searchQuery} onChange={e => setSearchQuery(e.target.value)} onKeyDown={e => { if (e.key==='Enter' && searchQuery.trim()) window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() })); }} />
           </div>
-          <button onClick={() => handleSearchByName()} className="px-3 py-2 bg-[var(--brand)] hover:opacity-90 text-white font-bold text-xs rounded shadow-sm">GO</button>
+          <button onClick={() => { if (searchQuery.trim()) window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() })); }} className="px-3 py-2 bg-[var(--brand)] hover:opacity-90 text-white font-bold text-xs rounded shadow-sm">GO</button>
         </div>
       </div>
       <div className="space-y-3 pt-8 border-t border-[var(--border-color)]">
         <label className="text-[11px] uppercase font-bold tracking-wider text-[var(--text-muted)]">Coordonnées WGS84</label>
         <div className="flex gap-2">
-          <input type="number" step="any" value={lngVal} onChange={e => setLngVal(e.target.value)} placeholder="Longitude" className={`flex-1 min-w-0 ${inp2}`} />
-          <input type="number" step="any" value={latVal} onChange={e => setLatVal(e.target.value)} placeholder="Latitude"  className={`flex-1 min-w-0 ${inp2}`} />
-          <button onClick={handleCenterWGS} className="px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border-color)] hover:bg-[var(--bg-main)] text-[var(--text-main)] font-bold text-xs rounded shadow-sm">GO</button>
+          <input type="number" step="any" value={lngVal} onChange={e => setLngVal(e.target.value)} placeholder="Longitude" className={`flex-1 min-w-0 ${inp}`} />
+          <input type="number" step="any" value={latVal} onChange={e => setLatVal(e.target.value)} placeholder="Latitude"  className={`flex-1 min-w-0 ${inp}`} />
+          <button onClick={handleCenterWGS} className="px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border-color)] hover:bg-[var(--bg-main)] font-bold text-xs rounded shadow-sm">GO</button>
         </div>
       </div>
       <div className="space-y-3 pt-8 border-t border-[var(--border-color)]">
-        <label className="text-[11px] uppercase font-bold tracking-wider text-[var(--text-muted)]">Coordonnées Lambert</label>
+        <label className="text-[11px] uppercase font-bold tracking-wider text-[var(--text-muted)]">Coordonnées Lambert Nord</label>
         <div className="flex gap-2">
-          <input type="number" step="any" value={lambertX} onChange={e => setLambertX(e.target.value)} placeholder="X" className={`flex-1 min-w-0 ${inp2}`} />
-          <input type="number" step="any" value={lambertY} onChange={e => setLambertY(e.target.value)} placeholder="Y" className={`flex-1 min-w-0 ${inp2}`} />
-          <button onClick={handleCenterLambert} className="px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border-color)] hover:bg-[var(--bg-main)] text-[var(--text-main)] font-bold text-xs rounded shadow-sm">GO</button>
+          <input type="number" step="any" value={lambertX} onChange={e => setLambertX(e.target.value)} placeholder="X" className={`flex-1 min-w-0 ${inp}`} />
+          <input type="number" step="any" value={lambertY} onChange={e => setLambertY(e.target.value)} placeholder="Y" className={`flex-1 min-w-0 ${inp}`} />
+          <button onClick={handleCenterLambert} className="px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border-color)] hover:bg-[var(--bg-main)] font-bold text-xs rounded shadow-sm">GO</button>
         </div>
       </div>
       <div className="pt-8 border-t border-[var(--border-color)]">
@@ -881,28 +1025,56 @@ function RechercheTab({ calcLngLatFromLambert }: { calcLngLatFromLambert: (x: nu
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Point-to-polygon + field extractor helpers (module-level for reuse)
+// ─────────────────────────────────────────────────────────────────────────────
+function ptsToPolygon(features: any[]) {
+  if (features.length < 3) return turf.featureCollection(features);
+  const coords = features.map((f: any) => [...f.geometry.coordinates]);
+  if (coords[0][0] !== coords[coords.length-1][0] || coords[0][1] !== coords[coords.length-1][1]) coords.push([...coords[0]]);
+  try { return turf.featureCollection([turf.polygon([coords])]); }
+  catch { return turf.featureCollection(features); }
+}
+
+function extractPointFeatures(dataArray: any[]): any[] {
+  const latKeys = ['lat', 'latitude', 'y', 'y_lambert', 'y lambert'];
+  const lngKeys = ['lng', 'longitude', 'x', 'lon', 'x_lambert', 'x lambert'];
+  const getVal = (row: any, keys: string[]) => {
+    for (const k in row) { if (keys.includes(String(k).trim().toLowerCase())) return row[k]; }
+    return undefined;
+  };
+  return dataArray.map((row: any) => {
+    const rawLat = getVal(row, latKeys), rawLng = getVal(row, lngKeys);
+    if (rawLat == null || rawLng == null) return null;
+    let lat = parseFloat(String(rawLat).replace(',', '.')), lng = parseFloat(String(rawLng).replace(',', '.'));
+    if (isNaN(lat) || isNaN(lng)) return null;
+    if (Math.abs(lng) > 180 || Math.abs(lat) > 90) {
+      try { const p = proj4('EPSG:26191','EPSG:4326',[lng,lat]); lng=p[0]; lat=p[1]; } catch {}
+    }
+    return turf.point([lng, lat], row);
+  }).filter(Boolean);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CouchesTab — with onLayerImported + auto chevauchement + pts→polygon
+// CouchesTab — with Excel sheet selection, per-layer chevauchement
 // ─────────────────────────────────────────────────────────────────────────────
-
-function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanelCollapsed, onLayerImported, chevauchementResult }: {
+function CouchesTab({
+  customLayers, setCustomLayers, featureGroupRef, setIsPanelCollapsed,
+  onLayerImported, onLayerDeleted, chevauchementResults,
+}: {
   customLayers: any[]; setCustomLayers: any; featureGroupRef: any;
   setIsPanelCollapsed: any;
-  onLayerImported?: (name: string, geojson: any) => void;
-  chevauchementResult?: ChevauchementResult | null;
+  onLayerImported?: (layerId: string, name: string, geojson: any) => void;
+  onLayerDeleted?: (id: string) => void;
+  chevauchementResults: Record<string, ChevauchementResult>;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [excelSheetPending, setExcelSheetPending] = useState<{ wb: any; sheets: string[]; name: string } | null>(null);
 
-  // ── Official Layers state ──────────────────────────────────────────────────
-  const [officialVisible, setOfficialVisible] = useState<Record<string, boolean>>({
-    forest: true, communes: false, provinces: false, region: false,
-  });
+  // Official layers
+  const [officialVisible, setOfficialVisible] = useState<Record<string, boolean>>({ forest: true, communes: false, provinces: false, region: false });
   const officialRefs = useRef<Record<string, L.GeoJSON | null>>({});
-
-  const [officialStyles, setOfficialStyles] = useState<Record<string, {
-    fillColor: string; strokeColor: string; weight: number; fillOpacity: number;
-  }>>({
+  const [officialStyles, setOfficialStyles] = useState<Record<string, { fillColor: string; strokeColor: string; weight: number; fillOpacity: number }>>({
     forest:    { fillColor: '#16a34a', strokeColor: '#16a34a', weight: 2,   fillOpacity: 0.07 },
     communes:  { fillColor: '#3b82f6', strokeColor: '#3b82f6', weight: 1,   fillOpacity: 0.07 },
     provinces: { fillColor: '#f97316', strokeColor: '#f97316', weight: 2,   fillOpacity: 0.07 },
@@ -910,7 +1082,7 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
   });
   const [expandedSymbo, setExpandedSymbo] = useState<string | null>(null);
 
-  const applyLayerStyle = (key: string, style: { fillColor: string; strokeColor: string; weight: number; fillOpacity: number }) => {
+  const applyLayerStyle = (key: string, style: any) => {
     setOfficialStyles(p => ({ ...p, [key]: style }));
     const lyr = officialRefs.current[key];
     if (lyr) lyr.setStyle({ color: style.strokeColor, fillColor: style.strokeColor, weight: style.weight, fillOpacity: style.fillOpacity, opacity: 0.85 });
@@ -918,9 +1090,9 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
 
   const OFFICIAL = [
     { key: 'forest',    label: 'DOMAINE FORESTIER', file: '/assets/data/forest_limits.json',  color: '#16a34a', weight: 2,   tooltip: (p: any) => `🌲 ${p.FORET||''} — ${p.CANTON||''}\n${p.STADE||''} · ${p.SUPERFICIE ? Math.round(p.SUPERFICIE)+' ha' : ''}` },
-    { key: 'communes',  label: 'Communes TTH',      file: '/assets/data/Communes_TTH.json',   color: '#3b82f6', weight: 1,   tooltip: (p: any) => `🏘 ${p.NomFr||''}\n${p.NomAr||''}${p.Pop__24 ? '\nSakina: '+Number(p.Pop__24).toLocaleString() : ''}` },
-    { key: 'provinces', label: 'Provinces TTH',     file: '/assets/data/Provinces_TTH.json',  color: '#f97316', weight: 2,   tooltip: (p: any) => `🏛 ${p.Nom__Fr||''}\n${p.Nom__Ar||''}${p.Pop__24 ? '\nSakina: '+Number(p.Pop__24).toLocaleString() : ''}` },
-    { key: 'region',    label: 'Région TTH',        file: '/assets/data/Region_TTH.json',     color: '#8b5cf6', weight: 2.5, tooltip: (p: any) => `🗺 ${p.Nom__fr||''}\n${p.Nom__ar||''}${p.Pop__24 ? '\nSakina: '+Number(p.Pop__24).toLocaleString() : ''}` },
+    { key: 'communes',  label: 'Communes TTH',      file: '/assets/data/Communes_TTH.json',   color: '#3b82f6', weight: 1,   tooltip: (p: any) => `🏘 ${p.NomFr||''}\n${p.NomAr||''}${p.Pop__24 ? '\nPop: '+Number(p.Pop__24).toLocaleString() : ''}` },
+    { key: 'provinces', label: 'Provinces TTH',     file: '/assets/data/Provinces_TTH.json',  color: '#f97316', weight: 2,   tooltip: (p: any) => `🏛 ${p.Nom__Fr||''}\n${p.Nom__Ar||''}${p.Pop__24 ? '\nPop: '+Number(p.Pop__24).toLocaleString() : ''}` },
+    { key: 'region',    label: 'Région TTH',        file: '/assets/data/Region_TTH.json',     color: '#8b5cf6', weight: 2.5, tooltip: (p: any) => `🗺 ${p.Nom__fr||''}\n${p.Nom__ar||''}` },
   ];
 
   const toggleOfficial = async (key: string, file: string, color: string, weight: number, tooltip: (p: any) => string) => {
@@ -939,8 +1111,7 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
       const layer = L.geoJSON(geojson, {
         style: { color: style.strokeColor, weight, fillColor: style.strokeColor, fillOpacity: style.fillOpacity, opacity: 0.85 },
         onEachFeature: (feature, lyr) => {
-          const text = tooltip(feature.properties || {});
-          lyr.bindTooltip(text, { sticky: true, className: 'leaflet-tooltip' });
+          lyr.bindTooltip(tooltip(feature.properties || {}), { sticky: true });
           lyr.on('mouseover', function () { (lyr as L.Path).setStyle({ fillOpacity: 0.22, weight: weight + 1 }); });
           lyr.on('mouseout',  function () { (lyr as L.Path).setStyle({ fillOpacity: style.fillOpacity, weight }); });
         },
@@ -952,137 +1123,119 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
     } catch (err) { console.error('[OfficialLayer]', key, err); }
   };
 
-  // ── handleImport ──────────────────────────────────────────────────────────
+  // ── addGeoLayer: central function for adding any imported layer ────────────
+  const addGeoLayer = (geojson: any, fileName: string, opts: { noPoints?: boolean } = {}) => {
+    const id = `imported-${Date.now()}`;
+    const color = '#38bdf8';
+    const layerName = fileName.replace(/\.[^/.]+$/, '');
 
-  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const extension = file.name.split('.').pop()?.toLowerCase();
-
-    const addLayer = (geojson: any) => {
-      const id = `imported-${Date.now()}`;
-      const color = '#38bdf8';
-      const opacity = 0.8;
-      const layer = L.geoJSON(geojson, {
-        style: { color, weight: 2, opacity, fillOpacity: opacity * 0.4 },
-        pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius: 6, fillColor: color, color, weight: 1, opacity: 1, fillOpacity: 0.8 }),
-        onEachFeature: (feature, llayer) => {
-          let html = `<div style="max-height:250px;overflow-y:auto"><b style="font-size:14px;display:block;margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:4px">Import: ${file.name}</b>`;
-          if (feature.geometry) {
-            if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') {
-              const area = turf.area(feature), length = turf.length(feature, { units: 'kilometers' });
-              html += `<b>Géométrie (Polygone)</b><br/>`;
-              html += area < 10000 ? `Surface: ${area.toFixed(2)} m²<br/>` : `Surface: ${(area/10000).toFixed(2)} Ha<br/>`;
-              html += `Périmètre: ${length.toFixed(2)} km<br/><hr style="margin:8px 0;border:0;border-top:1px solid #eee"/>`;
-            } else if (feature.geometry.type === 'LineString' || feature.geometry.type === 'MultiLineString') {
-              html += `<b>Géométrie (Ligne)</b><br/>Longueur: ${turf.length(feature,{units:'kilometers'}).toFixed(2)} km<br/><hr style="margin:8px 0;border:0;border-top:1px solid #eee"/>`;
-            } else if (feature.geometry.type === 'Point') {
-              const [lng, lat] = feature.geometry.coordinates;
-              html += `<b>Géométrie (Point)</b><br/>Lon: ${lng.toFixed(6)}<br/>Lat: ${lat.toFixed(6)}<br/><hr style="margin:8px 0;border:0;border-top:1px solid #eee"/>`;
-            }
+    const buildPopup = (feature: any, name: string) => {
+      let html = `<div style="max-height:250px;overflow-y:auto"><b style="font-size:13px;display:block;margin-bottom:6px;border-bottom:1px solid #eee;padding-bottom:4px">📂 ${name}</b>`;
+      const g = feature.geometry;
+      if (g?.type === 'Polygon' || g?.type === 'MultiPolygon') {
+        const area = turf.area(feature);
+        html += `<span style="font-size:10px;color:#666">Polygone</span><br/>`;
+        html += area < 10000 ? `<b>Surface:</b> ${area.toFixed(2)} m²<br/>` : `<b>Surface:</b> ${(area/10000).toFixed(2)} Ha<br/>`;
+        html += `<b>Périmètre:</b> ${turf.length(feature,{units:'kilometers'}).toFixed(3)} km<br/>`;
+      } else if (g?.type === 'LineString' || g?.type === 'MultiLineString') {
+        html += `<b>Longueur:</b> ${turf.length(feature,{units:'kilometers'}).toFixed(3)} km<br/>`;
+      } else if (g?.type === 'Point') {
+        const [lng, lat] = g.coordinates;
+        html += `<b>Lon:</b> ${lng.toFixed(6)}<br/><b>Lat:</b> ${lat.toFixed(6)}<br/>`;
+      }
+      if (feature.properties && Object.keys(feature.properties).length > 0) {
+        html += `<hr style="margin:6px 0;border:0;border-top:1px solid #eee"/>`;
+        html += `<table style="width:100%;border-collapse:collapse;font-size:11px">`;
+        for (const k in feature.properties) {
+          if (feature.properties[k] != null && feature.properties[k] !== '') {
+            html += `<tr><td style="padding:2px 4px;border:1px solid #eee;font-weight:600;background:#f9f9f9;white-space:nowrap">${k}</td><td style="padding:2px 4px;border:1px solid #eee">${feature.properties[k]}</td></tr>`;
           }
-          if (feature.properties) {
-            html += `<table style="width:100%;border-collapse:collapse;font-size:12px">`;
-            for (const key in feature.properties) {
-              if (feature.properties[key] !== null && feature.properties[key] !== undefined) {
-                html += `<tr><td style="padding:2px 4px;border:1px solid #eee;font-weight:bold;background:#f9f9f9">${key}</td><td style="padding:2px 4px;border:1px solid #eee">${feature.properties[key]}</td></tr>`;
-              }
-            }
-            html += `</table>`;
-          }
-          html += `</div>`;
-          llayer.bindPopup(html);
         }
-      });
-
-      if (featureGroupRef.current) {
-        featureGroupRef.current.addLayer(layer);
-        try {
-          const bounds = layer.getBounds();
-          if (bounds && bounds.isValid()) window.dispatchEvent(new CustomEvent('flyToBounds', { detail: bounds }));
-        } catch {}
+        html += `</table>`;
       }
-
-      const layerName = file.name.replace(/\.[^/.]+$/, '');
-      setCustomLayers((prev: any) => [...prev, {
-        id, name: layerName, type: 'imported', visible: true, color, opacity, geojson, leafletLayer: layer
-      }]);
-
-      // Notify parent for auto chevauchement analysis
-      onLayerImported?.(layerName, geojson);
+      html += `</div>`;
+      return html;
     };
 
-    const ptsToPolygon = (features: any[]) => {
-      if (features.length < 3) return turf.featureCollection(features);
-      const coords = features.map((f: any) => f.geometry.coordinates);
-      if (coords[0][0] !== coords[coords.length-1][0] || coords[0][1] !== coords[coords.length-1][1]) coords.push([...coords[0]]);
-      try { return turf.featureCollection([turf.polygon([coords])]); }
-      catch { return turf.featureCollection(features); }
-    };
+    const leafletLayer = L.geoJSON(geojson, {
+      style: { color, weight: 2, opacity: 0.9, fillOpacity: 0.32 },
+      ...(opts.noPoints ? {} : {
+        pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius: 6, fillColor: color, color, weight: 1.5, opacity: 1, fillOpacity: 0.8 }),
+      }),
+      onEachFeature: (feature, llayer) => {
+        llayer.bindPopup(buildPopup(feature, layerName));
+      },
+    });
 
-    try {
-      const extractFeatures = (dataArray: any[]) => {
-        const latKeys = ['lat', 'latitude', 'y', 'y_lambert', 'y lambert'];
-        const lngKeys = ['lng', 'longitude', 'x', 'lon', 'x_lambert', 'x lambert'];
-        const getVal = (row: any, keys: string[]) => {
-          for (let k in row) { if (keys.includes(String(k).trim().toLowerCase())) return row[k]; }
-          return undefined;
-        };
-        return dataArray.map((row: any) => {
-          const rawLat = getVal(row, latKeys), rawLng = getVal(row, lngKeys);
-          if (rawLat === undefined || rawLng === undefined) return null;
-          let lat = parseFloat(String(rawLat).replace(',', '.')), lng = parseFloat(String(rawLng).replace(',', '.'));
-          if (isNaN(lat) || isNaN(lng)) return null;
-          if (Math.abs(lng) > 180 || Math.abs(lat) > 90) {
-            try { const p = proj4('EPSG:26191','EPSG:4326',[lng,lat]); lng=p[0]; lat=p[1]; } catch {}
-          }
-          return turf.point([lng, lat], row);
-        }).filter(Boolean);
-      };
+    if (featureGroupRef.current) {
+      featureGroupRef.current.addLayer(leafletLayer);
+      try {
+        const bounds = leafletLayer.getBounds();
+        if (bounds?.isValid()) window.dispatchEvent(new CustomEvent('flyToBounds', { detail: bounds }));
+      } catch {}
+    }
 
-      if (extension === 'json' || extension === 'geojson') {
-        addLayer(JSON.parse(await file.text()));
-      } else if (extension === 'kml') {
-        const doc = new DOMParser().parseFromString(await file.text(), 'text/xml');
-        addLayer(kml(doc));
-      } else if (extension === 'zip') {
-        addLayer(await shp(await file.arrayBuffer()));
-      } else if (extension === 'csv') {
-        Papa.parse(file, {
-          header: true, skipEmptyLines: true,
-          complete: (results) => {
-            const features = extractFeatures(results.data);
-            if (features.length > 0) {
-              const allPoints = features.every((f: any) => f.geometry.type === 'Point');
-              addLayer(allPoints && features.length >= 3 ? ptsToPolygon(features) : turf.featureCollection(features));
-            } else alert("Coordonnées non trouvées (nommez les colonnes X, Y ou lat, lng)");
-          }
-        });
-      } else if (extension === 'xlsx' || extension === 'xls') {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          try {
-            const wb = XLSX.read(new Uint8Array(e.target?.result as ArrayBuffer), { type: 'array' });
-            const data: any = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-            const features = extractFeatures(data);
-            if (features.length > 0) {
-              const allPoints = features.every((f: any) => f.geometry.type === 'Point');
-              addLayer(allPoints && features.length >= 3 ? ptsToPolygon(features) : turf.featureCollection(features));
-            } else alert("Coordonnées non trouvées (nommez les colonnes X, Y ou lat, lng)");
-          } catch (err) { console.error(err); alert("Erreur de parsing du fichier Excel"); }
-        };
-        reader.readAsArrayBuffer(file);
-      } else {
-        alert("Format non supporté (.geojson, .kml, .csv, .xlsx, .zip pour shp)");
-      }
-    } catch (err) {
-      console.error("Erreur d'importation", err);
-      alert("Erreur lors de l'import");
+    setCustomLayers((prev: any) => [...prev, {
+      id, name: layerName, type: 'imported', visible: true, color, opacity: 0.9, geojson, leafletLayer,
+    }]);
+    onLayerImported?.(id, layerName, geojson);
+  };
+
+  // ── processExcelData: convert rows to features/polygon ────────────────────
+  const processExcelData = (data: any[], fileName: string) => {
+    const features = extractPointFeatures(data);
+    if (features.length === 0) { alert("Coordonnées non trouvées.\nNommez les colonnes X/Y ou lat/lng."); return; }
+    const allPoints = features.every((f: any) => f.geometry.type === 'Point');
+    if (allPoints && features.length >= 3) {
+      addGeoLayer(ptsToPolygon(features), fileName, { noPoints: true });
+    } else {
+      addGeoLayer(turf.featureCollection(features), fileName);
     }
   };
 
-  // ── Toggle/Delete/Style helpers ───────────────────────────────────────────
+  // ── handleImport ──────────────────────────────────────────────────────────
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    try {
+      if (ext === 'json' || ext === 'geojson') {
+        addGeoLayer(JSON.parse(await file.text()), file.name);
+      } else if (ext === 'kml') {
+        const doc = new DOMParser().parseFromString(await file.text(), 'text/xml');
+        addGeoLayer(kml(doc), file.name);
+      } else if (ext === 'zip') {
+        addGeoLayer(await shp(await file.arrayBuffer()), file.name);
+      } else if (ext === 'csv') {
+        Papa.parse(file, {
+          header: true, skipEmptyLines: true,
+          complete: (results) => processExcelData(results.data as any[], file.name),
+        });
+      } else if (ext === 'xlsx' || ext === 'xls') {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const wb = XLSX.read(new Uint8Array(ev.target?.result as ArrayBuffer), { type: 'array' });
+            const sheets = wb.SheetNames;
+            if (sheets.length === 1) {
+              processExcelData(XLSX.utils.sheet_to_json(wb.Sheets[sheets[0]]) as any[], file.name);
+            } else {
+              setExcelSheetPending({ wb, sheets, name: file.name });
+            }
+          } catch (err) { console.error(err); alert("Erreur de lecture du fichier Excel."); }
+        };
+        reader.readAsArrayBuffer(file);
+      } else {
+        alert("Format non supporté.\nAcceptés: .geojson .kml .csv .xlsx .zip (SHP)");
+      }
+    } catch (err) {
+      console.error("Import error:", err);
+      alert("Erreur lors de l'import du fichier.");
+    }
+    e.target.value = '';
+  };
 
+  // ── Layer ops ─────────────────────────────────────────────────────────────
   const toggleLayer = (id: string) => {
     setCustomLayers((prev: any) => prev.map((l: any) => {
       if (l.id === id) {
@@ -1101,60 +1254,79 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
     setCustomLayers((prev: any) => {
       const layer = prev.find((l: any) => l.id === id);
       if (layer?.leafletLayer) {
-        if (featureGroupRef.current && featureGroupRef.current.hasLayer(layer.leafletLayer)) featureGroupRef.current.removeLayer(layer.leafletLayer);
+        if (featureGroupRef.current?.hasLayer(layer.leafletLayer)) featureGroupRef.current.removeLayer(layer.leafletLayer);
         else layer.leafletLayer.remove?.();
       }
       return prev.filter((l: any) => l.id !== id);
     });
+    onLayerDeleted?.(id);
   };
 
-  const updateLayerStyle = (layerState: any) => {
+  const updateLeafletStyle = (layerState: any) => {
     if (!layerState.leafletLayer) return;
-    const weight = layerState.size ? layerState.size/2 : 2;
+    const weight = layerState.size ? layerState.size / 2 : 2;
     const color = layerState.color || '#38bdf8';
     const opacity = layerState.opacity ?? 1;
-    const fillOpacity = layerState.fillMode === 'outline' ? 0 : opacity * 0.4;
-    const symbol = layerState.symbol || 'circle';
+    const fillOpacity = layerState.fillMode === 'outline' ? 0 : opacity * 0.35;
     if (layerState.leafletLayer.eachLayer) {
       layerState.leafletLayer.eachLayer((child: any) => {
         if (child.setStyle && !child.setRadius) child.setStyle({ color, opacity, weight, fillColor: color, fillOpacity });
-        if (child.feature?.geometry?.type === 'Point') {
-          const radius = layerState.size ?? 6;
-          if (child.setIcon) {
-            if (symbol === 'square') child.setIcon(L.divIcon({ className:'custom-square-marker', html:`<div style="width:${radius*2}px;height:${radius*2}px;background-color:${fillOpacity>0?color:'transparent'};border:${weight}px solid ${color};opacity:${opacity}"></div>`, iconSize:[radius*2,radius*2], iconAnchor:[radius,radius] }));
-            else if (symbol === 'triangle') child.setIcon(L.divIcon({ className:'custom-triangle-marker', html:`<div style="width:0;height:0;border-left:${radius}px solid transparent;border-right:${radius}px solid transparent;border-bottom:${radius*2}px solid ${fillOpacity>0?color:'transparent'};opacity:${opacity}"></div>`, iconSize:[radius*2,radius*2], iconAnchor:[radius,radius] }));
-          } else if (child.setRadius) {
-            child.setRadius(radius);
-            child.setStyle({ color, opacity, weight:1, fillColor:color, fillOpacity:fillOpacity>0?opacity:0 });
-          }
+        if (child.setRadius) {
+          child.setRadius(layerState.size ?? 6);
+          child.setStyle({ color, opacity, weight: 1.5, fillColor: color, fillOpacity: fillOpacity > 0 ? opacity : 0 });
         }
       });
     }
   };
 
-  const changeColor   = (id: string, color: string)   => setCustomLayers((prev: any) => prev.map((l: any) => { if (l.id===id) { const n={...l,color}; updateLayerStyle(n); return n; } return l; }));
-  const changeOpacity = (id: string, opacity: number) => setCustomLayers((prev: any) => prev.map((l: any) => { if (l.id===id) { const n={...l,opacity}; updateLayerStyle(n); return n; } return l; }));
-  const changeSize    = (id: string, size: number)    => setCustomLayers((prev: any) => prev.map((l: any) => { if (l.id===id) { const n={...l,size}; updateLayerStyle(n); return n; } return l; }));
+  const changeColor   = (id: string, color: string)   => setCustomLayers((prev: any) => prev.map((l: any) => { if (l.id===id) { const n={...l,color}; updateLeafletStyle(n); return n; } return l; }));
+  const changeOpacity = (id: string, opacity: number) => setCustomLayers((prev: any) => prev.map((l: any) => { if (l.id===id) { const n={...l,opacity}; updateLeafletStyle(n); return n; } return l; }));
+  const changeSize    = (id: string, size: number)    => setCustomLayers((prev: any) => prev.map((l: any) => { if (l.id===id) { const n={...l,size}; updateLeafletStyle(n); return n; } return l; }));
+  const changeFillMode = (id: string, mode: string)   => setCustomLayers((prev: any) => prev.map((l: any) => { if (l.id===id) { const n={...l,fillMode:mode}; updateLeafletStyle(n); return n; } return l; }));
+
+  const changeSymbol = (id: string, symbol: string) => {
+    setCustomLayers((prev: any) => {
+      const newLayers = [...prev];
+      const idx = newLayers.findIndex((l: any) => l.id === id);
+      if (idx === -1) return prev;
+      const l = newLayers[idx];
+      const updated = { ...l, symbol };
+      if (l.leafletLayer && featureGroupRef.current && l.geojson) {
+        featureGroupRef.current.removeLayer(l.leafletLayer);
+        const color = updated.color || '#38bdf8', opacity = updated.opacity ?? 1, radius = updated.size ?? 6;
+        const fillOpacity = updated.fillMode === 'outline' ? 0 : opacity * 0.35;
+        const weight = updated.size ? updated.size / 2 : 2;
+        const newLeafletLayer = L.geoJSON(l.geojson, {
+          style: { color, opacity, weight, fillColor: color, fillOpacity },
+          pointToLayer: (feature, latlng) => {
+            if (symbol === 'square') return L.marker(latlng, { icon: L.divIcon({ className: '', html: `<div style="width:${radius*2}px;height:${radius*2}px;background:${fillOpacity>0?color:'transparent'};border:${weight}px solid ${color};opacity:${opacity}"></div>`, iconSize: [radius*2, radius*2], iconAnchor: [radius, radius] }) });
+            if (symbol === 'triangle') return L.marker(latlng, { icon: L.divIcon({ className: '', html: `<div style="width:0;height:0;border-left:${radius}px solid transparent;border-right:${radius}px solid transparent;border-bottom:${radius*2}px solid ${fillOpacity>0?color:'transparent'};opacity:${opacity}"></div>`, iconSize: [radius*2, radius*2], iconAnchor: [radius, radius] }) });
+            return L.circleMarker(latlng, { radius, fillColor: color, color, weight: 1.5, opacity, fillOpacity: fillOpacity > 0 ? opacity : 0 });
+          },
+        });
+        featureGroupRef.current.addLayer(newLeafletLayer);
+        updated.leafletLayer = newLeafletLayer;
+      }
+      newLayers[idx] = updated;
+      return newLayers;
+    });
+  };
 
   const zoomToLayer = (id: string) => {
     const layer = customLayers.find((l: any) => l.id === id);
     if (!layer) return;
     let bounds: L.LatLngBounds | null = null;
-    if (layer.leafletLayer) {
-      if (typeof layer.leafletLayer.getBounds === 'function') bounds = layer.leafletLayer.getBounds();
-      else if (typeof layer.leafletLayer.getLatLng === 'function') { const ll = layer.leafletLayer.getLatLng(); bounds = L.latLngBounds(ll, ll); }
-    }
-    if (!bounds && layer.geojson) {
-      try { const bbox = turf.bbox(layer.geojson); bounds = L.latLngBounds(L.latLng(bbox[1],bbox[0]), L.latLng(bbox[3],bbox[2])); } catch {}
-    }
-    if (!bounds && layer.areaCoords) bounds = L.latLngBounds(layer.areaCoords);
-    if (bounds && bounds.isValid()) window.dispatchEvent(new CustomEvent('flyToBounds', { detail: bounds }));
+    if (layer.leafletLayer?.getBounds) try { bounds = layer.leafletLayer.getBounds(); } catch {}
+    else if (layer.leafletLayer?.getLatLng) { const ll = layer.leafletLayer.getLatLng(); bounds = L.latLngBounds(ll, ll); }
+    if (!bounds && layer.geojson) try { const b = turf.bbox(layer.geojson); bounds = L.latLngBounds(L.latLng(b[1],b[0]), L.latLng(b[3],b[2])); } catch {}
+    if (!bounds && layer.areaCoords) try { bounds = L.latLngBounds(layer.areaCoords); } catch {}
+    if (bounds?.isValid()) window.dispatchEvent(new CustomEvent('flyToBounds', { detail: bounds }));
   };
 
-  // Auto-load forest layer on mount
+  // Auto-load forest on mount
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (officialRefs.current['forest'] === undefined || officialRefs.current['forest'] === null) {
+      if (!officialRefs.current['forest']) {
         const fg = featureGroupRef.current;
         if (!fg) return;
         fetch('/assets/data/forest_limits.json')
@@ -1162,10 +1334,10 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
           .then(geojson => {
             const style = officialStyles['forest'];
             const layer = L.geoJSON(geojson, {
-              style: { color: style.strokeColor, weight: style.weight, fillColor: style.strokeColor, fillOpacity: style.fillOpacity, opacity: 0.85 },
+              style: { color: style.strokeColor, weight: 2, fillColor: style.strokeColor, fillOpacity: 0.07, opacity: 0.85 },
               onEachFeature: (feature, lyr) => {
                 const p = feature.properties || {};
-                lyr.bindTooltip(`🌲 ${p.FORET||''} — ${p.CANTON||''}\n${p.STADE||''} · ${p.SUPERFICIE ? Math.round(p.SUPERFICIE)+' ha' : ''}`, { sticky: true });
+                lyr.bindTooltip(`🌲 ${p.FORET||''} — ${p.CANTON||''}${p.SUPERFICIE ? '\n'+Math.round(p.SUPERFICIE)+' ha' : ''}`, { sticky: true });
                 lyr.on('mouseover', function () { (lyr as L.Path).setStyle({ fillOpacity: 0.22, weight: 3 }); });
                 lyr.on('mouseout',  function () { (lyr as L.Path).setStyle({ fillOpacity: 0.07, weight: 2 }); });
               },
@@ -1184,15 +1356,28 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
 
   return (
     <div className="space-y-4">
-      {/* ── Official Layers ── */}
+      {/* Excel sheet selector modal */}
+      {excelSheetPending && (
+        <ExcelSheetModal
+          sheets={excelSheetPending.sheets}
+          fileName={excelSheetPending.name}
+          onSelect={(sheet) => {
+            processExcelData(XLSX.utils.sheet_to_json(excelSheetPending.wb.Sheets[sheet]) as any[], excelSheetPending.name);
+            setExcelSheetPending(null);
+          }}
+          onClose={() => setExcelSheetPending(null)}
+        />
+      )}
+
+      {/* Official layers */}
       <div className="mb-4">
-        <h3 className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 px-1 flex items-center gap-1.5">
+        <h3 className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2.5 px-1 flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
           Couches Officielles TTH
         </h3>
         <div className="space-y-1.5">
           {OFFICIAL.map(({ key, label, file, color, weight, tooltip }) => {
-            const style = officialStyles[key] || { fillColor: color+'30', strokeColor: color, weight, fillOpacity: 0.07 };
+            const style = officialStyles[key];
             const isExpanded = expandedSymbo === key;
             return (
               <div key={key} className="rounded-lg border overflow-hidden transition-all"
@@ -1200,16 +1385,15 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
                 <div className="flex items-center gap-2 px-2.5 py-2 bg-[var(--bg-main)]">
                   <button onClick={() => toggleOfficial(key, file, color, weight, tooltip)}
                     className="w-4 h-4 rounded shrink-0 border-2 transition-all hover:scale-110"
-                    title={officialVisible[key] ? 'Masquer' : 'Afficher'}
-                    style={{ backgroundColor: officialVisible[key] ? style.strokeColor+'40' : 'transparent', borderColor: style.strokeColor }} />
+                    style={{ backgroundColor: officialVisible[key] ? style.strokeColor + '40' : 'transparent', borderColor: style.strokeColor }} />
                   <span className="flex-1 text-xs font-medium text-[var(--text-main)] truncate">{label}</span>
                   {officialVisible[key] && (
                     <button onClick={() => setExpandedSymbo(isExpanded ? null : key)}
-                      className="p-1 rounded hover:bg-[var(--bg-surface)] text-[var(--text-muted)] hover:text-[var(--brand)]" title="Symbologie">
+                      className="p-1 rounded hover:bg-[var(--bg-surface)] text-[var(--text-muted)] hover:text-[var(--brand)]">
                       <Palette className="w-3.5 h-3.5" />
                     </button>
                   )}
-                  <span className="text-[8px] font-bold px-1.5 py-0.5 rounded shrink-0 cursor-pointer"
+                  <span className="text-[8px] font-bold px-1.5 py-0.5 rounded cursor-pointer"
                     onClick={() => toggleOfficial(key, file, color, weight, tooltip)}
                     style={{ backgroundColor: officialVisible[key] ? style.strokeColor : 'var(--border-color)', color: officialVisible[key] ? '#fff' : 'var(--text-muted)' }}>
                     {officialVisible[key] ? 'ON' : 'OFF'}
@@ -1222,19 +1406,15 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
                       <label className="text-[10px] text-[var(--text-muted)] w-20 shrink-0">Contour</label>
                       <input type="color" value={style.strokeColor} onChange={(e) => applyLayerStyle(key, {...style, strokeColor: e.target.value})} className="w-8 h-6 rounded border border-[var(--border-color)] cursor-pointer p-0" />
                     </div>
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
                       <label className="text-[10px] text-[var(--text-muted)] w-20 shrink-0">Épaisseur</label>
-                      <div className="flex items-center gap-2 flex-1">
-                        <input type="range" min={1} max={6} step={0.5} value={style.weight} onChange={(e) => applyLayerStyle(key, {...style, weight: Number(e.target.value)})} className="flex-1 accent-[var(--brand)]" />
-                        <span className="text-[10px] font-mono text-[var(--brand)] w-6 text-right">{style.weight}</span>
-                      </div>
+                      <input type="range" min={1} max={6} step={0.5} value={style.weight} onChange={(e) => applyLayerStyle(key, {...style, weight: Number(e.target.value)})} className="flex-1 accent-[var(--brand)]" />
+                      <span className="text-[10px] font-mono text-[var(--brand)] w-6 text-right">{style.weight}</span>
                     </div>
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
                       <label className="text-[10px] text-[var(--text-muted)] w-20 shrink-0">Transparence</label>
-                      <div className="flex items-center gap-2 flex-1">
-                        <input type="range" min={0} max={0.5} step={0.01} value={style.fillOpacity} onChange={(e) => applyLayerStyle(key, {...style, fillOpacity: Number(e.target.value)})} className="flex-1 accent-[var(--brand)]" />
-                        <span className="text-[10px] font-mono text-[var(--brand)] w-8 text-right">{Math.round(style.fillOpacity*100)}%</span>
-                      </div>
+                      <input type="range" min={0} max={0.5} step={0.01} value={style.fillOpacity} onChange={(e) => applyLayerStyle(key, {...style, fillOpacity: Number(e.target.value)})} className="flex-1 accent-[var(--brand)]" />
+                      <span className="text-[10px] font-mono text-[var(--brand)] w-8 text-right">{Math.round(style.fillOpacity*100)}%</span>
                     </div>
                     <button onClick={() => applyLayerStyle(key, { fillColor: color+'30', strokeColor: color, weight, fillOpacity: 0.07 })}
                       className="w-full py-1 text-[9px] font-semibold text-[var(--text-muted)] hover:text-[var(--brand)] border border-[var(--border-color)] hover:border-[var(--brand)] rounded">
@@ -1249,11 +1429,11 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
         <div className="h-px bg-[var(--border-color)] mt-3 mb-1 opacity-50" />
       </div>
 
-      {/* ── Import Section ── */}
+      {/* Import header */}
       <div className="flex justify-between items-center px-1 pb-3 border-b border-[var(--border-color)]">
         <h2 className="text-[var(--brand)] flex items-center gap-2 font-semibold text-sm tracking-wide">
-          Couches
-          <span className="text-[10px] bg-[var(--bg-surface)] px-2 py-0.5 rounded-full text-[var(--text-main)] font-mono border border-[var(--border-color)] shadow-sm">
+          Couches importées
+          <span className="text-[10px] bg-[var(--bg-surface)] px-2 py-0.5 rounded-full text-[var(--text-main)] font-mono border border-[var(--border-color)]">
             {customLayers.length}
           </span>
         </h2>
@@ -1262,70 +1442,31 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
           <Upload size={14} /> Importer
         </button>
         <input type="file" ref={fileInputRef} onChange={handleImport}
-          onClick={(e: any) => { e.target.value = null; }}
           accept=".json,.geojson,.kml,.csv,.xlsx,.xls,.zip"
           className="hidden" />
       </div>
 
-      {/* ── Chevauchement inline result (auto-shown after import) ── */}
-      {chevauchementResult && (
-        <div className="mt-2">
-          <ChevauchementInlinePanel result={chevauchementResult} />
-        </div>
-      )}
-
-      {/* ── Custom Layers List ── */}
-      <div className="space-y-2.5 max-h-[400px] overflow-y-auto pr-1 select-none">
+      {/* Custom layers list */}
+      <div className="space-y-2 max-h-[420px] overflow-y-auto pr-0.5 select-none">
         {customLayers.length === 0 && (
           <div className="text-center py-10 text-[var(--text-muted)] border border-dashed border-[var(--border-color)] rounded-xl bg-[var(--bg-main)]">
             <Layers className="w-8 h-8 mx-auto mb-3 opacity-50" />
-            <p className="text-xs font-semibold">Aucune couche disponible</p>
-            <p className="text-[10px] mt-1 opacity-70">Importez un fichier GeoJSON, CSV, KML, SHP…</p>
+            <p className="text-xs font-semibold">Aucune couche importée</p>
+            <p className="text-[10px] mt-1 opacity-70">GeoJSON · CSV · KML · SHP · XLSX</p>
           </div>
         )}
         {customLayers.map((layer: any) => (
           <LayerItem
-            key={layer.id} layer={layer}
+            key={layer.id}
+            layer={layer}
+            chevauchementResult={chevauchementResults[layer.id]}
             onToggle={() => toggleLayer(layer.id)}
             onDelete={() => deleteLayer(layer.id)}
             onChangeColor={(c: string) => changeColor(layer.id, c)}
             onChangeOpacity={(o: number) => changeOpacity(layer.id, o)}
             onChangeSize={(s: number) => changeSize(layer.id, s)}
-            onChangeFillMode={(mode: string) => {
-              setCustomLayers((prev: any) => prev.map((l: any) => {
-                if (l.id === layer.id) { const u={...l, fillMode: mode}; updateLayerStyle(u); return u; }
-                return l;
-              }));
-            }}
-            onChangeSymbol={(symbol: string) => {
-              setCustomLayers((prev: any) => {
-                const newLayers = [...prev];
-                const idx = newLayers.findIndex((l: any) => l.id === layer.id);
-                if (idx !== -1) {
-                  const l = newLayers[idx];
-                  const updated = { ...l, symbol };
-                  if (l.leafletLayer && featureGroupRef.current) {
-                    featureGroupRef.current.removeLayer(l.leafletLayer);
-                    const color = updated.color||'#38bdf8', opacity=updated.opacity??1;
-                    const fillOpacity = updated.fillMode==='outline' ? 0 : opacity*0.4;
-                    const weight = updated.size ? updated.size/2 : 2;
-                    const radius = updated.size ?? 6;
-                    const newLeafletLayer = L.geoJSON(l.geojson, {
-                      style: { color, opacity, weight, fillColor: color, fillOpacity },
-                      pointToLayer: (feature, latlng) => {
-                        if (symbol==='square') return L.marker(latlng,{icon:L.divIcon({className:'custom-square-marker',html:`<div style="width:${radius*2}px;height:${radius*2}px;background-color:${fillOpacity>0?color:'transparent'};border:${weight}px solid ${color};opacity:${opacity}"></div>`,iconSize:[radius*2,radius*2],iconAnchor:[radius,radius]})});
-                        if (symbol==='triangle') return L.marker(latlng,{icon:L.divIcon({className:'custom-triangle-marker',html:`<div style="width:0;height:0;border-left:${radius}px solid transparent;border-right:${radius}px solid transparent;border-bottom:${radius*2}px solid ${fillOpacity>0?color:'transparent'};opacity:${opacity}"></div>`,iconSize:[radius*2,radius*2],iconAnchor:[radius,radius]})});
-                        return L.circleMarker(latlng,{radius,fillColor:color,color,weight,opacity,fillOpacity:fillOpacity>0?opacity:0});
-                      },
-                    });
-                    featureGroupRef.current.addLayer(newLeafletLayer);
-                    updated.leafletLayer = newLeafletLayer;
-                  }
-                  newLayers[idx] = updated;
-                }
-                return newLayers;
-              });
-            }}
+            onChangeFillMode={(m: string) => changeFillMode(layer.id, m)}
+            onChangeSymbol={(s: string) => changeSymbol(layer.id, s)}
             onZoom={() => zoomToLayer(layer.id)}
           />
         ))}
@@ -1334,11 +1475,9 @@ function CouchesTab({ customLayers, setCustomLayers, featureGroupRef, setIsPanel
   );
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // GeotoolsTab (unchanged from original)
 // ─────────────────────────────────────────────────────────────────────────────
-
 function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
   const [tool, setTool] = useState<string>('points_to_polygon');
   const [layer1, setLayer1] = useState<string>('');
@@ -1358,51 +1497,50 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
 
   const executeTool = () => {
     const l1 = customLayers.find((l: any) => l.id === layer1);
-    const l2 = customLayers.find((l: any) => l.id === layer2);
-    if (!l1) return alert("Sélectionnez la couche 1");
+    if (!l1) return alert("Sélectionnez la couche principale");
     try {
-      let resultGeojson: any;
       const g1 = getGeojson(l1);
+      let resultGeojson: any;
 
       if (tool === 'calculate_geometry') {
         const area = turf.area(g1), length = turf.length(g1, { units: 'kilometers' });
-        alert(`Attributs Géométriques pour ${l1.name}:\nSurface: ${(area/10000).toFixed(2)} Ha\nPérimètre: ${length.toFixed(2)} km`);
+        alert(`📐 Attributs géométriques — ${l1.name}\n\nSurface: ${(area/10000).toFixed(4)} Ha (${area.toFixed(2)} m²)\nPérimètre: ${length.toFixed(4)} km`);
         return;
       } else if (tool === 'check_geometry') {
         try {
           const kinks = turf.kinks(g1 as any);
-          if (kinks.features.length > 0) { resultGeojson = kinks; alert(`Géométrie invalide : ${kinks.features.length} auto-intersections.`); }
-          else { alert('La géométrie est valide.'); return; }
-        } catch { alert('Impossible de vérifier.'); return; }
+          if (kinks.features.length > 0) { resultGeojson = kinks; alert(`⚠️ Géométrie invalide: ${kinks.features.length} auto-intersection(s) détectée(s).`); }
+          else { alert('✅ Géométrie valide — aucune auto-intersection.'); return; }
+        } catch { alert('Impossible de vérifier la géométrie.'); return; }
       } else if (tool === 'explode') {
         resultGeojson = turf.explode(g1);
       } else if (tool === 'export_excel') {
         const features = g1.type === 'FeatureCollection' ? g1.features : [g1];
         const data = features.map((f: any) => ({
           Couche: l1.name, Type: f.geometry.type,
-          Coordonnees: f.geometry.type === 'Point' ? f.geometry.coordinates.join(', ') : f.geometry.type === 'Polygon' ? `Polygone (${f.geometry.coordinates[0].length} pts)` : f.geometry.type,
+          Coordonnees: f.geometry.type === 'Point' ? f.geometry.coordinates.join(', ') : `${f.geometry.type} (${f.geometry.coordinates?.[0]?.length || '?'} pts)`,
           ...f.properties
         }));
         const ws = XLSX.utils.json_to_sheet(data), wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Donnees");
+        XLSX.utils.book_append_sheet(wb, ws, "Données");
         const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
         const blob = new Blob([buf], { type: 'application/octet-stream' });
         const url = URL.createObjectURL(blob);
-        const link = document.createElement('a'); link.href = url; link.download = `${l1.name}_export.xlsx`;
-        document.body.appendChild(link); link.click(); document.body.removeChild(link);
-        alert("Fichier Excel téléchargé avec succès."); return;
+        const a = document.createElement('a'); a.href = url; a.download = `${l1.name}_export.xlsx`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        alert("✅ Fichier Excel téléchargé."); return;
       } else if (tool === 'reproject_lambert') {
         const transformed = structuredClone(g1);
         turf.coordEach(transformed, (c) => { const p = proj4('EPSG:4326','EPSG:26191',c); c[0]=p[0]; c[1]=p[1]; });
-        const blob = new Blob([JSON.stringify(transformed)], { type: 'application/json' });
+        const blob = new Blob([JSON.stringify(transformed, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
-        const link = document.createElement('a'); link.href = url; link.download = `${l1.name}_lambert.geojson`;
-        document.body.appendChild(link); link.click(); document.body.removeChild(link);
-        alert("Fichier Lambert Nord téléchargé."); return;
+        const a = document.createElement('a'); a.href = url; a.download = `${l1.name}_lambert.geojson`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        alert("✅ Fichier Lambert Nord téléchargé."); return;
       } else if (tool === 'reproject_wgs84') {
-        const transformed = structuredClone(g1);
-        turf.coordEach(transformed, (c) => { const p = proj4('EPSG:26191','EPSG:4326',c); c[0]=p[0]; c[1]=p[1]; });
-        resultGeojson = transformed;
+        resultGeojson = structuredClone(g1);
+        turf.coordEach(resultGeojson, (c) => { const p = proj4('EPSG:26191','EPSG:4326',c); c[0]=p[0]; c[1]=p[1]; });
       } else if (tool === 'buffer') {
         resultGeojson = turf.buffer(g1, radius, { units: 'meters' });
       } else if (tool === 'envelope') {
@@ -1414,19 +1552,21 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
             if (coords[0][0] !== coords[coords.length-1][0] || coords[0][1] !== coords[coords.length-1][1]) coords.push([...coords[0]]);
             resultGeojson = turf.polygon([coords]);
           } else return alert("Minimum 3 points requis.");
-        } else return alert("La couche n'est pas une collection de points.");
+        } else return alert("La couche doit contenir des points.");
       } else if (tool === 'polygon_to_line') {
         resultGeojson = turf.polygonToLine(g1);
       } else if (tool === 'intersect') {
-        if (!l2) return alert("Sélectionnez la couche 2");
+        const l2 = customLayers.find((l: any) => l.id === layer2);
+        if (!l2) return alert("Sélectionnez la couche secondaire");
         const g2 = getGeojson(l2);
         const m1 = g1.type==='FeatureCollection' ? turf.union(g1) : g1;
         const m2 = g2.type==='FeatureCollection' ? turf.union(g2) : g2;
         if (!m1 || !m2) return alert("Polygones valides requis.");
         resultGeojson = turf.intersect(turf.featureCollection([m1, m2]));
-        if (!resultGeojson) return alert("Aucune intersection trouvée");
+        if (!resultGeojson) return alert("Aucune intersection trouvée.");
       } else if (tool === 'union') {
-        if (!l2) return alert("Sélectionnez la couche 2");
+        const l2 = customLayers.find((l: any) => l.id === layer2);
+        if (!l2) return alert("Sélectionnez la couche secondaire");
         const g2 = getGeojson(l2);
         const m1 = g1.type==='FeatureCollection' ? turf.union(g1) : g1;
         const m2 = g2.type==='FeatureCollection' ? turf.union(g2) : g2;
@@ -1437,30 +1577,29 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
       if (resultGeojson) {
         const id = `geotool-${Date.now()}`, color = '#eab308', opacity = 0.8;
         const layer = L.geoJSON(resultGeojson, {
-          style: { color, weight: 2, opacity, fillOpacity: opacity*0.4 },
-          pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius:6, fillColor:color, color, weight:1, opacity:1, fillOpacity:0.8 }),
+          style: { color, weight: 2, opacity, fillOpacity: opacity * 0.4 },
+          pointToLayer: (_f, latlng) => L.circleMarker(latlng, { radius: 6, fillColor: color, color, weight: 1, opacity: 1, fillOpacity: 0.8 }),
         });
         if (featureGroupRef?.current) featureGroupRef.current.addLayer(layer);
-        setCustomLayers((prev: any) => [...prev, { id, name: `Résultat ${tool}`, type:'imported', visible:true, color, opacity, geojson:resultGeojson, leafletLayer:layer }]);
-        alert("Opération réussie. Couche ajoutée.");
+        setCustomLayers((prev: any) => [...prev, { id, name: `Résultat: ${tool}`, type: 'imported', visible: true, color, opacity, geojson: resultGeojson, leafletLayer: layer }]);
+        alert("✅ Opération réussie — couche ajoutée.");
       }
     } catch (e) {
       console.error(e);
-      alert("Erreur lors du traitement : géométries incompatibles ou non-valides.");
+      alert("Erreur lors du traitement. Vérifiez que les géométries sont valides.");
     }
   };
 
   const sel = "w-full bg-[var(--bg-main)] border border-[var(--border-color)] text-[var(--text-main)] rounded-lg p-2 text-sm focus:outline-none focus:border-[var(--brand)]";
-
   return (
-    <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
-      <h2 className="text-[var(--text-main)] font-semibold text-lg tracking-tight mb-3 px-1">Géotraitement</h2>
+    <div className="space-y-4">
+      <h2 className="text-[var(--text-main)] font-semibold text-base tracking-tight px-1">Géotraitement</h2>
       <div className="space-y-4">
         <div>
           <label className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 block">Outil</label>
           <select value={tool} onChange={e => setTool(e.target.value)} className={sel}>
             <optgroup label="Informations & Attributs">
-              <option value="calculate_geometry">Calculer la Géométrie (Surface/Périmètre)</option>
+              <option value="calculate_geometry">Calculer la Géométrie (Surface / Périmètre)</option>
               <option value="export_excel">Exporter vers Excel (.xlsx)</option>
               <option value="check_geometry">Vérifier la Géométrie (Auto-intersections)</option>
             </optgroup>
@@ -1471,28 +1610,28 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
             </optgroup>
             <optgroup label="Conversion & Géométrie">
               <option value="explode">Extraire les Sommets</option>
-              <option value="points_to_polygon">Points vers Polygone</option>
-              <option value="polygon_to_line">Polygone vers Ligne</option>
+              <option value="points_to_polygon">Points → Polygone</option>
+              <option value="polygon_to_line">Polygone → Ligne</option>
               <option value="envelope">Enveloppe (Bounding Box)</option>
             </optgroup>
             <optgroup label="Reprojection">
-              <option value="reproject_lambert">Reprojeter vers Lambert Nord (Export)</option>
-              <option value="reproject_wgs84">Reprojeter vers WGS84</option>
+              <option value="reproject_lambert">Reprojeter → Lambert Nord (Export)</option>
+              <option value="reproject_wgs84">Reprojeter → WGS84</option>
             </optgroup>
           </select>
         </div>
         <div>
-          <label className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 block">Couche Principale</label>
+          <label className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 block">Couche principale</label>
           <select value={layer1} onChange={e => setLayer1(e.target.value)} className={sel}>
-            <option value="">Sélectionner une couche...</option>
+            <option value="">Sélectionner une couche…</option>
             {customLayers.map((l: any) => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
         </div>
         {(tool === 'intersect' || tool === 'union') && (
           <div>
-            <label className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 block">Couche Secondaire</label>
+            <label className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 block">Couche secondaire</label>
             <select value={layer2} onChange={e => setLayer2(e.target.value)} className={sel}>
-              <option value="">Sélectionner une couche...</option>
+              <option value="">Sélectionner une couche…</option>
               {customLayers.map((l: any) => <option key={l.id} value={l.id}>{l.name}</option>)}
             </select>
           </div>
@@ -1500,10 +1639,10 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
         {tool === 'buffer' && (
           <div>
             <label className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 block">Distance (mètres)</label>
-            <input type="number" value={radius} onChange={e => setRadius(Number(e.target.value))} className="w-full bg-[var(--bg-main)] border border-[var(--border-color)] text-[var(--text-main)] rounded-lg p-2 text-sm focus:outline-none focus:border-[var(--brand)]" />
+            <input type="number" value={radius} onChange={e => setRadius(Number(e.target.value))} min={1} className="w-full bg-[var(--bg-main)] border border-[var(--border-color)] text-[var(--text-main)] rounded-lg p-2 text-sm focus:outline-none focus:border-[var(--brand)]" />
           </div>
         )}
-        <button onClick={executeTool} className="w-full mt-4 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2">
+        <button onClick={executeTool} className="w-full mt-4 bg-[var(--brand)] hover:opacity-90 text-white font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2">
           <Combine className="w-4 h-4" /> Exécuter
         </button>
       </div>
@@ -1512,88 +1651,210 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LayerItem
+// LayerItem — REDESIGNED: professional minimalist with per-layer chevauchement
 // ─────────────────────────────────────────────────────────────────────────────
+const PRESET_COLORS = ["#22c55e","#38bdf8","#eab308","#ef4444","#a855f7","#ec4899","#f97316","#06b6d4","#84cc16","#f43f5e"];
 
-function LayerItem({ layer, onToggle, onDelete, onChangeColor, onChangeOpacity, onChangeSize, onChangeFillMode, onChangeSymbol, onZoom }: any) {
-  const colors = ["#22c55e","#38bdf8","#eab308","#ef4444","#a855f7","#ec4899","#f97316"];
-  const [isExpanded, setIsExpanded] = useState(false);
+function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeColor, onChangeOpacity, onChangeSize, onChangeFillMode, onChangeSymbol, onZoom }: {
+  layer: any;
+  chevauchementResult?: ChevauchementResult;
+  onToggle: () => void; onDelete: () => void;
+  onChangeColor: (c: string) => void; onChangeOpacity: (o: number) => void;
+  onChangeSize: (s: number) => void; onChangeFillMode: (m: string) => void;
+  onChangeSymbol: (s: string) => void; onZoom: () => void;
+}) {
+  const [showStyle, setShowStyle] = useState(false);
+  const [showChev, setShowChev] = useState(false);
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const [showChevModal, setShowChevModal] = useState(false);
+
+  // Auto-open chevauchement panel when result first arrives
+  const prevResultRef = React.useRef<ChevauchementResult | undefined>(undefined);
+  useEffect(() => {
+    if (chevauchementResult && !prevResultRef.current) {
+      setShowChev(true);
+    }
+    prevResultRef.current = chevauchementResult;
+  }, [chevauchementResult]);
+
   const hasPoints   = layer.geojson && JSON.stringify(layer.geojson).includes('"Point"');
   const hasPolygons = layer.geojson && (JSON.stringify(layer.geojson).includes('"Polygon"') || JSON.stringify(layer.geojson).includes('"MultiPolygon"'));
-  const isStaticPolygon = layer.type === 'static_polygon';
-  const showFillMode = hasPolygons || isStaticPolygon || layer.type === 'drawn';
+  const showFillMode = hasPolygons || layer.type === 'static_polygon' || layer.type === 'drawn';
+
+  // Chevauchement badge config
+  const chevPos = chevauchementResult?.globalPosition;
+  const chevColor = chevPos === 'داخل الملك الغابوي' ? '#ef4444'
+    : chevPos === 'جزئيا داخل الملك الغابوي' ? '#f97316'
+    : chevPos ? '#22c55e' : null;
 
   return (
-    <div className={`p-2.5 rounded-xl border transition-all ${layer.visible ? 'bg-[var(--bg-main)] border-[var(--border-color)]' : 'bg-transparent border-transparent opacity-70 hover:opacity-100'} group`}>
-      <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => setIsExpanded(!isExpanded)}>
-        <button onClick={(e) => { e.stopPropagation(); onToggle(); }}
-          className={`p-1.5 shrink-0 rounded-lg border ${layer.visible ? 'text-[var(--brand)] hover:opacity-80 bg-[var(--bg-surface)] border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:bg-[var(--bg-surface)] border-transparent'}`}>
-          {layer.visible ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-        </button>
-        <div className="w-3.5 h-3.5 rounded-[3px] border border-black/10 shrink-0" style={{ backgroundColor: layer.color, opacity: layer.opacity ?? 1, borderRadius: layer.symbol==='circle'?'50%':layer.symbol==='triangle'?'0':'3px' }}></div>
-        <div className="flex flex-col flex-1 min-w-0 pr-1">
-          <span className={`text-xs font-semibold truncate ${layer.visible ? 'text-[var(--text-main)]' : 'text-[var(--text-muted)]'}`}>{layer.name}</span>
+    <div className={cn(
+      "rounded-xl border overflow-hidden transition-all group/layer",
+      layer.visible
+        ? "bg-[var(--bg-main)] border-[var(--border-color)]"
+        : "bg-transparent border-[var(--border-color)]/40 opacity-55 hover:opacity-80",
+    )}>
+      {/* ─ Main row ─ */}
+      <div className="flex items-center gap-2 px-2.5 py-2 min-h-[44px]">
+        {/* Color swatch → opens picker */}
+        <div className="relative shrink-0">
+          <button
+            onClick={() => setShowColorPicker(!showColorPicker)}
+            title="Changer la couleur"
+            className="w-4 h-4 rounded border border-black/10 hover:scale-110 transition-transform focus:outline-none"
+            style={{
+              backgroundColor: layer.visible ? layer.color : '#9ca3af',
+              borderRadius: layer.symbol === 'circle' ? '50%' : layer.symbol === 'triangle' ? '2px' : '3px',
+            }}
+          />
+          {showColorPicker && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setShowColorPicker(false)} />
+              <div className="absolute left-0 top-6 z-50 bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-xl p-2.5 shadow-2xl">
+                <div className="grid grid-cols-5 gap-1.5">
+                  {PRESET_COLORS.map(c => (
+                    <button key={c} onClick={() => { onChangeColor(c); setShowColorPicker(false); }}
+                      className={cn("w-5 h-5 rounded-full border-2 hover:scale-110 transition-transform", layer.color === c ? "border-[var(--text-main)] shadow-sm" : "border-transparent")}
+                      style={{ backgroundColor: c }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </div>
-        <div className="flex items-center gap-1">
-          <button onClick={(e) => { e.stopPropagation(); onZoom(); }} className="p-1.5 text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] rounded-md opacity-0 group-hover:opacity-100" title="Centrer">
+
+        {/* Name + type */}
+        <div className="flex-1 min-w-0">
+          <p className={cn("text-[12px] font-semibold leading-tight truncate", layer.visible ? "text-[var(--text-main)]" : "text-[var(--text-muted)]")}>
+            {layer.name}
+          </p>
+          <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wide font-medium">
+            {layer.type === 'static_polygon' ? 'référence' : layer.type === 'drawn' ? 'dessin' : 'import'}
+          </p>
+        </div>
+
+        {/* Chevauchement badge */}
+        {chevauchementResult && chevColor && (
+          <button
+            onClick={() => setShowChev(!showChev)}
+            title={showChev ? "Masquer l'analyse" : "Voir l'analyse chevauchement"}
+            className={cn("shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black tracking-wide transition-all hover:opacity-80", showChev && "ring-1")}
+            style={{ backgroundColor: chevColor + '22', color: chevColor, borderColor: chevColor + '55', ringColor: chevColor }}
+          >
+            {chevauchementResult.totalPercentage.toFixed(0)}%
+          </button>
+        )}
+
+        {/* Actions */}
+        <div className="flex items-center shrink-0">
+          {/* Zoom — hover reveal */}
+          <button onClick={onZoom} title="Centrer la vue"
+            className="p-1.5 text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] rounded-md opacity-0 group-hover/layer:opacity-100 transition-all">
             <Maximize className="w-3.5 h-3.5" />
           </button>
-          <button className={`p-1.5 rounded-md ${isExpanded ? 'bg-[var(--bg-surface)] text-[var(--text-main)] border border-[var(--border-color)]' : 'text-[var(--text-muted)] border border-transparent opacity-0 group-hover:opacity-100'}`} title="Paramètres">
+          {/* Visibility */}
+          <button onClick={onToggle} title={layer.visible ? "Masquer" : "Afficher"}
+            className={cn("p-1.5 rounded-md transition-colors",
+              layer.visible ? "text-[var(--brand)] hover:bg-[var(--brand)]/10" : "text-[var(--text-muted)] hover:bg-[var(--bg-surface)]")}>
+            {layer.visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+          </button>
+          {/* Settings */}
+          <button onClick={() => setShowStyle(!showStyle)} title="Paramètres de couche"
+            className={cn("p-1.5 rounded-md transition-colors",
+              showStyle
+                ? "bg-[var(--bg-surface)] text-[var(--brand)] border border-[var(--border-color)]"
+                : "text-[var(--text-muted)] hover:bg-[var(--bg-surface)] opacity-0 group-hover/layer:opacity-100")}>
             <Settings className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      {isExpanded && (
-        <div className="mt-3 pt-3 border-t border-[var(--border-color)] space-y-4 animate-in fade-in slide-in-from-top-1">
+      {/* ─ Chevauchement panel ─ */}
+      {showChev && chevauchementResult && (
+        <div className="px-2.5 pb-2.5 pt-0 border-t border-[var(--border-color)]">
+          <div className="pt-2.5">
+            <ChevauchementLayerPanel
+              result={chevauchementResult}
+              layerName={layer.name}
+              onOpenReport={() => setShowChevModal(true)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ─ Chevauchement full-report modal ─ */}
+      {showChevModal && chevauchementResult && (
+        <ChevauchementModal
+          onClose={() => setShowChevModal(false)}
+          result={chevauchementResult}
+        />
+      )}
+
+      {/* ─ Style panel ─ */}
+      {showStyle && (
+        <div className="px-3 py-3 border-t border-[var(--border-color)] bg-[var(--bg-surface)] space-y-3">
+          {/* Symbol picker (points only) */}
           {hasPoints && (
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Symbole</span>
-              <div className="flex items-center gap-1 bg-[var(--bg-surface)] p-1 rounded-lg border border-[var(--border-color)]">
-                <button onClick={() => onChangeSymbol?.('circle')} className={`p-1 rounded ${(!layer.symbol||layer.symbol==='circle')?'bg-white shadow-sm text-[var(--brand)]':'text-[var(--text-muted)]'}`}><Circle className="w-3.5 h-3.5" /></button>
-                <button onClick={() => onChangeSymbol?.('square')} className={`p-1 rounded ${layer.symbol==='square'?'bg-white shadow-sm text-[var(--brand)]':'text-[var(--text-muted)]'}`}><Square className="w-3.5 h-3.5" /></button>
-                <button onClick={() => onChangeSymbol?.('triangle')} className={`p-1 rounded ${layer.symbol==='triangle'?'bg-white shadow-sm text-[var(--brand)]':'text-[var(--text-muted)]'}`}><Triangle className="w-3.5 h-3.5" /></button>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Symbole</span>
+              <div className="flex gap-0.5 bg-[var(--bg-main)] p-0.5 rounded-lg border border-[var(--border-color)]">
+                {([['circle', Circle], ['square', Square], ['triangle', Triangle]] as const).map(([sym, Icon]) => (
+                  <button key={sym} onClick={() => onChangeSymbol(sym)}
+                    className={cn("p-1.5 rounded transition-colors", (!layer.symbol || layer.symbol === sym) ? "bg-[var(--brand)] text-white shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
+                    <Icon className="w-3 h-3" />
+                  </button>
+                ))}
               </div>
             </div>
           )}
+
+          {/* Fill mode (polygons) */}
           {showFillMode && (
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Style</span>
-              <div className="flex items-center gap-1 bg-[var(--bg-surface)] p-1 rounded-lg border border-[var(--border-color)] text-[10px] font-bold">
-                <button onClick={() => onChangeFillMode?.('fill')} className={`px-2 py-1 rounded ${(!layer.fillMode||layer.fillMode==='fill')?'bg-white shadow-sm text-[var(--brand)]':'text-[var(--text-muted)]'}`}>Rempli</button>
-                <button onClick={() => onChangeFillMode?.('outline')} className={`px-2 py-1 rounded ${layer.fillMode==='outline'?'bg-white shadow-sm text-[var(--brand)]':'text-[var(--text-muted)]'}`}>Contour</button>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Remplissage</span>
+              <div className="flex gap-0.5 bg-[var(--bg-main)] p-0.5 rounded-lg border border-[var(--border-color)]">
+                {[['fill', 'Rempli'], ['outline', 'Contour']].map(([mode, label]) => (
+                  <button key={mode} onClick={() => onChangeFillMode(mode)}
+                    className={cn("px-2.5 py-1 rounded text-[10px] font-bold transition-colors",
+                      (mode === 'fill' ? !layer.fillMode || layer.fillMode === 'fill' : layer.fillMode === mode)
+                        ? "bg-[var(--brand)] text-white shadow-sm"
+                        : "text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
+                    {label}
+                  </button>
+                ))}
               </div>
             </div>
           )}
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Couleur</span>
-            <div className="flex gap-1.5">
-              {colors.map(c => (
-                <button key={c} onClick={() => onChangeColor(c)}
-                  className={`w-4 h-4 rounded-full ring-offset-2 hover:scale-110 ${layer.color===c?'ring-2 ring-[var(--text-main)] ring-offset-[var(--bg-main)]':'opacity-80 hover:opacity-100'}`}
-                  style={{ backgroundColor: c }} />
-              ))}
-            </div>
-          </div>
+
+          {/* Opacity */}
           <div>
             <div className="flex justify-between items-center mb-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Opacité</span>
-              <span className="text-[10px] font-mono font-semibold text-[var(--brand)]">{Math.round((layer.opacity??1)*100)}%</span>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Opacité</span>
+              <span className="text-[10px] font-mono font-bold text-[var(--brand)]">{Math.round((layer.opacity ?? 1) * 100)}%</span>
             </div>
-            <input type="range" min="0.1" max="1" step="0.1" value={layer.opacity??1} onChange={(e) => onChangeOpacity(parseFloat(e.target.value))} className="w-full accent-[var(--brand)] h-1.5 bg-[var(--border-color)] rounded-full appearance-none cursor-pointer" />
+            <input type="range" min="0.05" max="1" step="0.05" value={layer.opacity ?? 1}
+              onChange={e => onChangeOpacity(parseFloat(e.target.value))}
+              className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-[var(--brand)]" />
           </div>
+
+          {/* Size/weight */}
           <div>
             <div className="flex justify-between items-center mb-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Épaisseur</span>
-              <span className="text-[10px] font-mono font-semibold text-[var(--brand)]">{layer.size??6}px</span>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Épaisseur / Taille</span>
+              <span className="text-[10px] font-mono font-bold text-[var(--brand)]">{layer.size ?? 6}px</span>
             </div>
-            <input type="range" min="1" max="20" step="1" value={layer.size??6} onChange={(e) => onChangeSize(parseInt(e.target.value))} className="w-full accent-[var(--brand)] h-1.5 bg-[var(--border-color)] rounded-full appearance-none cursor-pointer" />
+            <input type="range" min="1" max="20" step="1" value={layer.size ?? 6}
+              onChange={e => onChangeSize(parseInt(e.target.value))}
+              className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-[var(--brand)]" />
           </div>
-          <div className="pt-2 flex justify-between items-center border-t border-[var(--border-color)]">
-            <span className="text-[9px] font-bold tracking-widest uppercase bg-[var(--bg-surface)] px-2 py-1 rounded text-[var(--text-muted)] border border-[var(--border-color)]">
-              {layer.type==='static_polygon' ? 'Référence' : layer.type==='drawn' ? 'Dessin' : 'Import'}
+
+          {/* Delete */}
+          <div className="flex items-center justify-between pt-1 border-t border-[var(--border-color)]">
+            <span className="text-[9px] uppercase tracking-wider bg-[var(--bg-main)] px-2 py-0.5 rounded border border-[var(--border-color)] text-[var(--text-muted)] font-bold">
+              {layer.type === 'static_polygon' ? 'Référence' : layer.type === 'drawn' ? 'Dessin' : 'Import'}
             </span>
-            <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="text-[10px] flex items-center gap-1 font-bold px-2 py-1 rounded text-red-500 hover:bg-red-500/10">
+            <button onClick={onDelete} className="flex items-center gap-1.5 text-[10px] font-bold text-red-500 hover:bg-red-500/10 px-2.5 py-1.5 rounded-lg transition-colors">
               <Trash2 className="w-3.5 h-3.5" /> Supprimer
             </button>
           </div>
