@@ -253,19 +253,28 @@ function performParsing(text: string) {
   };
   const labelKeys = Object.keys(INFO_LABELS);
 
-  // ── Case info extraction (token-pair strategy) ──
+  // ── Case info extraction ──
+  // Each label's value = IMMEDIATELY next token (if it is not itself a label).
+  // This prevents the "موضوع" field from accidentally receiving the judgment text.
   const infoMap: Record<string, string> = {};
   for (let i = 0; i < tokens.length; i++) {
     const matchLabel = labelKeys.find(l => tokens[i] === l);
     if (matchLabel) {
-      let j = i + 1;
-      while (j < tokens.length && labelKeys.includes(tokens[j])) j++;
-      if (j < tokens.length && tokens[j] && tokens[j].length < 200 && !labelKeys.includes(tokens[j])) {
+      const j = i + 1;
+      if (j < tokens.length && !labelKeys.includes(tokens[j]) && tokens[j].length >= 1 && tokens[j].length < 250) {
         const key = INFO_LABELS[matchLabel];
         if (!infoMap[key]) infoMap[key] = tokens[j];
         i = j;
       }
+      // else label has no value → skip silently
     }
+  }
+
+  // ── Validation: judgment text is NOT a subject ──
+  const JUDGMENT_RE = /حكم قطعي|حكم ابتدائي|قرار رقم|رقم\s*[:\s]\s*\d{3,}/;
+  if (infoMap['subject'] && JUDGMENT_RE.test(infoMap['subject'])) {
+    if (!infoMap['lastDecision']) infoMap['lastDecision'] = infoMap['subject'];
+    delete infoMap['subject'];
   }
 
   // Regex fallbacks
@@ -793,43 +802,85 @@ export function Contentieux() {
                   <table className="w-full text-sm text-right">
                     <thead className="bg-stone-50 text-stone-500 border-b border-stone-200">
                       <tr>
-                        <th className="px-4 py-4 w-10">
+                        <th className="px-3 py-3.5 w-10">
                           <input type="checkbox" className="rounded border-stone-300 text-emerald-600 w-4 h-4"
                             checked={processedCases.length > 0 && selectedIds.size === processedCases.length}
                             onChange={e => setSelectedIds(e.target.checked ? new Set(processedCases.map(c => c.id)) : new Set())} />
                         </th>
-                        <SortTh l="المرجع" k="ref" />
-                        <SortTh l="المحكمة" k="court" />
-                        <SortTh l="تاريخ التسجيل" k="date" />
-                        <SortTh l="الموضوع" k="subject" />
+                        <SortTh l="رقم الملف في المحكمة" k="mahakimId" />
+                        <SortTh l="المحكمة / الشعبة" k="court" />
+                        <SortTh l="التاريخ" k="date" />
+                        <SortTh l="الموضوع والنوع" k="subject" />
+                        <SortTh l="الخصم / المدعى عليه" k="defendant" />
                         <SortTh l="الوضعية" k="status" />
-                        <SortTh l="الجلسة القادمة" k="nextSession" />
-                        <th className="px-4 py-4 font-bold">إجراءات</th>
+                        <SortTh l="آخر إجراء / حكم" k="nextSession" />
+                        <th className="px-3 py-3.5 font-bold">أدوات</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-stone-100">
                       {processedCases.map(c => (
                         <tr key={c.id} onClick={() => setSelectedCase(c)}
                           className={`hover:bg-emerald-50/50 transition-colors cursor-pointer group ${selectedIds.has(c.id) ? 'bg-emerald-50/30' : ''}`}>
-                          <td className="px-4 py-4" onClick={e => e.stopPropagation()}>
+                          <td className="px-3 py-3.5" onClick={e => e.stopPropagation()}>
                             <input type="checkbox" className="rounded border-stone-300 text-emerald-600 w-4 h-4 cursor-pointer"
                               checked={selectedIds.has(c.id)}
                               onChange={() => setSelectedIds(prev => { const s = new Set(prev); s.has(c.id) ? s.delete(c.id) : s.add(c.id); return s; })} />
                           </td>
-                          <td className="px-4 py-4">
-                            <span className="font-mono font-bold text-stone-700 bg-stone-100 px-2 py-1 rounded text-xs">{c.mahakimId || c.id}</span>
-                            {!c.mahakimId && <p className="text-[10px] text-stone-400 mt-0.5">مؤقت</p>}
+                          {/* رقم الملف في المحكمة */}
+                          <td className="px-3 py-3.5">
+                            {c.mahakimId
+                              ? <span className="font-mono font-black text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg text-xs">{c.mahakimId}</span>
+                              : <span className="font-mono text-stone-400 text-xs italic">غير مسجل</span>}
                           </td>
-                          <td className="px-4 py-4"><p className="font-bold text-stone-800 text-xs leading-snug">{c.court}</p></td>
-                          <td className="px-4 py-4 font-mono text-xs text-stone-600 whitespace-nowrap">{c.date}</td>
-                          <td className="px-4 py-4 max-w-[220px]">
-                            <p className="font-bold text-stone-800 text-sm truncate">{c.subject}</p>
-                            <p className="text-xs text-stone-500 mt-0.5 truncate">{c.type} • ضد: {c.defendant || c.parties?.find(p => p.role.includes('عليه') || p.role.includes('متهم'))?.name || 'غير محدد'}</p>
+                          {/* المحكمة + الشعبة */}
+                          <td className="px-3 py-3.5 max-w-[180px]">
+                            <p className="font-bold text-stone-800 text-xs leading-snug truncate">{c.court}</p>
+                            {c.section && <p className="text-[10px] text-emerald-600 font-bold mt-0.5">{c.section}</p>}
                           </td>
-                          <td className="px-4 py-4">{badge(c.status)}</td>
-                          <td className="px-4 py-4 font-mono font-bold text-emerald-700 text-xs whitespace-nowrap">{c.nextSession || '—'}</td>
-                          <td className="px-4 py-4" onClick={e => e.stopPropagation()}>
+                          {/* تاريخ التسجيل */}
+                          <td className="px-3 py-3.5 font-mono text-xs text-stone-500 whitespace-nowrap">{c.date}</td>
+                          {/* الموضوع + النوع */}
+                          <td className="px-3 py-3.5 max-w-[200px]">
+                            <p className="font-bold text-stone-800 text-sm leading-snug truncate">
+                              {c.subject && c.subject !== 'غير محدد' ? c.subject : '—'}
+                            </p>
+                            <p className="text-[10px] text-stone-400 mt-0.5 font-medium">{c.type || ''}</p>
+                          </td>
+                          {/* الخصم / المدعى عليه */}
+                          <td className="px-3 py-3.5 max-w-[160px]">
+                            <p className="text-xs font-bold text-stone-700 truncate">
+                              {c.defendant || c.parties?.find(p => p.role.includes('عليه') || p.role.includes('متهم') || p.role.includes('مطلوب'))?.name || '—'}
+                            </p>
+                          </td>
+                          {/* الوضعية */}
+                          <td className="px-3 py-3.5">{badge(c.status)}</td>
+                          {/* آخر إجراء / حكم */}
+                          <td className="px-3 py-3.5 max-w-[180px]">
+                            {(() => {
+                              const lastProc = [...(c.procedures || [])].sort((a, b) => {
+                                const p = (d: string) => { if (d.match(/\d{2}\/\d{2}\/\d{4}/)) { const [dd, mm, yy] = d.split('/'); return new Date(`${yy}-${mm}-${dd}`).getTime(); } return new Date(d).getTime() || 0; };
+                                return p(b.date) - p(a.date);
+                              })[0];
+                              if (!lastProc && !c.nextSession) return <span className="text-stone-300 text-xs">—</span>;
+                              return (
+                                <div>
+                                  <p className="font-mono font-bold text-emerald-700 text-xs whitespace-nowrap">
+                                    {lastProc?.date || c.nextSession || ''}
+                                  </p>
+                                  {lastProc?.action && (
+                                    <p className="text-[10px] text-stone-600 font-medium mt-0.5 truncate max-w-[170px]">{lastProc.action}</p>
+                                  )}
+                                  {lastProc?.decision && lastProc.decision !== '-' && (
+                                    <p className="text-[10px] text-emerald-600 italic mt-0.5 truncate max-w-[170px]">{lastProc.decision}</p>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                          </td>
+                          {/* أدوات */}
+                          <td className="px-3 py-3.5" onClick={e => e.stopPropagation()}>
                             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button onClick={() => setSelectedCase(c)} title="فتح الملف" className="p-1.5 bg-white text-stone-500 hover:text-emerald-700 hover:bg-emerald-50 border border-stone-200 rounded-lg"><Eye className="size-3.5" /></button>
                               <button onClick={() => exportSingleCaseXLSX(c)} title="Excel" className="p-1.5 bg-white text-stone-500 hover:text-emerald-700 hover:bg-emerald-50 border border-stone-200 rounded-lg"><FileSpreadsheet className="size-3.5" /></button>
                               <button onClick={() => { setWizardData(c); setIsWizardOpen(true); }} title="تعديل" className="p-1.5 bg-white text-stone-500 hover:text-blue-700 hover:bg-blue-50 border border-stone-200 rounded-lg"><Activity className="size-3.5" /></button>
                               <button onClick={() => { if (window.confirm('حذف الملف؟')) handleDeleteCase(c.id); }} title="حذف" className="p-1.5 bg-white text-stone-500 hover:text-red-600 hover:bg-red-50 border border-stone-200 rounded-lg"><Trash2 className="size-3.5" /></button>
@@ -838,7 +889,7 @@ export function Contentieux() {
                         </tr>
                       ))}
                       {processedCases.length === 0 && (
-                        <tr><td colSpan={8} className="px-6 py-14 text-center">
+                        <tr><td colSpan={9} className="px-6 py-14 text-center">
                           <Search className="size-10 text-stone-200 mx-auto mb-3" />
                           <p className="text-stone-400 font-medium">لا توجد نتائج مطابقة</p>
                           {searchQuery && <p className="text-xs text-stone-400 mt-1">جرب كلمات أخرى</p>}
@@ -872,15 +923,16 @@ export function Contentieux() {
 // ─── Stable iframe (never re-renders) ─────────────────────────────────────────
 
 const PortalIframe = React.memo(
-  () => (
+  React.forwardRef<HTMLIFrameElement>((_, ref) => (
     <iframe
+      ref={ref}
       src="https://www.mahakim.ma/#/suivi/dossier-suivi"
       title="Mahakim.ma"
       className="w-full h-full border-0 absolute inset-0 pt-9 bg-white"
       sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
     />
-  ),
-  () => true   // Always equal props → never re-render
+  )),
+  () => true
 );
 
 // ─── MahakimIntegration ───────────────────────────────────────────────────────
@@ -889,15 +941,48 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   const [pasteData, setPasteData] = useState('');
   const [result, setResult] = useState<ReturnType<typeof performParsing> | null>(null);
   const [extractMode, setExtractMode] = useState<'portal' | 'parsed'>('portal');
+  const [focusHint, setFocusHint] = useState(false);
   const pasteCount = useRef(0);
+  const pasteDataRef = useRef('');
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // Keep ref in sync with state (avoids stale closure in paste listener)
+  useEffect(() => { pasteDataRef.current = pasteData; }, [pasteData]);
+
+  // ── Auto-capture Ctrl+V anywhere on this component (outside textareas) ──
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const tgt = e.target as HTMLElement;
+      if (tgt.tagName === 'TEXTAREA' || tgt.tagName === 'INPUT') return;
+      const text = e.clipboardData?.getData('text/plain') || '';
+      if (text.length < 30) return;
+      e.preventDefault();
+      const sep = pasteDataRef.current.trim() ? `\n\n════════ لصقة ${++pasteCount.current} ════════\n\n` : '';
+      const newData = pasteDataRef.current + sep + text;
+      setPasteData(newData);
+      const parsed = performParsing(newData);
+      setResult(parsed);
+      setExtractMode('parsed');
+    };
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, []);
+
+  // ── Focus portal (help user go straight to Ctrl+A without extra click) ──
+  const handleFocusPortal = () => {
+    if (iframeRef.current) {
+      try { iframeRef.current.focus(); } catch {}
+    }
+    setFocusHint(true);
+    setTimeout(() => setFocusHint(false), 5000);
+  };
 
   const handleReadClipboard = async () => {
     try {
       const text = await navigator.clipboard.readText();
       if (!text.trim()) { alert('الحافظة فارغة. الرجاء نسخ المحتوى أولاً (Ctrl+A ثم Ctrl+C)'); return; }
-      // Accumulate: add separator + new text
-      const separator = pasteData.trim() ? `\n\n════════ لصقة ${++pasteCount.current} ════════\n\n` : '';
-      const newData = pasteData + separator + text;
+      const sep = pasteDataRef.current.trim() ? `\n\n════════ لصقة ${++pasteCount.current} ════════\n\n` : '';
+      const newData = pasteDataRef.current + sep + text;
       setPasteData(newData);
       const parsed = performParsing(newData);
       setResult(parsed);
@@ -943,7 +1028,6 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
     handleReset();
   };
 
-  const pasteCount_display = pasteData.split('════════').length > 1 ? Math.floor(pasteData.split('════════').length / 2) + 1 : (pasteData.trim() ? 1 : 0);
 
   return (
     <div className="bg-white rounded-2xl border border-stone-200 shadow-sm flex flex-col min-h-[700px] overflow-hidden" dir="rtl">
@@ -976,50 +1060,78 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
 
           <div className="space-y-4 relative before:absolute before:right-[15px] before:top-2 before:bottom-6 before:w-px before:bg-emerald-200">
             {[
-              { n: 1, title: 'ابحث عن الملف داخل البوابة', desc: 'استخدم نموذج البحث على اليمين. أدخل رقم الملف والمحكمة.' },
-              { n: 2, title: 'انسخ محتوى الصفحة', desc: 'انقر داخل إطار البوابة ثم اضغط Ctrl+A ثم Ctrl+C. كرر لكل تبويبة (الإجراءات، الأطراف...).' },
-              { n: 3, title: 'استخرج وحلل البيانات', desc: '' },
-            ].map(step => (
-              <div key={step.n} className="relative pl-4">
-                <div className={`absolute right-0 top-0 size-8 rounded-full font-black border-2 border-white flex items-center justify-center shadow-sm text-sm ${step.n === 3 ? 'bg-emerald-600 text-white' : 'bg-emerald-100 text-emerald-700'}`}>{step.n}</div>
-                <div className="mr-12">
-                  <h4 className="font-bold text-sm text-stone-800 mb-1">{step.title}</h4>
-                  {step.desc && <p className="text-xs text-stone-500 leading-relaxed">{step.desc}</p>}
-                  {step.n === 3 && (
-                    <div className="mt-3 space-y-3">
-                      <button onClick={handleReadClipboard}
-                        className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-sm transition-all hover:shadow flex items-center justify-center gap-2">
-                        <ClipboardPaste className="size-5" />
-                        {pasteCount_display > 0 ? `إضافة لصقة جديدة (${pasteCount_display} موجودة)` : 'استخراج من الحافظة'}
-                      </button>
-                      {pasteCount_display > 0 && (
-                        <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 px-3 py-2 rounded-xl text-xs font-bold text-emerald-800">
-                          <CheckCircle2 className="size-4 text-emerald-500" />
-                          {pasteCount_display} لصقة محفوظة — يمكنك إضافة المزيد من التبويبات
-                        </div>
-                      )}
-                      <div className="border-t border-stone-200 pt-3">
-                        <p className="text-[11px] text-stone-500 mb-1.5 font-bold">أو الصق يدوياً (Ctrl+V):</p>
-                        <textarea
-                          value={pasteData}
-                          onChange={e => setPasteData(e.target.value)}
-                          placeholder="الصق المحتوى هنا... يمكنك إضافة عدة لصقات تباعاً"
-                          className="w-full bg-white border border-stone-200 rounded-lg p-3 text-[10px] font-mono text-stone-600 outline-none resize-none h-28 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 shadow-sm"
-                        />
-                        <div className="flex gap-2 mt-2">
-                          <button onClick={handleManual} disabled={!pasteData.trim()}
-                            className="flex-1 py-2.5 bg-stone-800 disabled:opacity-50 hover:bg-stone-900 text-white rounded-lg font-bold text-xs">
-                            تحليل النص
+              { n: 1, title: 'ابحث عن الملف', desc: 'ابحث داخل البوابة بالرقم والمحكمة حتى تظهر بيانات الملف.', extra: null },
+              {
+                n: 2, title: 'انسخ محتوى الصفحة', desc: '', extra: (
+                  <div className="mt-2 space-y-2">
+                    <button onClick={handleFocusPortal}
+                      className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm shadow-sm flex items-center justify-center gap-2 transition-all">
+                      🎯 ركّز على البوابة (ثم Ctrl+A → Ctrl+C)
+                    </button>
+                    {focusHint && (
+                      <div className="bg-blue-50 border border-blue-200 p-3 rounded-xl text-xs font-bold text-blue-800 animate-in slide-in-from-top-2">
+                        ✓ البوابة جاهزة — الآن اضغط
+                        <kbd className="bg-white border border-blue-300 px-1.5 py-0.5 rounded font-mono mx-1">Ctrl+A</kbd>
+                        ثم
+                        <kbd className="bg-white border border-blue-300 px-1.5 py-0.5 rounded font-mono mx-1">Ctrl+C</kbd>
+                        ثم
+                        <kbd className="bg-white border border-blue-300 px-1.5 py-0.5 rounded font-mono mx-1">Ctrl+V</kbd>
+                        هنا أو في أي مكان على الصفحة
+                      </div>
+                    )}
+                    <p className="text-[10px] text-stone-500 leading-relaxed">انقر زر التركيز، ثم Ctrl+A لتحديد الكل في البوابة، ثم Ctrl+C للنسخ. كرر لكل تبويبة (الإجراءات، الأطراف...).</p>
+                  </div>
+                )
+              },
+              {
+                n: 3, title: 'الصق تلقائياً', desc: '', extra: (
+                  <div className="mt-2 space-y-2">
+                    <div className="bg-emerald-50 border border-emerald-200 p-3 rounded-xl text-xs font-bold text-emerald-800">
+                      ⚡ الصق
+                      <kbd className="bg-white border border-emerald-300 px-1.5 py-0.5 rounded font-mono mx-1">Ctrl+V</kbd>
+                      في أي مكان على هذه الصفحة → يُعالَج تلقائياً
+                    </div>
+                    <button onClick={handleReadClipboard}
+                      className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-sm transition-all hover:shadow flex items-center justify-center gap-2">
+                      <ClipboardPaste className="size-5" />
+                      {pasteData.trim() ? `إضافة لصقة أخرى (${pasteCount.current + 1})` : 'استخراج من الحافظة'}
+                    </button>
+                    {pasteData.trim() && (
+                      <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 px-3 py-2 rounded-xl text-xs font-bold text-emerald-800">
+                        <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                        {pasteCount.current} لصقة محفوظة — كرر لكل تبويبة
+                      </div>
+                    )}
+                    <div className="border-t border-stone-200 pt-3">
+                      <p className="text-[11px] text-stone-500 mb-1.5 font-bold">أو الصق يدوياً:</p>
+                      <textarea
+                        value={pasteData}
+                        onChange={e => setPasteData(e.target.value)}
+                        placeholder="الصق المحتوى هنا... أو اضغط Ctrl+V في أي مكان"
+                        className="w-full bg-white border border-stone-200 rounded-lg p-3 text-[10px] font-mono text-stone-600 outline-none resize-none h-24 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                      />
+                      <div className="flex gap-2 mt-2">
+                        <button onClick={handleManual} disabled={!pasteData.trim()}
+                          className="flex-1 py-2 bg-stone-800 disabled:opacity-40 hover:bg-stone-900 text-white rounded-lg font-bold text-xs">
+                          تحليل النص
+                        </button>
+                        {pasteData.trim() && (
+                          <button onClick={handleReset} className="px-3 py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold border border-red-200">
+                            مسح الكل
                           </button>
-                          {pasteData.trim() && (
-                            <button onClick={handleReset} className="px-3 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold border border-red-200">
-                              مسح
-                            </button>
-                          )}
-                        </div>
+                        )}
                       </div>
                     </div>
-                  )}
+                  </div>
+                )
+              },
+            ].map(step => (
+              <div key={step.n} className="relative pl-4">
+                <div className={`absolute right-0 top-0 size-8 rounded-full font-black border-2 border-white flex items-center justify-center shadow-sm text-sm ${step.n === 3 ? 'bg-emerald-600 text-white' : step.n === 2 ? 'bg-blue-500 text-white' : 'bg-emerald-100 text-emerald-700'}`}>{step.n}</div>
+                <div className="mr-12">
+                  <h4 className="font-bold text-sm text-stone-800 mb-1">{step.title}</h4>
+                  {step.desc && <p className="text-xs text-stone-500">{step.desc}</p>}
+                  {(step as any).extra}
                 </div>
               </div>
             ))}
@@ -1033,7 +1145,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
             <div className="absolute inset-x-0 top-0 h-9 bg-white/80 backdrop-blur border-b border-stone-200 flex items-center justify-center z-10 pointer-events-none">
               <span className="text-xs font-bold text-stone-500 flex items-center gap-2"><Lock className="size-3 text-stone-400" /> بوابة محاكم الأصلية</span>
             </div>
-            <PortalIframe />
+            <PortalIframe ref={iframeRef} />
             {/* Gradient mask covering blue footer */}
             <div className="absolute bottom-0 left-0 right-0 h-[220px] bg-gradient-to-t from-stone-100 via-stone-100/70 to-transparent pointer-events-none z-10" />
           </div>
