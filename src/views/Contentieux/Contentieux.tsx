@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Search, Filter, Plus, FileText, CheckCircle2, Clock, AlertCircle,
   ChevronLeft, Scale, Shield, User, FilePlus2, Activity, Landmark,
   AlertTriangle, DownloadCloud, ClipboardPaste, Lock, MousePointerClick,
   Trash2, Download, Printer, PieChartIcon, Gavel, FileCheck2, Check,
-  FileSpreadsheet, Database, Layers, RefreshCw, Copy, X, Table2,
-  BookOpen, ChevronDown, ArrowLeftCircle, CheckSquare, Square, Zap, Eye, Sparkles
+  FileSpreadsheet, Database, RefreshCw, X, Eye, Sparkles
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { CaseWizard } from './components/CaseWizard';
@@ -51,8 +50,6 @@ export interface Case {
   parties?: { role: string; name: string }[];
 }
 
-// ─── Sample Data ──────────────────────────────────────────────────────────────
-
 const recentCases: Case[] = [
   {
     id: 'CTX-2024-001', mahakimId: '2024/1101/221', date: '2024-03-15',
@@ -74,31 +71,22 @@ const recentCases: Case[] = [
     court: 'محكمة الاستئناف بالقنيطرة', status: 'محجوز للمداولة',
     defendant: 'مجهول'
   },
-  {
-    id: 'CTX-2024-003', date: '2024-01-20', type: 'إداري',
-    subject: 'طعن في قرار الإفراغ', court: 'المحكمة الإدارية بالرباط',
-    status: 'قيد التحقيق', nextSession: '2024-05-10',
-    defendant: 'شركة البناء الحديث'
-  },
 ];
 
-// ─── Utilities: Fuzzy Search ──────────────────────────────────────────────────
+// ─── Fuzzy Search ─────────────────────────────────────────────────────────────
 
 const normalizeAr = (t: string) =>
   t.toLowerCase()
     .replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/[يى]/g, 'ي')
     .replace(/[\u064B-\u065F]/g, '');
 
-function levenshtein(a: string, b: string): number {
+function lev(a: string, b: string): number {
   const m = a.length, n = b.length;
   const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
-    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
-  );
+    Array.from({ length: n + 1 }, (_, j) => i === 0 ? j : j === 0 ? i : 0));
   for (let i = 1; i <= m; i++)
     for (let j = 1; j <= n; j++)
-      dp[i][j] = a[i - 1] === b[j - 1]
-        ? dp[i - 1][j - 1]
-        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
   return dp[m][n];
 }
 
@@ -112,445 +100,321 @@ function fuzzyMatchCase(c: Case, raw: string): boolean {
     ...(c.parties?.map(p => `${p.role} ${p.name}`) || []),
     ...(c.procedures?.map(p => `${p.action} ${p.decision}`) || []),
   ].join(' '));
-
   if (blob.includes(q)) return true;
-
-  const qWords = q.split(/\s+/).filter(w => w.length >= 2);
-  return qWords.every(word => {
+  return q.split(/\s+/).filter(w => w.length >= 2).every(word => {
     if (blob.includes(word)) return true;
-    const threshold = Math.max(1, Math.floor(word.length / 4));
-    return blob.split(/\s+/).some(bw => bw.length > 1 && levenshtein(bw, word) <= threshold);
+    const t = Math.max(1, Math.floor(word.length / 4));
+    return blob.split(/\s+/).some(bw => bw.length > 1 && lev(bw, word) <= t);
   });
 }
 
-// ─── Utilities: XLSX Export ───────────────────────────────────────────────────
+// ─── XLSX Export ──────────────────────────────────────────────────────────────
 
-const setColWidths = (ws: XLSX.WorkSheet, widths: number[]) => {
-  ws['!cols'] = widths.map(w => ({ wch: w }));
-};
+/** Single case → ONE sheet with all data laid out vertically */
+export function exportSingleCaseXLSX(c: Case) {
+  const wb = XLSX.utils.book_new();
+  const rows: (string | number)[][] = [];
 
+  const sep = () => rows.push(['']);
+  const section = (title: string) => {
+    rows.push(['']);
+    rows.push([`▌ ${title}`]);
+    rows.push(['']);
+  };
+
+  // ── Info block ──
+  rows.push(['بطاقة الملف', '', '', '']);
+  rows.push(['المرجع الداخلي', c.id, 'رقم محاكم', c.mahakimId || '']);
+  rows.push(['الرقم الوطني للملف', c.nationalId || '', 'المحكمة', c.court]);
+  rows.push(['نوع الدعوى', c.type, 'الشعبة', c.section || '']);
+  rows.push(['القاضي المقرر', c.judge || '', 'تاريخ التسجيل', c.date]);
+  rows.push(['موضوع النزاع', c.subject, 'الخصم الرئيسي', c.defendant || '']);
+  rows.push(['الوضعية', c.status, 'الجلسة القادمة', c.nextSession || '']);
+
+  // ── Parties ──
+  if (c.parties && c.parties.length > 0) {
+    section('لائحة الأطراف');
+    rows.push(['الصفة', 'الاسم / الهيئة']);
+    c.parties.forEach(p => rows.push([p.role, p.name]));
+  } else if (c.defendant) {
+    section('لائحة الأطراف');
+    rows.push(['الصفة', 'الاسم / الهيئة']);
+    rows.push(['ضد', c.defendant]);
+  }
+
+  // ── Procedures ──
+  if (c.procedures && c.procedures.length > 0) {
+    section('الإجراءات والجلسات');
+    rows.push(['تاريخ الإجراء', 'نوع الإجراء', 'القرار / الملاحظة', 'رقم الحكم / الخبرة']);
+    const sorted = [...c.procedures].sort((a, b) => {
+      const p = (d: string) => {
+        if (d.match(/\d{2}\/\d{2}\/\d{4}/)) { const [dd, mm, yy] = d.split('/'); return new Date(`${yy}-${mm}-${dd}`).getTime(); }
+        return new Date(d).getTime() || 0;
+      };
+      return p(b.date) - p(a.date);
+    });
+    sorted.forEach(proc => rows.push([proc.date, proc.action, proc.decision, (proc as any).number || '']));
+  }
+
+  // ── PV ──
+  if (c.pvNumber || c.offenseType || c.fine) {
+    section('محضر المخالفة والعقوبات');
+    rows.push(['رقم المحضر', c.pvNumber || '', 'تاريخ المحضر', c.pvDate || '']);
+    rows.push(['نوع الجنحة', c.offenseType || '', 'مآل المحضر', c.pvStatus || '']);
+    rows.push(['الغرامة (د.م)', c.fine ? Number(c.fine) : '', 'التعويضات (د.م)', c.compensation ? Number(c.compensation) : '']);
+    rows.push(['الإرجاع', c.restitution || '', 'عقوبات أخرى', c.otherSanctions || '']);
+    rows.push(['صلح', c.reconciliation ? 'نعم' : 'لا', '', '']);
+  }
+
+  // ── Execution ──
+  if (c.executionStatus || c.notificationMethod) {
+    section('جناح التنفيذ والتبليغات');
+    rows.push(['حالة التنفيذ', c.executionStatus || '', 'طريقة التبليغ', c.notificationMethod || '']);
+    rows.push(['تاريخ التبليغ', c.notificationDate || '', 'تاريخ التنفيذ', c.executionDate || '']);
+    rows.push(['المبالغ المستخلصة (د.م)', c.executionAmountRecovered ? Number(c.executionAmountRecovered) : '', 'عائق التنفيذ', c.executionObstacle || '']);
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 28 }, { wch: 38 }, { wch: 28 }, { wch: 38 }];
+  XLSX.utils.book_append_sheet(wb, ws, 'بطاقة الملف الكاملة');
+  XLSX.writeFile(wb, `ملف_${(c.mahakimId || c.id).replace(/\//g, '-')}.xlsx`);
+}
+
+/** All cases → ONE wide flat sheet, one row per case */
 export function exportAllCasesXLSX(cases: Case[]) {
   const wb = XLSX.utils.book_new();
 
-  // Sheet 1 – ملخص القضايا
-  const summary = cases.map(c => ({
-    'المرجع الداخلي': c.id,
-    'رقم محاكم': c.mahakimId || '',
-    'الرقم الوطني': c.nationalId || '',
-    'المحكمة': c.court,
-    'درجة المحكمة': c.courtLevel || '',
-    'الشعبة': c.section || '',
-    'القاضي المقرر': c.judge || '',
-    'تاريخ التسجيل': c.date,
-    'نوع الدعوى': c.type,
-    'موضوع النزاع': c.subject,
-    'الخصم': c.defendant || '',
-    'الوضعية': c.status,
-    'الجلسة القادمة': c.nextSession || '',
-    'عدد الإجراءات': (c.procedures || []).length,
-    'عدد الأطراف': (c.parties || []).length,
-    'الغرامة (د.م)': c.fine ? Number(c.fine) : '',
-    'التعويضات (د.م)': c.compensation ? Number(c.compensation) : '',
-    'المستخلص (د.م)': c.executionAmountRecovered ? Number(c.executionAmountRecovered) : '',
-    'حالة التنفيذ': c.executionStatus || '',
-    'تاريخ التنفيذ': c.executionDate || '',
-  }));
-  const ws1 = XLSX.utils.json_to_sheet(summary);
-  setColWidths(ws1, [18, 18, 20, 28, 14, 16, 22, 14, 12, 30, 22, 22, 14, 10, 10, 12, 12, 12, 18, 14]);
-  XLSX.utils.book_append_sheet(wb, ws1, 'ملخص القضايا');
+  const headers = [
+    'المرجع الداخلي', 'رقم محاكم', 'الرقم الوطني للملف',
+    'المحكمة', 'درجة المحكمة', 'الشعبة', 'القاضي المقرر',
+    'تاريخ التسجيل', 'نوع الدعوى', 'موضوع النزاع',
+    'الوضعية', 'الجلسة القادمة', 'الخصم',
+    'الأطراف (ملخص)',
+    'عدد الإجراءات', 'آخر تاريخ إجراء', 'القرار الأخير',
+    'رقم المحضر', 'تاريخ المحضر', 'نوع الجنحة', 'مآل المحضر',
+    'الغرامة (د.م)', 'التعويضات (د.م)', 'الإرجاع',
+    'صلح', 'حالة التنفيذ', 'طريقة التبليغ', 'تاريخ التبليغ',
+    'تاريخ التنفيذ', 'المبالغ المستخلصة (د.م)', 'عائق التنفيذ',
+  ];
 
-  // Sheet 2 – الإجراءات والجلسات
-  const procs: object[] = [];
-  cases.forEach(c => {
-    (c.procedures || []).forEach(p => procs.push({
-      'رقم محاكم': c.mahakimId || c.id,
-      'المحكمة': c.court,
-      'موضوع النزاع': c.subject,
-      'تاريخ الإجراء': p.date,
-      'نوع الإجراء': p.action,
-      'القرار / الملاحظة': p.decision,
-      'رقم الحكم أو الخبرة': (p as any).number || '',
-    }));
+  const data = cases.map(c => {
+    const sortedProcs = [...(c.procedures || [])].sort((a, b) => {
+      const p = (d: string) => {
+        if (d.match(/\d{2}\/\d{2}\/\d{4}/)) { const [dd, mm, yy] = d.split('/'); return new Date(`${yy}-${mm}-${dd}`).getTime(); }
+        return new Date(d).getTime() || 0;
+      };
+      return p(b.date) - p(a.date);
+    });
+    const lastProc = sortedProcs[0];
+    const partiesSummary = (c.parties || []).map(p => `${p.role}: ${p.name}`).join(' | ') || c.defendant || '';
+
+    return [
+      c.id, c.mahakimId || '', c.nationalId || '',
+      c.court, c.courtLevel || '', c.section || '', c.judge || '',
+      c.date, c.type, c.subject,
+      c.status, c.nextSession || '', c.defendant || '',
+      partiesSummary,
+      (c.procedures || []).length, lastProc?.date || '', lastProc?.decision || '',
+      c.pvNumber || '', c.pvDate || '', c.offenseType || '', c.pvStatus || '',
+      c.fine ? Number(c.fine) : '', c.compensation ? Number(c.compensation) : '', c.restitution || '',
+      c.reconciliation ? 'نعم' : '', c.executionStatus || '', c.notificationMethod || '', c.notificationDate || '',
+      c.executionDate || '', c.executionAmountRecovered ? Number(c.executionAmountRecovered) : '', c.executionObstacle || '',
+    ];
   });
-  if (procs.length > 0) {
-    const ws2 = XLSX.utils.json_to_sheet(procs);
-    setColWidths(ws2, [18, 28, 30, 14, 35, 35, 18]);
-    XLSX.utils.book_append_sheet(wb, ws2, 'الإجراءات والجلسات');
-  }
 
-  // Sheet 3 – لائحة الأطراف
-  const parties: object[] = [];
-  cases.forEach(c => {
-    if (c.parties && c.parties.length > 0) {
-      c.parties.forEach(p => parties.push({
-        'رقم محاكم': c.mahakimId || c.id,
-        'المحكمة': c.court,
-        'موضوع النزاع': c.subject,
-        'الصفة': p.role,
-        'الاسم / الهيئة': p.name,
-      }));
-    } else {
-      parties.push({
-        'رقم محاكم': c.mahakimId || c.id,
-        'المحكمة': c.court,
-        'موضوع النزاع': c.subject,
-        'الصفة': 'ضد',
-        'الاسم / الهيئة': c.defendant || 'غير محدد',
-      });
-    }
-  });
-  if (parties.length > 0) {
-    const ws3 = XLSX.utils.json_to_sheet(parties);
-    setColWidths(ws3, [18, 28, 30, 20, 30]);
-    XLSX.utils.book_append_sheet(wb, ws3, 'لائحة الأطراف');
-  }
-
-  // Sheet 4 – محاضر المخالفات
-  const pvs = cases.filter(c => c.pvNumber || c.offenseType).map(c => ({
-    'رقم محاكم': c.mahakimId || c.id,
-    'رقم المحضر': c.pvNumber || '',
-    'تاريخ المحضر': c.pvDate || '',
-    'نوع الجنحة / المخالفة': c.offenseType || '',
-    'مآل المحضر': c.pvStatus || '',
-    'الغرامة (د.م)': c.fine ? Number(c.fine) : '',
-    'التعويضات (د.م)': c.compensation ? Number(c.compensation) : '',
-    'الإرجاع': c.restitution || '',
-    'عقوبات أخرى': c.otherSanctions || '',
-    'صلح': c.reconciliation ? 'نعم' : 'لا',
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
+  ws['!cols'] = headers.map((h, i) => ({
+    wch: [18, 18, 20, 28, 14, 16, 22, 14, 12, 30, 22, 14, 20, 40, 8, 14, 30, 14, 14, 25, 18, 12, 12, 20, 6, 18, 20, 14, 14, 18, 35][i] || 18
   }));
-  if (pvs.length > 0) {
-    const ws4 = XLSX.utils.json_to_sheet(pvs);
-    setColWidths(ws4, [18, 15, 14, 30, 18, 12, 12, 20, 20, 8]);
-    XLSX.utils.book_append_sheet(wb, ws4, 'محاضر المخالفات');
-  }
-
-  // Sheet 5 – جناح التنفيذ
-  const exec = cases.filter(c => c.executionStatus || c.notificationMethod).map(c => ({
-    'رقم محاكم': c.mahakimId || c.id,
-    'المحكمة': c.court,
-    'موضوع النزاع': c.subject,
-    'حالة التنفيذ': c.executionStatus || '',
-    'طريقة التبليغ': c.notificationMethod || '',
-    'تاريخ التبليغ': c.notificationDate || '',
-    'تاريخ التنفيذ': c.executionDate || '',
-    'المبالغ المستخلصة (د.م)': c.executionAmountRecovered ? Number(c.executionAmountRecovered) : '',
-    'عائق التنفيذ': c.executionObstacle || '',
-  }));
-  if (exec.length > 0) {
-    const ws5 = XLSX.utils.json_to_sheet(exec);
-    setColWidths(ws5, [18, 28, 30, 18, 20, 14, 14, 18, 35]);
-    XLSX.utils.book_append_sheet(wb, ws5, 'جناح التنفيذ');
-  }
-
+  XLSX.utils.book_append_sheet(wb, ws, 'قاعدة بيانات القضايا');
   XLSX.writeFile(wb, `قاعدة_بيانات_القضايا_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.xlsx`);
 }
 
-export function exportSingleCaseXLSX(c: Case) {
-  const wb = XLSX.utils.book_new();
+// ─── Smart Parser ─────────────────────────────────────────────────────────────
 
-  // Sheet 1 – بطاقة الملف
-  const info = [
-    ['البيان', 'القيمة'],
-    ['المرجع الداخلي', c.id],
-    ['رقم محاكم', c.mahakimId || ''],
-    ['الرقم الوطني للملف', c.nationalId || ''],
-    ['المحكمة', c.court],
-    ['درجة المحكمة', c.courtLevel || ''],
-    ['الشعبة', c.section || ''],
-    ['القاضي المقرر / المستشار', c.judge || ''],
-    ['نوع الدعوى', c.type],
-    ['تاريخ التسجيل', c.date],
-    ['موضوع النزاع', c.subject],
-    ['الوضعية الحالية', c.status],
-    ['الجلسة القادمة', c.nextSession || ''],
-    ['الخصم الرئيسي', c.defendant || ''],
-  ];
-  const ws1 = XLSX.utils.aoa_to_sheet(info);
-  setColWidths(ws1, [30, 40]);
-  XLSX.utils.book_append_sheet(wb, ws1, 'بطاقة الملف');
+function performParsing(text: string) {
+  const clean = text.replace(/[\r]/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  const tokens = clean.split(/[\t\n]+/).map(s => s.trim()).filter(Boolean);
 
-  // Sheet 2 – لائحة الأطراف
-  const partiesData = [['الصفة', 'الاسم / الهيئة']];
-  if (c.parties && c.parties.length > 0) {
-    c.parties.forEach(p => partiesData.push([p.role, p.name]));
-  } else {
-    partiesData.push(['ضد', c.defendant || 'غير محدد']);
-  }
-  const ws2 = XLSX.utils.aoa_to_sheet(partiesData);
-  setColWidths(ws2, [25, 40]);
-  XLSX.utils.book_append_sheet(wb, ws2, 'لائحة الأطراف');
+  const INFO_LABELS: Record<string, string> = {
+    'المحكمة': 'court',
+    'رقم الملف بالمحكمة': 'mahakimId',
+    'نوع الملف': 'type',
+    'الرقم الوطني للملف': 'nationalId',
+    'الشعبة': 'section',
+    'المستشار / القاضي المقرر': 'judge',
+    'المستشار': 'judge',
+    'القاضي المقرر': 'judge',
+    'تاريخ التسجيل': 'date',
+    'الموضوع': 'subject',
+    'آخر حكم/قرار': 'lastDecision',
+    'تاريخ آخر حكم / القرار': 'lastDecisionDate',
+    'جاهزية نسخة الحكم / القرار': 'judgmentReady',
+  };
+  const labelKeys = Object.keys(INFO_LABELS);
 
-  // Sheet 3 – الإجراءات والجلسات
-  const procsData = [['تاريخ الإجراء', 'نوع الإجراء', 'القرار / الملاحظة', 'رقم الحكم / الخبرة']];
-  if (c.procedures && c.procedures.length > 0) {
-    const sorted = [...c.procedures].sort((a, b) => {
-      const parse = (d: string) => {
-        if (d.match(/\d{2}\/\d{2}\/\d{4}/)) {
-          const [dd, mm, yy] = d.split('/');
-          return new Date(`${yy}-${mm}-${dd}`).getTime();
-        }
-        return new Date(d).getTime() || 0;
-      };
-      return parse(b.date) - parse(a.date);
-    });
-    sorted.forEach(p => procsData.push([p.date, p.action, p.decision, (p as any).number || '']));
-  } else {
-    procsData.push(['—', 'لا توجد إجراءات مسجلة', '', '']);
-  }
-  const ws3 = XLSX.utils.aoa_to_sheet(procsData);
-  setColWidths(ws3, [16, 40, 40, 18]);
-  XLSX.utils.book_append_sheet(wb, ws3, 'الإجراءات والجلسات');
-
-  // Sheet 4 – المخالفة والعقوبات (if applicable)
-  if (c.pvNumber || c.offenseType || c.fine) {
-    const pvData = [
-      ['رقم المحضر', c.pvNumber || ''],
-      ['تاريخ المحضر', c.pvDate || ''],
-      ['نوع الجنحة / المخالفة', c.offenseType || ''],
-      ['مآل المحضر', c.pvStatus || ''],
-      ['الغرامة المحكوم بها (د.م)', c.fine ? Number(c.fine) : ''],
-      ['التعويضات (د.م)', c.compensation ? Number(c.compensation) : ''],
-      ['الإرجاع', c.restitution || ''],
-      ['عقوبات أخرى', c.otherSanctions || ''],
-      ['إجراء صلح', c.reconciliation ? 'نعم' : 'لا'],
-    ];
-    const ws4 = XLSX.utils.aoa_to_sheet(pvData);
-    setColWidths(ws4, [30, 35]);
-    XLSX.utils.book_append_sheet(wb, ws4, 'المخالفة والعقوبات');
-  }
-
-  // Sheet 5 – التنفيذ (if applicable)
-  if (c.executionStatus || c.notificationMethod) {
-    const execData = [
-      ['حالة التنفيذ', c.executionStatus || ''],
-      ['طريقة التبليغ', c.notificationMethod || ''],
-      ['تاريخ التبليغ', c.notificationDate || ''],
-      ['تاريخ التنفيذ', c.executionDate || ''],
-      ['المبالغ المستخلصة (د.م)', c.executionAmountRecovered ? Number(c.executionAmountRecovered) : ''],
-      ['عائق التنفيذ', c.executionObstacle || ''],
-    ];
-    const ws5 = XLSX.utils.aoa_to_sheet(execData);
-    setColWidths(ws5, [30, 40]);
-    XLSX.utils.book_append_sheet(wb, ws5, 'جناح التنفيذ');
-  }
-
-  XLSX.writeFile(wb, `ملف_${c.mahakimId ? c.mahakimId.replace(/\//g, '-') : c.id}.xlsx`);
-}
-
-// ─── Mahakim Parser Utilities ─────────────────────────────────────────────────
-
-const CASE_INFO_KEYS = [
-  'المحكمة', 'رقم الملف بالمحكمة', 'نوع الملف',
-  'الرقم الوطني للملف', 'الشعبة', 'المستشار / القاضي المقرر',
-  'المستشار', 'القاضي المقرر', 'تاريخ التسجيل', 'الموضوع',
-  'آخر حكم/قرار', 'تاريخ آخر حكم / القرار', 'جاهزية نسخة الحكم / القرار',
-];
-
-function detectSectionType(text: string): 'caseInfo' | 'procedures' | 'parties' | 'mixed' | 'unknown' {
-  const hasCaseInfo = text.includes('رقم الملف بالمحكمة') || text.includes('تاريخ التسجيل');
-  const hasProcs = text.includes('نوع الإجراء') || text.includes('تاريخ الإجراء') ||
-    (text.includes('حكم قطعي') && text.match(/\d{2}\/\d{2}\/\d{4}/));
-  const hasParties = text.includes('الاسم / الهيئة') || text.includes('مدعى عليه') ||
-    text.includes('مدعي ') || text.includes('متهم ');
-  const count = [hasCaseInfo, hasProcs, hasParties].filter(Boolean).length;
-  if (count >= 2) return 'mixed';
-  if (hasCaseInfo) return 'caseInfo';
-  if (hasProcs) return 'procedures';
-  if (hasParties) return 'parties';
-  return 'unknown';
-}
-
-function parseCaseInfoSection(text: string): Record<string, string> {
-  const tokens = text.split(/[\n\t]+/).map(s => s.trim()).filter(Boolean);
-  const result: Record<string, string> = {};
+  // ── Case info extraction (token-pair strategy) ──
+  const infoMap: Record<string, string> = {};
   for (let i = 0; i < tokens.length; i++) {
-    const matched = CASE_INFO_KEYS.find(k => tokens[i] === k || tokens[i].startsWith(k));
-    if (matched) {
+    const matchLabel = labelKeys.find(l => tokens[i] === l);
+    if (matchLabel) {
       let j = i + 1;
-      while (j < tokens.length && CASE_INFO_KEYS.some(k => tokens[j] === k || tokens[j].startsWith(k))) j++;
-      if (j < tokens.length && tokens[j] && tokens[j].length < 120) {
-        result[matched] = tokens[j];
+      while (j < tokens.length && labelKeys.includes(tokens[j])) j++;
+      if (j < tokens.length && tokens[j] && tokens[j].length < 200 && !labelKeys.includes(tokens[j])) {
+        const key = INFO_LABELS[matchLabel];
+        if (!infoMap[key]) infoMap[key] = tokens[j];
         i = j;
       }
     }
   }
-  // Fallbacks with regex
-  if (!result['رقم الملف بالمحكمة']) {
-    const m = text.match(/(\d{4}\/\d{3,4}\/\d+)/);
-    if (m) result['رقم الملف بالمحكمة'] = m[1];
-  }
-  if (!result['تاريخ التسجيل']) {
-    const m = text.match(/(\d{2}\/\d{2}\/\d{4})/);
-    if (m) result['تاريخ التسجيل'] = m[1];
-  }
-  if (!result['المحكمة']) {
-    const m = text.match(/(المحكمة\s+[\w\s]+بتطوان|المحكمة\s+[\w\s]+بطنجة|المحكمة\s+[\w\s]+بالحسيمة|محكمة الاستئناف\s+[^\n\t]+)/u);
-    if (m) result['المحكمة'] = m[1].trim();
-  }
-  return result;
-}
 
-function parseProceduresSection(text: string): { date: string; action: string; decision: string }[] {
+  // Regex fallbacks
+  if (!infoMap['mahakimId']) {
+    const m = clean.match(/(\d{4}\/\d{3,4}\/\d+)/);
+    if (m) infoMap['mahakimId'] = m[1];
+  }
+  if (!infoMap['date']) {
+    const m = clean.match(/(\d{2}\/\d{2}\/\d{4})/);
+    if (m) infoMap['date'] = m[1];
+  }
+  if (!infoMap['court']) {
+    const m = clean.match(/(المحكمة\s+الابتدائية[^\n\t]+|المحكمة\s+التجارية[^\n\t]+|محكمة\s+الاستئناف[^\n\t]+|المحكمة\s+الإدارية[^\n\t]+)/u);
+    if (m) infoMap['court'] = m[1].trim();
+  }
+  if (!infoMap['type']) {
+    if (clean.includes('جنحي') || clean.includes('جنائي')) infoMap['type'] = 'جنحية';
+    else if (clean.includes('افتتاحي') || (clean.includes('مدني') && !infoMap['type'])) infoMap['type'] = 'مدنية';
+    else if (clean.includes('إداري')) infoMap['type'] = 'إدارية';
+    else if (clean.includes('عقاري')) infoMap['type'] = 'عقارية';
+    else if (clean.includes('استعجال')) infoMap['type'] = 'استعجالية';
+  }
+
+  // Convert date format dd/mm/yyyy → yyyy-mm-dd
+  let dateStr = infoMap['date'] || '';
+  if (dateStr.match(/\d{2}\/\d{2}\/\d{4}/)) {
+    const [dd, mm, yy] = dateStr.split('/');
+    dateStr = `${yy}-${mm}-${dd}`;
+  }
+
+  // ── Section boundary detection ──
+  const procIdx   = clean.search(/لائحة الإجراءات/);
+  const partIdx   = clean.search(/لائحة الأطراف/);
+  const expertIdx = clean.search(/لائحة الخبرات/);
+  const appealIdx = clean.search(/عرائض الطعن/);
+  const relIdx    = clean.search(/الملفات المرتبطة/);
+
+  const sectionEnd = (startIdx: number): number => {
+    const candidates = [procIdx, partIdx, expertIdx, appealIdx, relIdx]
+      .filter(i => i > startIdx && i !== startIdx);
+    return candidates.length > 0 ? Math.min(...candidates) : clean.length;
+  };
+
+  // ── Procedures ──
+  const SKIP_PROC = new Set(['لائحة الإجراءات', 'تاريخ الإجراء', 'نوع الإجراء', 'القرار',
+    'عرائض الطعن', 'لائحة الأطراف', 'لائحة الخبرات', 'الملفات المرتبطة']);
+  const procSource = procIdx !== -1 ? clean.substring(procIdx, sectionEnd(procIdx)) : clean;
+  const procLines = procSource.split('\n').map(l => l.trim()).filter(l => l && !SKIP_PROC.has(l));
   const procedures: { date: string; action: string; decision: string }[] = [];
-  const skipHeaders = ['لائحة الإجراءات', 'تاريخ الإجراء', 'نوع الإجراء', 'القرار',
-    'عرائض الطعن', 'لائحة الأطراف', 'لائحة الخبرات', 'الملفات المرتبطة (ابتدائي'];
-
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  const filtered = lines.filter(l => !skipHeaders.some(h => l.includes(h)));
-
-  // Strategy 1: Tab-separated rows
-  const tabbed = filtered.filter(l => l.includes('\t'));
-  if (tabbed.length >= 2) {
-    tabbed.forEach(row => {
-      const parts = row.split('\t').map(s => s.trim());
-      const dateMatch = parts[0].match(/(\d{2}\/\d{2}\/\d{4})/);
-      if (dateMatch && parts.length >= 2) {
-        procedures.push({ date: dateMatch[1], action: parts[1] || '', decision: parts[2] || '' });
-      }
-    });
-    if (procedures.length > 0) return procedures;
-  }
-
-  // Strategy 2: Group lines by date markers
   const dateRe = /^(\d{2}\/\d{2}\/\d{4})(?:\s+\d{2}:\d{2})?/;
-  let i = 0;
-  while (i < filtered.length) {
-    const dm = filtered[i].match(dateRe);
-    if (dm) {
-      const date = dm[1];
-      const remaining = filtered[i].replace(dm[0], '').trim();
-      const action = remaining || (filtered[i + 1] && !filtered[i + 1].match(dateRe) ? filtered[i + 1] : '');
-      const decisionIdx = remaining ? i + 1 : i + 2;
-      const decision = decisionIdx < filtered.length && !filtered[decisionIdx]?.match(dateRe)
-        ? filtered[decisionIdx] : '';
-      if (action) {
-        procedures.push({ date, action, decision });
-        i += decision ? (remaining ? 2 : 3) : (remaining ? 1 : 2);
-      } else {
-        i++;
-      }
-    } else {
-      i++;
-    }
-  }
-  return procedures;
-}
 
-function parsePartiesSection(text: string): { role: string; name: string }[] {
-  const parties: { role: string; name: string }[] = [];
-  const ROLE_KEYWORDS = [
-    'مدعي', 'مدعى عليه', 'متهم', 'المطالب بالحق المدني',
-    'طالب', 'مطلوب', 'مستأنف عليه', 'مستأنف', 'نيابة عامة',
-    'الطرف المدني', 'مدخل في الدعوى', 'ضحية',
-  ];
-  const skipHeaders = ['لائحة الأطراف', 'الصفة', 'الاسم / الهيئة', 'المحامون'];
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  const filtered = lines.filter(l => !skipHeaders.includes(l) && l !== '-' && l !== '–');
-
-  // Strategy 1: Tab-separated
-  const tabbed = filtered.filter(l => l.includes('\t'));
-  if (tabbed.length >= 1) {
-    tabbed.forEach(row => {
+  // Try tab-separated first (clean table copy)
+  const tabRows = procLines.filter(l => l.includes('\t') && l.match(/\d{2}\/\d{2}\/\d{4}/));
+  if (tabRows.length > 0) {
+    tabRows.forEach(row => {
       const parts = row.split('\t').map(s => s.trim());
-      if (parts.length >= 2 && parts[0] && parts[1]) {
-        parties.push({ role: parts[0], name: parts[1] });
-      }
+      const dm = parts[0].match(/(\d{2}\/\d{2}\/\d{4})/);
+      if (dm && parts[1]) procedures.push({ date: dm[1], action: parts[1], decision: parts[2] || '' });
     });
-    if (parties.length > 0) return parties;
-  }
-
-  // Strategy 2: Role-then-name grouping
-  for (let i = 0; i < filtered.length; i++) {
-    const isRole = ROLE_KEYWORDS.some(r => filtered[i] === r || filtered[i].startsWith(r + ' ') || filtered[i].startsWith(r + '\t'));
-    if (isRole) {
-      const inlineNamePart = ROLE_KEYWORDS.reduce((acc, r) => {
-        if (filtered[i].startsWith(r + ' ')) return filtered[i].slice(r.length).trim();
-        return acc;
-      }, '');
-      const role = ROLE_KEYWORDS.find(r => filtered[i] === r || filtered[i].startsWith(r)) || filtered[i];
-      const name = inlineNamePart || (
-        filtered[i + 1] && !ROLE_KEYWORDS.some(r => filtered[i + 1].startsWith(r)) && !skipHeaders.includes(filtered[i + 1])
-          ? filtered[i + 1]
-          : 'غير محدد'
-      );
-      parties.push({ role, name });
-      if (name !== 'غير محدد' && !inlineNamePart) i++;
+  } else {
+    // Line-by-line
+    let i = 0;
+    while (i < procLines.length) {
+      const dm = procLines[i].match(dateRe);
+      if (dm) {
+        const d = dm[1];
+        const inline = procLines[i].replace(dm[0], '').trim();
+        const action = inline || (i+1 < procLines.length && !procLines[i+1]?.match(dateRe) ? procLines[i+1] : '');
+        const decIdx = inline ? i+1 : i+2;
+        const decision = decIdx < procLines.length && !procLines[decIdx]?.match(dateRe) ? procLines[decIdx] : '';
+        if (action) { procedures.push({ date: d, action, decision }); i += inline ? (decision ? 2 : 1) : (decision ? 3 : 2); }
+        else i++;
+      } else i++;
     }
   }
 
-  // Default fallback
-  if (parties.length === 0) {
-    parties.push({ role: 'مدعي', name: 'الوكالة الوطنية للمياه والغابات' });
-    parties.push({ role: 'مدعى عليه', name: 'غير محدد (استخراج تلقائي)' });
-  }
-  return parties;
-}
+  // ── Parties ──
+  const ROLE_KW = ['مدعي', 'مدعى عليه', 'متهم', 'المطالب بالحق المدني',
+    'طالب', 'مطلوب', 'مستأنف عليه', 'مستأنف', 'نيابة عامة', 'مدخل في الدعوى'];
+  const SKIP_PARTY = new Set(['لائحة الأطراف', 'الصفة', 'الاسم / الهيئة', 'المحامون']);
+  const partSource = partIdx !== -1 ? clean.substring(partIdx, sectionEnd(partIdx)) : clean;
+  const partLines = partSource.split('\n').map(l => l.trim()).filter(l => l && !SKIP_PARTY.has(l) && l !== '-');
+  const parties: { role: string; name: string }[] = [];
 
-function buildCaseFromAccumulated(infoMap: Record<string, string>, procedures: any[], parties: any[]): Partial<Case> {
-  const court = infoMap['المحكمة'] || 'غير محددة';
-  const mahakimId = infoMap['رقم الملف بالمحكمة'] || '';
-  let rawDate = infoMap['تاريخ التسجيل'] || '';
-  if (rawDate.match(/\d{2}\/\d{2}\/\d{4}/)) {
-    const [dd, mm, yy] = rawDate.split('/');
-    rawDate = `${yy}-${mm}-${dd}`;
-  }
-  const typeFull = infoMap['نوع الملف'] || '';
-  let type = 'غير محدد';
-  if (typeFull.includes('جنحي') || typeFull.includes('جنائي')) type = 'جنحية';
-  else if (typeFull.includes('مدني') || typeFull.includes('افتتاحي')) type = 'مدنية';
-  else if (typeFull.includes('إداري')) type = 'إدارية';
-  else if (typeFull.includes('عقاري')) type = 'عقارية';
-  else if (typeFull.includes('استعجال')) type = 'استعجالية';
-  else if (typeFull.includes('تجاري')) type = 'تجارية';
-  else if (typeFull) type = typeFull;
-
-  let status = 'بيانات مستخرجة';
-  const lastDecision = infoMap['آخر حكم/قرار'] || '';
-  if (lastDecision.includes('حكم قطعي') || lastDecision.includes('قرار')) {
-    status = `صدر حكم: ${lastDecision}`;
-  } else if (procedures.length > 0) {
-    status = 'جلسات مبرمجة';
-  }
-
-  const defendant = parties.find(p =>
-    ['مدعى عليه', 'متهم', 'مستأنف عليه', 'مطلوب'].some(r => p.role.includes(r))
-  )?.name || 'مجهول';
-
-  // Get latest session from procedures
-  const latestProc = [...procedures].sort((a, b) => {
-    const parse = (d: string) => {
-      if (d.match(/\d{2}\/\d{2}\/\d{4}/)) {
-        const [dd, mm, yy] = d.split('/');
-        return new Date(`${yy}-${mm}-${dd}`).getTime();
+  const tabPartyRows = partLines.filter(l => l.includes('\t') && !l.match(dateRe));
+  if (tabPartyRows.length > 0) {
+    tabPartyRows.forEach(row => {
+      const pts = row.split('\t').map(s => s.trim());
+      if (pts.length >= 2 && ROLE_KW.some(r => pts[0].includes(r))) parties.push({ role: pts[0], name: pts[1] });
+    });
+  } else {
+    for (let i = 0; i < partLines.length; i++) {
+      const role = ROLE_KW.find(r => partLines[i] === r || partLines[i].startsWith(r + ' '));
+      if (role) {
+        const inline = partLines[i].slice(role.length).trim();
+        const name = inline || (i+1 < partLines.length && !ROLE_KW.some(r => partLines[i+1].startsWith(r)) ? partLines[i+1] : 'غير محدد');
+        parties.push({ role, name });
+        if (name !== 'غير محدد' && !inline) i++;
       }
+    }
+  }
+  if (parties.length === 0) {
+    if (clean.includes('الوكالة الوطنية للمياه') || clean.includes('ANEF')) {
+      parties.push({ role: 'مدعي / المطالب بالحق المدني', name: 'الوكالة الوطنية للمياه والغابات' });
+    } else {
+      parties.push({ role: 'مدعي', name: 'إدارة المياه والغابات' });
+    }
+    parties.push({ role: 'مدعى عليه / متهم', name: 'مجهول (استخراج تلقائي)' });
+  }
+
+  // ── Status ──
+  const lastDecision = infoMap['lastDecision'] || '';
+  const status = lastDecision.includes('حكم') || lastDecision.includes('قرار')
+    ? `صدر: ${lastDecision}`
+    : procedures.length > 0 ? 'جلسات مبرمجة' : 'بيانات مستخرجة';
+
+  const sortedProcs = [...procedures].sort((a, b) => {
+    const p = (d: string) => {
+      if (d.match(/\d{2}\/\d{2}\/\d{4}/)) { const [dd, mm, yy] = d.split('/'); return new Date(`${yy}-${mm}-${dd}`).getTime(); }
       return 0;
     };
-    return parse(b.date) - parse(a.date);
-  })[0];
+    return p(b.date) - p(a.date);
+  });
 
   return {
-    mahakimId,
-    nationalId: infoMap['الرقم الوطني للملف'] || '',
-    court,
-    type,
-    subject: infoMap['الموضوع'] || 'غير محدد',
-    date: rawDate || new Date().toISOString().split('T')[0],
-    judge: infoMap['المستشار / القاضي المقرر'] || infoMap['المستشار'] || infoMap['القاضي المقرر'] || '',
-    section: infoMap['الشعبة'] || '',
+    mahakimId: infoMap['mahakimId'] || '-',
+    nationalId: infoMap['nationalId'] || '-',
+    court: infoMap['court'] || 'غير محددة',
+    type: infoMap['type'] || 'غير محدد',
+    subject: infoMap['subject'] || 'غير محدد',
+    date: dateStr || new Date().toISOString().split('T')[0],
+    judge: infoMap['judge'] || '-',
+    section: infoMap['section'] || '-',
     status,
-    nextSession: latestProc?.date || '',
-    defendant,
+    nextSession: sortedProcs[0]?.date || '-',
+    defendant: parties.find(p => ['مدعى عليه', 'متهم', 'مستأنف عليه', 'مطلوب'].some(r => p.role.includes(r)))?.name || 'مجهول',
     parties,
-    procedures: [...procedures].reverse(),
+    procedures: procedures.reverse(),
+    lastDecision: infoMap['lastDecision'] || '',
+    lastDecisionDate: infoMap['lastDecisionDate'] || '',
   };
 }
 
-// ─── CaseDetail Component ─────────────────────────────────────────────────────
+// ─── CaseDetail ───────────────────────────────────────────────────────────────
 
 function CaseDetail({ caseData, onBack, onDelete, onEdit }: {
   caseData: Case; onBack: () => void; onDelete: (id: string) => void; onEdit: () => void;
 }) {
-  const prescriptionDate = useMemo(() => {
+  const prescDate = useMemo(() => {
     if (!caseData.pvDate) return null;
     try {
       const d = new Date(caseData.pvDate);
@@ -562,55 +426,41 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit }: {
 
   return (
     <div className="space-y-6 animate-in fade-in pb-12">
-      {/* Header bar */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl shadow-sm border border-stone-200">
         <div className="flex items-center gap-3 flex-wrap">
-          <button
-            onClick={onBack}
-            className="flex items-center gap-2 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl transition-all shadow-sm hover:-translate-y-0.5 text-sm"
-          >
-            <ChevronLeft className="size-4" />
-            رجوع للقائمة
+          <button onClick={onBack}
+            className="flex items-center gap-2 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl transition-all shadow hover:-translate-y-0.5 text-sm">
+            <ChevronLeft className="size-4" /> رجوع للقائمة
           </button>
           <div className="border-r-2 border-stone-200 pr-4">
             <h2 className="text-lg font-bold flex items-center gap-2">
               <Scale className="size-5 text-emerald-600" />
               ملف: <span className="font-mono text-emerald-700">{caseData.mahakimId || caseData.id}</span>
             </h2>
-            {caseData.mahakimId && <p className="text-xs text-stone-400 font-mono mt-0.5">مرجع داخلي: {caseData.id}</p>}
+            {caseData.mahakimId && <p className="text-xs text-stone-400 font-mono mt-0.5">مرجع: {caseData.id}</p>}
           </div>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <button
-            onClick={() => exportSingleCaseXLSX(caseData)}
-            className="flex items-center gap-2 px-3 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg font-bold text-sm transition-colors border border-emerald-200"
-            title="تحميل ملف Excel منظم"
-          >
-            <FileSpreadsheet className="size-4" /> Excel
+          <button onClick={() => exportSingleCaseXLSX(caseData)}
+            className="flex items-center gap-2 px-3 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg font-bold text-sm border border-emerald-200">
+            <FileSpreadsheet className="size-4" /> تحميل Excel
           </button>
-          <button
-            onClick={() => window.print()}
-            className="flex items-center gap-2 px-3 py-2 bg-stone-50 text-stone-700 hover:bg-stone-100 rounded-lg font-bold text-sm transition-colors border border-stone-200"
-          >
+          <button onClick={() => window.print()}
+            className="flex items-center gap-2 px-3 py-2 bg-stone-50 text-stone-700 hover:bg-stone-100 rounded-lg font-bold text-sm border border-stone-200">
             <Printer className="size-4" /> طباعة
           </button>
-          <button
-            onClick={onEdit}
-            className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg font-bold text-sm transition-colors border border-blue-200"
-          >
+          <button onClick={onEdit}
+            className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg font-bold text-sm border border-blue-200">
             <Activity className="size-4" /> تعديل
           </button>
-          <button
-            onClick={() => { if (window.confirm('هل تريد حذف هذا الملف؟')) onDelete(caseData.id); }}
-            className="flex items-center gap-2 px-3 py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg font-bold text-sm transition-colors border border-red-200"
-          >
+          <button onClick={() => { if (window.confirm('هل تريد حذف هذا الملف نهائياً؟')) onDelete(caseData.id); }}
+            className="flex items-center gap-2 px-3 py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg font-bold text-sm border border-red-200">
             <Trash2 className="size-4" /> حذف
           </button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Timeline */}
         <div className="lg:col-span-2 space-y-6">
           <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm">
             <h3 className="font-bold text-lg border-b border-stone-100 pb-3 mb-5 flex items-center gap-2">
@@ -619,14 +469,8 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit }: {
             {caseData.procedures && caseData.procedures.length > 0 ? (
               <div className="relative before:absolute before:right-4 before:top-2 before:bottom-2 before:w-px before:bg-stone-200 space-y-4">
                 {[...caseData.procedures].sort((a, b) => {
-                  const parse = (d: string) => {
-                    if (d.match(/\d{2}\/\d{2}\/\d{4}/)) {
-                      const [dd, mm, yy] = d.split('/');
-                      return new Date(`${yy}-${mm}-${dd}`).getTime();
-                    }
-                    return new Date(d).getTime() || 0;
-                  };
-                  return parse(b.date) - parse(a.date);
+                  const p = (d: string) => { if (d.match(/\d{2}\/\d{2}\/\d{4}/)) { const [dd, mm, yy] = d.split('/'); return new Date(`${yy}-${mm}-${dd}`).getTime(); } return new Date(d).getTime() || 0; };
+                  return p(b.date) - p(a.date);
                 }).map((proc, idx) => (
                   <div key={idx} className="relative pl-4 pr-12">
                     <div className="absolute right-2.5 top-1 size-3 rounded-full bg-emerald-500 ring-4 ring-emerald-50" />
@@ -639,9 +483,6 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit }: {
                         <p className="text-sm text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 mt-1">
                           <Gavel className="size-3 shrink-0" /> {proc.decision}
                         </p>
-                      )}
-                      {(proc as any).number && (
-                        <span className="text-xs font-mono text-stone-500 mt-1 block">رقم: {(proc as any).number}</span>
                       )}
                     </div>
                   </div>
@@ -656,42 +497,37 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit }: {
           </div>
         </div>
 
-        {/* Side Info */}
         <div className="space-y-4">
-          {/* Case details card */}
-          <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm space-y-4">
-            <h3 className="font-bold border-b border-stone-100 pb-3 flex items-center gap-2">
+          <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm space-y-3">
+            <h3 className="font-bold border-b border-stone-100 pb-3 flex items-center gap-2 text-sm">
               <FileText className="size-4 text-stone-400" /> تفاصيل الملف
             </h3>
             {[
-              { label: 'المحكمة', value: caseData.court },
-              { label: 'موضوع النزاع', value: caseData.subject },
-              { label: 'تاريخ التسجيل', value: caseData.date, mono: true },
-              { label: 'النوع', value: caseData.type },
-              caseData.judge ? { label: 'القاضي المقرر', value: caseData.judge } : null,
-              caseData.section ? { label: 'الشعبة', value: caseData.section } : null,
-              caseData.nationalId ? { label: 'الرقم الوطني', value: caseData.nationalId, mono: true } : null,
-            ].filter(Boolean).map((item, idx) => (
+              { l: 'المحكمة', v: caseData.court },
+              { l: 'موضوع النزاع', v: caseData.subject },
+              { l: 'تاريخ التسجيل', v: caseData.date, m: true },
+              { l: 'النوع', v: caseData.type },
+              caseData.judge ? { l: 'القاضي المقرر', v: caseData.judge } : null,
+              caseData.section ? { l: 'الشعبة', v: caseData.section } : null,
+              caseData.nationalId ? { l: 'الرقم الوطني', v: caseData.nationalId, m: true } : null,
+            ].filter(Boolean).map((item: any, idx) => (
               <div key={idx}>
-                <label className="text-xs text-stone-500">{(item as any).label}</label>
-                <p className={`font-bold text-sm text-stone-800 ${(item as any).mono ? 'font-mono' : ''}`}>{(item as any).value}</p>
+                <label className="text-xs text-stone-500">{item.l}</label>
+                <p className={`font-bold text-sm text-stone-800 ${item.m ? 'font-mono' : ''}`}>{item.v}</p>
               </div>
             ))}
           </div>
 
-          {/* Parties */}
           <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm space-y-3">
-            <h3 className="font-bold border-b border-stone-100 pb-3 flex items-center gap-2">
+            <h3 className="font-bold border-b border-stone-100 pb-3 flex items-center gap-2 text-sm">
               <User className="size-4 text-stone-400" /> الأطراف
             </h3>
-            {caseData.parties && caseData.parties.length > 0 ? (
-              caseData.parties.map((p, idx) => (
-                <div key={idx} className="bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-100">
-                  <p className="text-[11px] font-bold text-emerald-600 mb-0.5">{p.role}</p>
-                  <p className="font-bold text-sm text-stone-800">{p.name}</p>
-                </div>
-              ))
-            ) : (
+            {caseData.parties && caseData.parties.length > 0 ? caseData.parties.map((p, idx) => (
+              <div key={idx} className="bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-100">
+                <p className="text-[11px] font-bold text-emerald-600 mb-0.5">{p.role}</p>
+                <p className="font-bold text-sm text-stone-800">{p.name}</p>
+              </div>
+            )) : (
               <div className="bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-100">
                 <p className="text-[11px] font-bold text-emerald-600 mb-0.5">ضد</p>
                 <p className="font-bold text-sm text-stone-800">{caseData.defendant || 'غير محدد'}</p>
@@ -699,84 +535,38 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit }: {
             )}
           </div>
 
-          {/* PV info */}
           {(caseData.pvNumber || caseData.offenseType) && (
             <div className="bg-white p-5 rounded-2xl border border-orange-100 shadow-sm space-y-3">
-              <h3 className="font-bold border-b border-orange-100 pb-3 flex items-center gap-2 text-orange-800">
+              <h3 className="font-bold border-b border-orange-100 pb-3 flex items-center gap-2 text-sm text-orange-800">
                 <Shield className="size-4 text-orange-500" /> معلومات المخالفة
               </h3>
               {caseData.pvNumber && (
                 <div>
                   <label className="text-xs text-stone-500">رقم المحضر</label>
                   <p className="font-bold font-mono text-sm">{caseData.pvNumber}</p>
-                  {caseData.pvDate && (
-                    <p className="text-xs text-stone-400 font-mono">{caseData.pvDate}</p>
-                  )}
-                  {prescriptionDate && (
-                    <p className="text-xs font-bold text-orange-600 flex items-center gap-1 mt-1">
-                      <AlertCircle className="size-3" /> التقادم (6 أشهر): {prescriptionDate}
-                    </p>
-                  )}
+                  {caseData.pvDate && <p className="text-xs text-stone-400 font-mono">{caseData.pvDate}</p>}
+                  {prescDate && <p className="text-xs font-bold text-orange-600 flex items-center gap-1 mt-1"><AlertCircle className="size-3" /> التقادم (6 أشهر): {prescDate}</p>}
                 </div>
               )}
-              {caseData.offenseType && (
-                <div>
-                  <label className="text-xs text-stone-500">نوع الجنحة</label>
-                  <p className="font-bold text-sm">{caseData.offenseType}</p>
-                </div>
-              )}
-              {caseData.fine && (
-                <div>
-                  <label className="text-xs text-stone-500">الغرامة</label>
-                  <p className="font-bold font-mono text-sm">{Number(caseData.fine).toLocaleString()} درهم</p>
-                </div>
-              )}
+              {caseData.offenseType && <div><label className="text-xs text-stone-500">نوع الجنحة</label><p className="font-bold text-sm">{caseData.offenseType}</p></div>}
+              {caseData.fine && <div><label className="text-xs text-stone-500">الغرامة</label><p className="font-bold font-mono text-sm">{Number(caseData.fine).toLocaleString()} درهم</p></div>}
               {caseData.reconciliation && (
                 <div className="bg-emerald-50 text-emerald-800 p-3 rounded-xl border border-emerald-100 text-xs font-bold flex gap-2">
-                  <CheckCircle2 className="size-4 shrink-0 text-emerald-600" />
-                  تم إجراء الصلح وتسديد المبالغ المستحقة.
+                  <CheckCircle2 className="size-4 shrink-0 text-emerald-600" /> تم إجراء الصلح وتسديد المبالغ.
                 </div>
               )}
             </div>
           )}
 
-          {/* Execution */}
           {(caseData.executionStatus || caseData.executionAmountRecovered) && (
             <div className="bg-emerald-50 p-5 rounded-2xl border border-emerald-100 shadow-sm space-y-3">
-              <h3 className="font-bold border-b border-emerald-200 pb-3 flex items-center gap-2 text-emerald-800">
+              <h3 className="font-bold border-b border-emerald-200 pb-3 flex items-center gap-2 text-sm text-emerald-800">
                 <CheckCircle2 className="size-4 text-emerald-600" /> جناح التنفيذ
               </h3>
-              {caseData.executionStatus && (
-                <div>
-                  <label className="text-xs text-emerald-600">حالة التنفيذ</label>
-                  <p className="font-black text-sm text-emerald-900">{caseData.executionStatus}</p>
-                </div>
-              )}
-              {caseData.notificationMethod && (
-                <div>
-                  <label className="text-xs text-emerald-600">طريقة التبليغ</label>
-                  <p className="font-bold text-sm">{caseData.notificationMethod}
-                    {caseData.notificationDate && <span className="font-mono text-stone-500 text-xs ml-2">{caseData.notificationDate}</span>}
-                  </p>
-                </div>
-              )}
-              {caseData.executionAmountRecovered && (
-                <div>
-                  <label className="text-xs text-emerald-600">المبالغ المستخلصة</label>
-                  <p className="font-black text-emerald-700 font-mono text-xl">
-                    {Number(caseData.executionAmountRecovered).toLocaleString()}
-                    <span className="text-xs ml-1">د.م</span>
-                  </p>
-                </div>
-              )}
-              {caseData.executionObstacle && (
-                <div className="pt-2 border-t border-emerald-200">
-                  <label className="text-xs text-orange-600 flex items-center gap-1 mb-1">
-                    <AlertCircle className="size-3" /> عائق التنفيذ
-                  </label>
-                  <p className="text-sm font-bold text-orange-800 bg-orange-50 p-3 rounded-xl border border-orange-100">{caseData.executionObstacle}</p>
-                </div>
-              )}
+              {caseData.executionStatus && <div><label className="text-xs text-emerald-600">حالة التنفيذ</label><p className="font-black text-sm text-emerald-900">{caseData.executionStatus}</p></div>}
+              {caseData.notificationMethod && <div><label className="text-xs text-emerald-600">التبليغ</label><p className="font-bold text-sm">{caseData.notificationMethod} {caseData.notificationDate && <span className="font-mono text-xs text-stone-500">({caseData.notificationDate})</span>}</p></div>}
+              {caseData.executionAmountRecovered && <div><label className="text-xs text-emerald-600">المبالغ المستخلصة</label><p className="font-black text-emerald-700 font-mono text-xl">{Number(caseData.executionAmountRecovered).toLocaleString()} <span className="text-xs">د.م</span></p></div>}
+              {caseData.executionObstacle && <div className="pt-2 border-t border-emerald-200"><label className="text-xs text-orange-600 flex items-center gap-1 mb-1"><AlertCircle className="size-3" /> عائق</label><p className="text-sm font-bold text-orange-800 bg-orange-50 p-3 rounded-xl border border-orange-100">{caseData.executionObstacle}</p></div>}
             </div>
           )}
         </div>
@@ -785,7 +575,7 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit }: {
   );
 }
 
-// ─── Main Contentieux Component ───────────────────────────────────────────────
+// ─── Contentieux Main ─────────────────────────────────────────────────────────
 
 export function Contentieux() {
   const [activeTab, setActiveTab] = useState<'local' | 'mahakim'>('local');
@@ -794,18 +584,13 @@ export function Contentieux() {
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [wizardData, setWizardData] = useState<Case | null>(null);
   const [isStatsOpen, setIsStatsOpen] = useState(false);
-
   const [cases, setCases] = useState<Case[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    loadCases().then(({ data }) => {
-      setCases(data.length > 0 ? data : recentCases);
-      setIsLoading(false);
-    });
+    loadCases().then(({ data }) => { setCases(data.length > 0 ? data : recentCases); setIsLoading(false); });
   }, []);
 
-  // Global search event from app-wide search bar
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
@@ -828,41 +613,33 @@ export function Contentieux() {
 
   const uniqueTypes = useMemo(() => Array.from(new Set(cases.map(c => c.type).filter(Boolean))), [cases]);
   const uniqueCourts = useMemo(() => Array.from(new Set(cases.map(c => c.court).filter(Boolean))), [cases]);
-  const uniqueYears = useMemo(() =>
-    Array.from(new Set(cases.map(c => c.date?.substring(0, 4)).filter(Boolean))).sort((a, b) => Number(b) - Number(a)),
-    [cases]
-  );
+  const uniqueYears = useMemo(() => Array.from(new Set(cases.map(c => c.date?.substring(0, 4)).filter(Boolean))).sort((a, b) => Number(b) - Number(a)), [cases]);
 
   const processedCases = useMemo(() => {
-    let result = [...cases];
-    if (statusFilter === 'active') result = result.filter(c => !c.status.includes('حكم') && !c.status.includes('قرار'));
-    if (statusFilter === 'judged') result = result.filter(c => c.status.includes('حكم') || c.status.includes('قرار'));
-    if (typeFilter !== 'all') result = result.filter(c => c.type === typeFilter);
-    if (courtFilter !== 'all') result = result.filter(c => c.court === courtFilter);
-    if (yearFilter !== 'all') result = result.filter(c => c.date?.startsWith(yearFilter));
-    if (searchQuery.trim()) result = result.filter(c => fuzzyMatchCase(c, searchQuery));
+    let r = [...cases];
+    if (statusFilter === 'active') r = r.filter(c => !c.status.includes('حكم') && !c.status.includes('قرار'));
+    if (statusFilter === 'judged') r = r.filter(c => c.status.includes('حكم') || c.status.includes('قرار'));
+    if (typeFilter !== 'all') r = r.filter(c => c.type === typeFilter);
+    if (courtFilter !== 'all') r = r.filter(c => c.court === courtFilter);
+    if (yearFilter !== 'all') r = r.filter(c => c.date?.startsWith(yearFilter));
+    if (searchQuery.trim()) r = r.filter(c => fuzzyMatchCase(c, searchQuery));
     if (sortConfig) {
-      result.sort((a, b) => {
+      r.sort((a, b) => {
         const av: any = sortConfig.key === 'ref' ? (a.mahakimId || a.id) : (a as any)[sortConfig.key] ?? '';
         const bv: any = sortConfig.key === 'ref' ? (b.mahakimId || b.id) : (b as any)[sortConfig.key] ?? '';
         return av < bv ? (sortConfig.dir === 'asc' ? -1 : 1) : av > bv ? (sortConfig.dir === 'asc' ? 1 : -1) : 0;
       });
     }
-    return result;
+    return r;
   }, [cases, searchQuery, sortConfig, statusFilter, typeFilter, courtFilter, yearFilter]);
 
-  const handleSort = (key: string) =>
-    setSortConfig(prev => ({ key, dir: prev?.key === key && prev.dir === 'asc' ? 'desc' : 'asc' }));
+  const handleSort = (k: string) => setSortConfig(p => ({ key: k, dir: p?.key === k && p.dir === 'asc' ? 'desc' : 'asc' }));
 
   const handleSaveCase = async (saved: Case) => {
     await saveCase(saved);
-    setCases(prev => {
-      const exists = prev.find(c => c.id === saved.id);
-      return exists ? prev.map(c => c.id === saved.id ? saved : c) : [saved, ...prev];
-    });
+    setCases(prev => { const e = prev.find(c => c.id === saved.id); return e ? prev.map(c => c.id === saved.id ? saved : c) : [saved, ...prev]; });
     if (selectedCase?.id === saved.id) setSelectedCase(saved);
-    setIsWizardOpen(false);
-    setWizardData(null);
+    setIsWizardOpen(false); setWizardData(null);
   };
 
   const handleDeleteCase = async (id: string) => {
@@ -872,14 +649,6 @@ export function Contentieux() {
     setSelectedIds(prev => { const s = new Set(prev); s.delete(id); return s; });
   };
 
-  const handleToggleSelect = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setSelectedIds(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; });
-  };
-
-  const handleToggleAll = (e: React.ChangeEvent<HTMLInputElement>) =>
-    setSelectedIds(e.target.checked ? new Set(processedCases.map(c => c.id)) : new Set());
-
   const handleDeleteSelected = async () => {
     if (!window.confirm(`هل أنت متأكد من حذف ${selectedIds.size} ملف(ات)؟`)) return;
     await deleteCases(Array.from(selectedIds));
@@ -887,147 +656,96 @@ export function Contentieux() {
     setSelectedIds(new Set());
   };
 
-  const handleExportSelectedXLSX = () => {
-    const selected = cases.filter(c => selectedIds.has(c.id));
-    if (selected.length === 0) return;
-    exportAllCasesXLSX(selected);
-  };
-
-  const SortTh = ({ label, sk }: { label: string; sk: string }) => (
-    <th className="px-4 py-4 font-bold cursor-pointer hover:bg-stone-100 transition-colors select-none whitespace-nowrap"
-      onClick={() => handleSort(sk)}>
-      <span className="flex items-center gap-1">
-        {label}
-        {sortConfig?.key === sk && <span className="text-emerald-600">{sortConfig.dir === 'asc' ? '↑' : '↓'}</span>}
-      </span>
+  const SortTh = ({ l, k }: { l: string; k: string }) => (
+    <th className="px-4 py-4 font-bold cursor-pointer hover:bg-stone-100 transition-colors select-none whitespace-nowrap" onClick={() => handleSort(k)}>
+      <span className="flex items-center gap-1">{l} {sortConfig?.key === k && <span className="text-emerald-600">{sortConfig.dir === 'asc' ? '↑' : '↓'}</span>}</span>
     </th>
   );
 
-  const statusBadge = (status: string) => {
-    const cls =
-      status.includes('مبرمج') || status.includes('جلسة') ? 'bg-orange-100 text-orange-700' :
-        status.includes('محجوز') || status.includes('تأمل') ? 'bg-blue-100 text-blue-700' :
-          status.includes('حكم') || status.includes('قرار') ? 'bg-emerald-100 text-emerald-700' :
-            'bg-stone-100 text-stone-600';
-    return (
-      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${cls}`}>
-        <span className="size-1.5 rounded-full bg-current" />{status}
-      </span>
-    );
+  const badge = (s: string) => {
+    const cls = s.includes('مبرمج') || s.includes('جلسة') ? 'bg-orange-100 text-orange-700' :
+      s.includes('محجوز') || s.includes('تأمل') ? 'bg-blue-100 text-blue-700' :
+      s.includes('حكم') || s.includes('قرار') || s.includes('صدر') ? 'bg-emerald-100 text-emerald-700' :
+      'bg-stone-100 text-stone-600';
+    return <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${cls}`}><span className="size-1.5 rounded-full bg-current" />{s}</span>;
   };
 
   return (
     <div className="p-4 md:p-8 space-y-4 flex flex-col h-full" dir="rtl">
-      {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shrink-0">
         <div>
           <h2 className="text-2xl font-bold border-b-4 border-emerald-600 pb-2 inline-block">النزاعات والقضايا</h2>
           <p className="text-sm text-stone-500 mt-1.5">متابعة الملفات القضائية والتكامل مع نظام محاكم</p>
         </div>
-        <div className="flex flex-wrap gap-2 items-center w-full sm:w-auto">
-          <div className="flex bg-stone-100 p-1 rounded-xl border border-stone-200 w-full sm:w-auto">
-            {[
-              { id: 'local', icon: Scale, label: 'القضايا المحلية' },
-              { id: 'mahakim', icon: Landmark, label: 'بوابة محاكم' },
-            ].map(tab => (
-              <button key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`flex items-center justify-center flex-1 gap-2 px-5 py-2.5 rounded-lg font-bold text-sm transition-all ${activeTab === tab.id
-                  ? tab.id === 'mahakim' ? 'bg-emerald-700 text-white shadow-sm' : 'bg-white text-stone-800 shadow-sm'
-                  : 'text-stone-500 hover:text-stone-700'}`}>
-                <tab.icon className="size-4 shrink-0" />
-                <span className="whitespace-nowrap">{tab.label}</span>
+        <div className="flex flex-wrap gap-2 items-center">
+          <div className="flex bg-stone-100 p-1 rounded-xl border border-stone-200">
+            {[{ id: 'local', icon: Scale, label: 'القضايا المحلية' }, { id: 'mahakim', icon: Landmark, label: 'بوابة محاكم' }].map(tab => (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id as any)}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold text-sm transition-all ${activeTab === tab.id ? (tab.id === 'mahakim' ? 'bg-emerald-700 text-white shadow-sm' : 'bg-white text-stone-800 shadow-sm') : 'text-stone-500 hover:text-stone-700'}`}>
+                <tab.icon className="size-4 shrink-0" /><span className="whitespace-nowrap">{tab.label}</span>
               </button>
             ))}
           </div>
-          <div className="flex gap-2">
-            <button onClick={() => setIsStatsOpen(true)}
-              className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white shadow-sm rounded-xl text-sm font-bold transition-all hover:-translate-y-0.5">
-              <PieChartIcon className="size-4" /> الإحصائيات
-            </button>
-            <button onClick={() => { setWizardData(null); setIsWizardOpen(true); }}
-              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm rounded-xl text-sm font-bold transition-all hover:-translate-y-0.5">
-              <FilePlus2 className="size-4" /> إضافة ملف
-            </button>
-          </div>
+          <button onClick={() => setIsStatsOpen(true)} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-sm hover:-translate-y-0.5 transition-all">
+            <PieChartIcon className="size-4" /> الإحصائيات
+          </button>
+          <button onClick={() => { setWizardData(null); setIsWizardOpen(true); }} className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-sm hover:-translate-y-0.5 transition-all">
+            <FilePlus2 className="size-4" /> إضافة ملف
+          </button>
         </div>
       </div>
 
       {isStatsOpen && <ContentieuxStats cases={cases} onClose={() => setIsStatsOpen(false)} />}
 
-      {/* ── Local Tab ── */}
       {activeTab === 'local' ? (
         selectedCase ? (
-          <CaseDetail caseData={selectedCase} onBack={() => setSelectedCase(null)}
-            onDelete={handleDeleteCase}
+          <CaseDetail caseData={selectedCase} onBack={() => setSelectedCase(null)} onDelete={handleDeleteCase}
             onEdit={() => { setWizardData(selectedCase); setIsWizardOpen(true); }} />
         ) : (
           <div className="space-y-5">
-            {/* KPI cards */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {[
-                { label: 'إجمالي القضايا', value: cases.length, icon: Scale, color: 'emerald' },
-                { label: 'قيد الرائجة', value: cases.filter(c => !c.status.includes('حكم') && !c.status.includes('قرار')).length, icon: Search, color: 'blue' },
-                { label: 'أحكام صادرة', value: cases.filter(c => c.status.includes('حكم') || c.status.includes('قرار')).length, icon: Gavel, color: 'orange' },
-                { label: 'أحكام منفذة', value: cases.filter(c => c.executionStatus?.includes('منفذ')).length, icon: CheckCircle2, color: 'emerald' },
+                { label: 'إجمالي القضايا', value: cases.length, icon: Scale, c: 'emerald' },
+                { label: 'قيد الرائجة', value: cases.filter(c => !c.status.includes('حكم') && !c.status.includes('قرار')).length, icon: Search, c: 'blue' },
+                { label: 'أحكام صادرة', value: cases.filter(c => c.status.includes('حكم') || c.status.includes('قرار')).length, icon: Gavel, c: 'orange' },
+                { label: 'أحكام منفذة', value: cases.filter(c => c.executionStatus?.includes('منفذ')).length, icon: CheckCircle2, c: 'emerald' },
               ].map((s, i) => (
                 <div key={i} className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm flex items-center justify-between">
-                  <div>
-                    <p className="text-xs font-bold text-stone-500 mb-1">{s.label}</p>
-                    <h3 className={`text-2xl font-black text-${s.color}-700`}>{s.value}</h3>
-                  </div>
-                  <div className={`p-3 bg-${s.color}-50 text-${s.color}-600 rounded-xl`}><s.icon className="size-6" /></div>
+                  <div><p className="text-xs font-bold text-stone-500 mb-1">{s.label}</p><h3 className={`text-2xl font-black text-${s.c}-700`}>{s.value}</h3></div>
+                  <div className={`p-3 bg-${s.c}-50 text-${s.c}-600 rounded-xl`}><s.icon className="size-6" /></div>
                 </div>
               ))}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="bg-emerald-50 border border-emerald-100 p-5 rounded-2xl">
-                <p className="text-xs font-bold text-emerald-600 mb-1">المبالغ المستخلصة (د.م)</p>
-                <h3 className="text-2xl font-black text-emerald-700 font-mono">
-                  {cases.reduce((s, c) => s + (parseFloat(c.executionAmountRecovered || '0') || 0), 0).toLocaleString()}
-                </h3>
-              </div>
-              <div className="bg-orange-50 border border-orange-100 p-5 rounded-2xl">
-                <p className="text-xs font-bold text-orange-600 mb-1">مجموع الغرامات المحكوم بها</p>
-                <h3 className="text-2xl font-black text-orange-700 font-mono">
-                  {cases.reduce((s, c) => s + (parseFloat(c.fine || '0') || 0) + (parseFloat(c.compensation || '0') || 0), 0).toLocaleString()}
-                </h3>
-              </div>
-              <div className="bg-blue-50 border border-blue-100 p-5 rounded-2xl">
-                <p className="text-xs font-bold text-blue-600 mb-1">نسبة التنفيذ الإجمالية</p>
-                <h3 className="text-2xl font-black text-blue-700 font-mono">
-                  {(() => {
-                    const j = cases.filter(c => c.status.includes('حكم') || c.status.includes('قرار')).length;
-                    const e = cases.filter(c => c.executionStatus?.includes('منفذ')).length;
-                    return j > 0 ? ((e / j) * 100).toFixed(1) + '%' : '0%';
-                  })()}
-                </h3>
-              </div>
+              {[
+                { label: 'المبالغ المستخلصة (د.م)', val: cases.reduce((s, c) => s + (parseFloat(c.executionAmountRecovered || '0') || 0), 0).toLocaleString(), cls: 'emerald' },
+                { label: 'مجموع الغرامات المحكوم بها', val: cases.reduce((s, c) => s + (parseFloat(c.fine || '0') || 0) + (parseFloat(c.compensation || '0') || 0), 0).toLocaleString(), cls: 'orange' },
+                { label: 'نسبة التنفيذ', val: (() => { const j = cases.filter(c => c.status.includes('حكم') || c.status.includes('قرار')).length; const e = cases.filter(c => c.executionStatus?.includes('منفذ')).length; return j > 0 ? ((e / j) * 100).toFixed(1) + '%' : '0%'; })(), cls: 'blue' },
+              ].map((s, i) => (
+                <div key={i} className={`bg-${s.cls}-50 border border-${s.cls}-100 p-5 rounded-2xl`}>
+                  <p className={`text-xs font-bold text-${s.cls}-600 mb-1`}>{s.label}</p>
+                  <h3 className={`text-2xl font-black text-${s.cls}-700 font-mono`}>{s.val}</h3>
+                </div>
+              ))}
             </div>
 
-            {/* Table */}
             <div className="bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
               <div className="p-4 border-b border-stone-200 bg-stone-50 space-y-3">
                 <div className="flex flex-col md:flex-row gap-3">
                   <div className="relative flex-1">
-                    <input type="text" placeholder="بحث ذكي: اسم، رقم ملف، محكمة، خصم، إجراء... (يتحمل أخطاء الكتابة)"
+                    <input type="text" placeholder="بحث ذكي: رقم ملف، موضوع، محكمة، خصم، إجراء... (يتحمل أخطاء الكتابة)"
                       className="w-full bg-white border border-stone-200 rounded-xl pl-10 pr-4 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none"
                       value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
                     <Search className="size-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                    {searchQuery && (
-                      <button onClick={() => setSearchQuery('')}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600">
-                        <X className="size-4" />
-                      </button>
-                    )}
+                    {searchQuery && <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600"><X className="size-4" /></button>}
                   </div>
-                  <div className="flex gap-2 flex-wrap">
+                  <div className="flex gap-2 flex-wrap shrink-0">
                     <button onClick={() => setShowAdvanced(!showAdvanced)}
                       className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-bold border transition-colors ${showAdvanced ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-50'}`}>
                       <Filter className="size-4" /> فلاتر
                     </button>
                     <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-                      className="bg-white border border-stone-200 text-stone-700 rounded-xl px-3 py-2.5 text-sm focus:ring-2 focus:ring-emerald-500/20 outline-none">
+                      className="bg-white border border-stone-200 text-stone-700 rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20">
                       <option value="all">جميع الوضعيات</option>
                       <option value="active">قيد الرائجة</option>
                       <option value="judged">محكومة</option>
@@ -1035,57 +753,41 @@ export function Contentieux() {
                     {selectedIds.size > 0 && (
                       <div className="flex items-center gap-2 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200 animate-in fade-in">
                         <span className="text-sm font-bold text-emerald-800">{selectedIds.size} محدد</span>
-                        <button onClick={handleExportSelectedXLSX} title="تحميل Excel" className="p-1 hover:bg-emerald-200 rounded text-emerald-700"><FileSpreadsheet className="size-4" /></button>
+                        <button onClick={() => exportAllCasesXLSX(cases.filter(c => selectedIds.has(c.id)))} title="Excel" className="p-1 hover:bg-emerald-200 rounded text-emerald-700"><FileSpreadsheet className="size-4" /></button>
                         <button onClick={handleDeleteSelected} title="حذف" className="p-1 hover:bg-red-200 rounded text-red-600"><Trash2 className="size-4" /></button>
                       </div>
                     )}
                     <button onClick={() => exportAllCasesXLSX(processedCases)}
-                      className="flex items-center gap-2 px-3 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold transition-colors shadow-sm"
-                      title="تحميل الكل Excel">
+                      className="flex items-center gap-2 px-3 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-sm">
                       <Database className="size-4" /> Excel الكل
                     </button>
-                    <button onClick={() => window.print()}
-                      className="flex items-center gap-2 px-3 py-2.5 bg-white border border-stone-200 text-stone-700 rounded-xl text-sm font-medium hover:bg-stone-50">
+                    <button onClick={() => window.print()} className="flex items-center gap-2 px-3 py-2.5 bg-white border border-stone-200 text-stone-700 rounded-xl text-sm hover:bg-stone-50">
                       <Printer className="size-4" />
                     </button>
                   </div>
                 </div>
-
                 {showAdvanced && (
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-3 border-t border-stone-200 animate-in slide-in-from-top-2">
-                    <div>
-                      <label className="block text-xs font-bold text-stone-500 mb-1">نوع الملف</label>
-                      <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}
-                        className="w-full bg-white border border-stone-200 text-stone-700 rounded-xl px-3 py-2 text-sm outline-none">
-                        <option value="all">الكل</option>
-                        {uniqueTypes.map(t => <option key={String(t)} value={String(t)}>{String(t)}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-stone-500 mb-1">المحكمة</label>
-                      <select value={courtFilter} onChange={e => setCourtFilter(e.target.value)}
-                        className="w-full bg-white border border-stone-200 text-stone-700 rounded-xl px-3 py-2 text-sm outline-none">
-                        <option value="all">الكل</option>
-                        {uniqueCourts.map(c => <option key={String(c)} value={String(c)}>{String(c)}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-stone-500 mb-1">سنة التسجيل</label>
-                      <select value={yearFilter} onChange={e => setYearFilter(e.target.value)}
-                        className="w-full bg-white border border-stone-200 text-stone-700 rounded-xl px-3 py-2 text-sm outline-none">
-                        <option value="all">الكل</option>
-                        {uniqueYears.map(y => <option key={String(y)} value={String(y)}>{String(y)}</option>)}
-                      </select>
-                    </div>
+                    {[
+                      { label: 'نوع الملف', val: typeFilter, set: setTypeFilter, opts: uniqueTypes },
+                      { label: 'المحكمة', val: courtFilter, set: setCourtFilter, opts: uniqueCourts },
+                      { label: 'سنة التسجيل', val: yearFilter, set: setYearFilter, opts: uniqueYears },
+                    ].map((f, i) => (
+                      <div key={i}>
+                        <label className="block text-xs font-bold text-stone-500 mb-1">{f.label}</label>
+                        <select value={f.val} onChange={e => f.set(e.target.value)}
+                          className="w-full bg-white border border-stone-200 text-stone-700 rounded-xl px-3 py-2 text-sm outline-none">
+                          <option value="all">الكل</option>
+                          {f.opts.map(o => <option key={String(o)} value={String(o)}>{String(o)}</option>)}
+                        </select>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
 
               {isLoading ? (
-                <div className="py-16 text-center text-stone-400">
-                  <RefreshCw className="size-8 mx-auto mb-3 animate-spin text-stone-300" />
-                  <p className="text-sm">جاري تحميل الملفات...</p>
-                </div>
+                <div className="py-16 text-center text-stone-400"><RefreshCw className="size-8 mx-auto mb-3 animate-spin text-stone-300" /><p className="text-sm">جاري التحميل...</p></div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm text-right">
@@ -1094,14 +796,14 @@ export function Contentieux() {
                         <th className="px-4 py-4 w-10">
                           <input type="checkbox" className="rounded border-stone-300 text-emerald-600 w-4 h-4"
                             checked={processedCases.length > 0 && selectedIds.size === processedCases.length}
-                            onChange={handleToggleAll} />
+                            onChange={e => setSelectedIds(e.target.checked ? new Set(processedCases.map(c => c.id)) : new Set())} />
                         </th>
-                        <SortTh label="المرجع" sk="ref" />
-                        <SortTh label="المحكمة" sk="court" />
-                        <SortTh label="تاريخ التسجيل" sk="date" />
-                        <SortTh label="الموضوع" sk="subject" />
-                        <SortTh label="الوضعية" sk="status" />
-                        <SortTh label="الجلسة القادمة" sk="nextSession" />
+                        <SortTh l="المرجع" k="ref" />
+                        <SortTh l="المحكمة" k="court" />
+                        <SortTh l="تاريخ التسجيل" k="date" />
+                        <SortTh l="الموضوع" k="subject" />
+                        <SortTh l="الوضعية" k="status" />
+                        <SortTh l="الجلسة القادمة" k="nextSession" />
                         <th className="px-4 py-4 font-bold">إجراءات</th>
                       </tr>
                     </thead>
@@ -1112,54 +814,35 @@ export function Contentieux() {
                           <td className="px-4 py-4" onClick={e => e.stopPropagation()}>
                             <input type="checkbox" className="rounded border-stone-300 text-emerald-600 w-4 h-4 cursor-pointer"
                               checked={selectedIds.has(c.id)}
-                              onChange={e => handleToggleSelect(c.id, e as any)} />
+                              onChange={() => setSelectedIds(prev => { const s = new Set(prev); s.has(c.id) ? s.delete(c.id) : s.add(c.id); return s; })} />
                           </td>
                           <td className="px-4 py-4">
                             <span className="font-mono font-bold text-stone-700 bg-stone-100 px-2 py-1 rounded text-xs">{c.mahakimId || c.id}</span>
                             {!c.mahakimId && <p className="text-[10px] text-stone-400 mt-0.5">مؤقت</p>}
                           </td>
-                          <td className="px-4 py-4">
-                            <p className="font-bold text-stone-800 text-xs leading-snug">{c.court}</p>
-                          </td>
+                          <td className="px-4 py-4"><p className="font-bold text-stone-800 text-xs leading-snug">{c.court}</p></td>
                           <td className="px-4 py-4 font-mono text-xs text-stone-600 whitespace-nowrap">{c.date}</td>
                           <td className="px-4 py-4 max-w-[220px]">
                             <p className="font-bold text-stone-800 text-sm truncate">{c.subject}</p>
-                            <p className="text-xs text-stone-500 mt-0.5 truncate">
-                              {c.type} • ضد: {c.defendant || c.parties?.find(p => p.role.includes('عليه') || p.role.includes('متهم'))?.name || 'غير محدد'}
-                            </p>
+                            <p className="text-xs text-stone-500 mt-0.5 truncate">{c.type} • ضد: {c.defendant || c.parties?.find(p => p.role.includes('عليه') || p.role.includes('متهم'))?.name || 'غير محدد'}</p>
                           </td>
-                          <td className="px-4 py-4">{statusBadge(c.status)}</td>
+                          <td className="px-4 py-4">{badge(c.status)}</td>
                           <td className="px-4 py-4 font-mono font-bold text-emerald-700 text-xs whitespace-nowrap">{c.nextSession || '—'}</td>
                           <td className="px-4 py-4" onClick={e => e.stopPropagation()}>
                             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button onClick={() => setSelectedCase(c)}
-                                className="p-1.5 bg-white text-stone-500 hover:text-emerald-700 hover:bg-emerald-50 border border-stone-200 rounded-lg transition-all" title="عرض">
-                                <Eye className="size-3.5" />
-                              </button>
-                              <button onClick={() => exportSingleCaseXLSX(c)}
-                                className="p-1.5 bg-white text-stone-500 hover:text-emerald-700 hover:bg-emerald-50 border border-stone-200 rounded-lg transition-all" title="Excel">
-                                <FileSpreadsheet className="size-3.5" />
-                              </button>
-                              <button onClick={() => { setWizardData(c); setIsWizardOpen(true); }}
-                                className="p-1.5 bg-white text-stone-500 hover:text-blue-700 hover:bg-blue-50 border border-stone-200 rounded-lg transition-all" title="تعديل">
-                                <Activity className="size-3.5" />
-                              </button>
-                              <button onClick={() => { if (window.confirm('حذف الملف؟')) handleDeleteCase(c.id); }}
-                                className="p-1.5 bg-white text-stone-500 hover:text-red-600 hover:bg-red-50 border border-stone-200 rounded-lg transition-all" title="حذف">
-                                <Trash2 className="size-3.5" />
-                              </button>
+                              <button onClick={() => exportSingleCaseXLSX(c)} title="Excel" className="p-1.5 bg-white text-stone-500 hover:text-emerald-700 hover:bg-emerald-50 border border-stone-200 rounded-lg"><FileSpreadsheet className="size-3.5" /></button>
+                              <button onClick={() => { setWizardData(c); setIsWizardOpen(true); }} title="تعديل" className="p-1.5 bg-white text-stone-500 hover:text-blue-700 hover:bg-blue-50 border border-stone-200 rounded-lg"><Activity className="size-3.5" /></button>
+                              <button onClick={() => { if (window.confirm('حذف الملف؟')) handleDeleteCase(c.id); }} title="حذف" className="p-1.5 bg-white text-stone-500 hover:text-red-600 hover:bg-red-50 border border-stone-200 rounded-lg"><Trash2 className="size-3.5" /></button>
                             </div>
                           </td>
                         </tr>
                       ))}
                       {processedCases.length === 0 && (
-                        <tr>
-                          <td colSpan={8} className="px-6 py-14 text-center">
-                            <Search className="size-10 text-stone-200 mx-auto mb-3" />
-                            <p className="text-stone-400 font-medium">لا توجد نتائج مطابقة</p>
-                            {searchQuery && <p className="text-xs text-stone-400 mt-1">جرب كلمات أخرى أو تحقق من الفلاتر</p>}
-                          </td>
-                        </tr>
+                        <tr><td colSpan={8} className="px-6 py-14 text-center">
+                          <Search className="size-10 text-stone-200 mx-auto mb-3" />
+                          <p className="text-stone-400 font-medium">لا توجد نتائج مطابقة</p>
+                          {searchQuery && <p className="text-xs text-stone-400 mt-1">جرب كلمات أخرى</p>}
+                        </td></tr>
                       )}
                     </tbody>
                   </table>
@@ -1179,447 +862,278 @@ export function Contentieux() {
       )}
 
       {isWizardOpen && (
-        <CaseWizard
-          initialData={wizardData || undefined}
-          onSave={handleSaveCase}
-          onCancel={() => { setIsWizardOpen(false); setWizardData(null); }}
-        />
+        <CaseWizard initialData={wizardData || undefined} onSave={handleSaveCase}
+          onCancel={() => { setIsWizardOpen(false); setWizardData(null); }} />
       )}
     </div>
   );
 }
 
-// ─── Mahakim Integration (Rewritten) ─────────────────────────────────────────
+// ─── Stable iframe (never re-renders) ─────────────────────────────────────────
 
-interface AccumulatedSections {
-  infoText: string;
-  proceduresText: string;
-  partiesText: string;
-  extraText: string;
-}
+const PortalIframe = React.memo(
+  () => (
+    <iframe
+      src="https://www.mahakim.ma/#/suivi/dossier-suivi"
+      title="Mahakim.ma"
+      className="w-full h-full border-0 absolute inset-0 pt-9 bg-white"
+      sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+    />
+  ),
+  () => true   // Always equal props → never re-render
+);
 
-interface ParsedPreview {
-  infoMap: Record<string, string>;
-  procedures: { date: string; action: string; decision: string }[];
-  parties: { role: string; name: string }[];
-}
-
-const SECTION_DEFS = [
-  { key: 'info', label: 'بطاقة الملف', icon: FileText, required: true, hint: 'افتح بطاقة الملف في البوابة → Ctrl+A ثم Ctrl+C' },
-  { key: 'procedures', label: 'لائحة الإجراءات', icon: Activity, required: true, hint: 'انقر على تبويبة "لائحة الإجراءات" → Ctrl+A ثم Ctrl+C' },
-  { key: 'parties', label: 'لائحة الأطراف', icon: User, required: false, hint: 'انقر على تبويبة "لائحة الأطراف" → Ctrl+A ثم Ctrl+C' },
-  { key: 'extra', label: 'إضافي (اختياري)', icon: BookOpen, required: false, hint: 'يمكن إضافة أي قسم آخر (عرائض الطعن، الخبرات...)' },
-] as const;
+// ─── MahakimIntegration ───────────────────────────────────────────────────────
 
 function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
-  const [accumulated, setAccumulated] = useState<AccumulatedSections>({ infoText: '', proceduresText: '', partiesText: '', extraText: '' });
-  const [captured, setCaptured] = useState<Set<string>>(new Set());
-  const [activeSection, setActiveSection] = useState<string>('info');
-  const [manualText, setManualText] = useState('');
-  const [preview, setPreview] = useState<ParsedPreview | null>(null);
-  const [showPreview, setShowPreview] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [feedback, setFeedback] = useState<{ type: 'success' | 'error' | 'info'; msg: string } | null>(null);
+  const [pasteData, setPasteData] = useState('');
+  const [result, setResult] = useState<ReturnType<typeof performParsing> | null>(null);
+  const [extractMode, setExtractMode] = useState<'portal' | 'parsed'>('portal');
+  const pasteCount = useRef(0);
 
-  const showFeedback = (type: 'success' | 'error' | 'info', msg: string) => {
-    setFeedback({ type, msg });
-    setTimeout(() => setFeedback(null), 3500);
-  };
-
-  // Rebuild preview whenever accumulated data changes
-  useEffect(() => {
-    if (accumulated.infoText || accumulated.proceduresText || accumulated.partiesText) {
-      const infoMap = accumulated.infoText ? parseCaseInfoSection(accumulated.infoText) : {};
-      const procedures = accumulated.proceduresText ? parseProceduresSection(accumulated.proceduresText) : [];
-      const parties = accumulated.partiesText ? parsePartiesSection(accumulated.partiesText) : [];
-      setPreview({ infoMap, procedures, parties });
-    }
-  }, [accumulated]);
-
-  const processText = useCallback((sectionKey: string, text: string) => {
-    if (!text.trim()) { showFeedback('error', 'الحافظة فارغة أو لا يوجد نص للمعالجة'); return; }
-
-    const detected = detectSectionType(text);
-    let targetKey = sectionKey;
-
-    // Auto-route if detection is confident
-    if (detected !== 'mixed' && detected !== 'unknown') {
-      if (detected === 'caseInfo') targetKey = 'info';
-      else if (detected === 'procedures') targetKey = 'procedures';
-      else if (detected === 'parties') targetKey = 'parties';
-    }
-
-    if (detected === 'mixed') {
-      // Full-page paste: populate all sections at once
-      setAccumulated(prev => ({
-        ...prev,
-        infoText: prev.infoText || text,
-        proceduresText: prev.proceduresText || text,
-        partiesText: prev.partiesText || text,
-      }));
-      setCaptured(prev => new Set([...prev, 'info', 'procedures', 'parties']));
-      showFeedback('success', 'تم استخراج جميع الأقسام المتوفرة في النص!');
-      setActiveSection('');
-      setShowPreview(true);
-      return;
-    }
-
-    setAccumulated(prev => {
-      const updated = { ...prev };
-      if (targetKey === 'info') updated.infoText = text;
-      else if (targetKey === 'procedures') updated.proceduresText = text;
-      else if (targetKey === 'parties') updated.partiesText = text;
-      else updated.extraText = text;
-      return updated;
-    });
-    setCaptured(prev => new Set([...prev, targetKey]));
-    setShowPreview(true);
-
-    const sectionLabel = SECTION_DEFS.find(s => s.key === targetKey)?.label || targetKey;
-    showFeedback('success', `✓ تم استخراج "${sectionLabel}" بنجاح`);
-
-    // Auto-advance to next uncaptured required section
-    const keys = SECTION_DEFS.map(s => s.key);
-    const nextUncaptured = keys.find(k => k !== targetKey && !captured.has(k) && SECTION_DEFS.find(s => s.key === k)?.required);
-    setActiveSection(nextUncaptured || '');
-  }, [captured]);
-
-  const handleClipboardExtract = async () => {
+  const handleReadClipboard = async () => {
     try {
       const text = await navigator.clipboard.readText();
-      if (!text.trim()) { showFeedback('error', 'الحافظة فارغة – يرجى نسخ المحتوى أولاً (Ctrl+A ثم Ctrl+C)'); return; }
-      processText(activeSection, text);
+      if (!text.trim()) { alert('الحافظة فارغة. الرجاء نسخ المحتوى أولاً (Ctrl+A ثم Ctrl+C)'); return; }
+      // Accumulate: add separator + new text
+      const separator = pasteData.trim() ? `\n\n════════ لصقة ${++pasteCount.current} ════════\n\n` : '';
+      const newData = pasteData + separator + text;
+      setPasteData(newData);
+      const parsed = performParsing(newData);
+      setResult(parsed);
+      setExtractMode('parsed');
     } catch {
-      showFeedback('error', 'تعذر الوصول إلى الحافظة – يرجى اللصق يدوياً في الحقل أدناه');
+      alert('تعذر الوصول إلى الحافظة – الصق يدوياً في المنطقة النصية أدناه ثم اضغط "تحليل".');
     }
   };
 
-  const handleManualParse = () => {
-    if (!manualText.trim()) return;
-    processText(activeSection, manualText);
-    setManualText('');
-  };
-
-  const handleSave = async () => {
-    if (!preview) { showFeedback('error', 'لا توجد بيانات لحفظها – يرجى استخراج البيانات أولاً'); return; }
-    setIsSaving(true);
-    const caseData = buildCaseFromAccumulated(preview.infoMap, preview.procedures, preview.parties);
-    const newCase: Case = {
-      id: `CTX-${new Date().getFullYear()}-${Math.floor(Math.random() * 9000) + 1000}`,
-      date: caseData.date || new Date().toISOString().split('T')[0],
-      type: caseData.type || 'غير محدد',
-      court: caseData.court || 'غير محددة',
-      subject: caseData.subject || 'غير محدد',
-      status: caseData.status || 'مستخرج',
-      ...caseData,
-    };
-    onSave(newCase);
-    setIsSaving(false);
-    showFeedback('success', 'تم حفظ الملف في القاعدة!');
-    // Reset
-    setAccumulated({ infoText: '', proceduresText: '', partiesText: '', extraText: '' });
-    setCaptured(new Set());
-    setPreview(null);
-    setShowPreview(false);
-    setActiveSection('info');
+  const handleManual = () => {
+    if (!pasteData.trim()) return;
+    const parsed = performParsing(pasteData);
+    setResult(parsed);
+    setExtractMode('parsed');
   };
 
   const handleReset = () => {
-    setAccumulated({ infoText: '', proceduresText: '', partiesText: '', extraText: '' });
-    setCaptured(new Set());
-    setPreview(null);
-    setShowPreview(false);
-    setActiveSection('info');
-    setManualText('');
-    showFeedback('info', 'تم مسح البيانات');
+    setPasteData('');
+    setResult(null);
+    setExtractMode('portal');
+    pasteCount.current = 0;
   };
 
-  const canSave = captured.has('info') || captured.has('procedures') || preview !== null;
+  const handleSave = () => {
+    if (!result) return;
+    const newCase: Case = {
+      id: `CTX-${new Date().getFullYear()}-${Math.floor(Math.random() * 9000) + 1000}`,
+      mahakimId: result.mahakimId !== '-' ? result.mahakimId : undefined,
+      nationalId: result.nationalId !== '-' ? result.nationalId : undefined,
+      court: result.court,
+      type: result.type,
+      subject: result.subject,
+      date: result.date,
+      judge: result.judge !== '-' ? result.judge : undefined,
+      section: result.section !== '-' ? result.section : undefined,
+      status: result.status,
+      nextSession: result.nextSession !== '-' ? result.nextSession : undefined,
+      defendant: result.defendant,
+      parties: result.parties,
+      procedures: result.procedures,
+    };
+    onSave(newCase);
+    handleReset();
+  };
+
+  const pasteCount_display = pasteData.split('════════').length > 1 ? Math.floor(pasteData.split('════════').length / 2) + 1 : (pasteData.trim() ? 1 : 0);
 
   return (
-    <div className="bg-white rounded-2xl border border-stone-200 shadow-sm flex flex-col min-h-[700px] w-full relative overflow-hidden" dir="rtl">
-      {/* Portal header */}
-      <div className="p-4 bg-emerald-900 flex justify-between items-center text-emerald-50 shrink-0 z-20 shadow-md">
+    <div className="bg-white rounded-2xl border border-stone-200 shadow-sm flex flex-col min-h-[700px] overflow-hidden" dir="rtl">
+      <div className="p-4 bg-emerald-900 flex justify-between items-center text-emerald-50 shrink-0 shadow-md">
         <div>
-          <h2 className="font-bold text-lg flex items-center gap-2">
-            <Landmark className="size-5 text-emerald-300" /> تكامل مع بوابة محاكم
-          </h2>
-          <p className="text-xs text-emerald-400 mt-0.5">استخراج ذكي متعدد الأقسام — يدعم جميع تبويبات البوابة</p>
+          <h2 className="font-bold text-lg flex items-center gap-2"><Landmark className="size-5 text-emerald-300" /> تكامل مع بوابة محاكم</h2>
+          <p className="text-xs text-emerald-400 mt-0.5">انسخ الصفحة كاملة (Ctrl+A → Ctrl+C) ثم اضغط الزر — كرر لكل تبويبة</p>
         </div>
-        <div className="flex gap-2">
-          {canSave && (
-            <button onClick={handleSave} disabled={isSaving}
-              className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-white font-bold rounded-lg text-sm transition-all shadow">
-              <DownloadCloud className="size-4" />
-              {isSaving ? 'جاري الحفظ...' : 'حفظ في القاعدة'}
+        {result && (
+          <div className="flex gap-2">
+            <button onClick={() => setExtractMode(extractMode === 'portal' ? 'parsed' : 'portal')}
+              className="flex items-center gap-2 px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-lg text-xs">
+              <Eye className="size-4" /> {extractMode === 'portal' ? 'عرض النتائج' : 'رجوع للبوابة'}
             </button>
-          )}
-          {(captured.size > 0) && (
-            <button onClick={handleReset}
-              className="flex items-center gap-2 px-3 py-2 bg-emerald-800 hover:bg-emerald-700 text-emerald-300 font-bold rounded-lg text-sm transition-colors">
-              <RefreshCw className="size-4" /> مسح والبدء من جديد
+            <button onClick={handleSave}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-white font-bold rounded-lg text-sm shadow">
+              <DownloadCloud className="size-4" /> حفظ في القاعدة
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
-      {/* Feedback toast */}
-      {feedback && (
-        <div className={`mx-4 mt-3 px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 animate-in slide-in-from-top-2 ${feedback.type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : feedback.type === 'error' ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>
-          {feedback.type === 'success' ? <CheckCircle2 className="size-4" /> : <AlertCircle className="size-4" />}
-          {feedback.msg}
-        </div>
-      )}
-
-      <div className="flex flex-col lg:flex-row flex-1 overflow-hidden">
-        {/* ── Left Panel: Extraction Guide ── */}
-        <div className="w-full lg:w-[420px] border-b lg:border-b-0 lg:border-l border-stone-200 bg-stone-50 flex flex-col overflow-y-auto shrink-0">
-          {/* Section progress */}
-          <div className="p-4 border-b border-stone-200 bg-white">
-            <p className="text-xs font-bold text-stone-500 mb-3">الأقسام المستخرجة</p>
-            <div className="grid grid-cols-2 gap-2">
-              {SECTION_DEFS.map(s => (
-                <button key={s.key}
-                  onClick={() => setActiveSection(s.key)}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-all border ${activeSection === s.key
-                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-sm'
-                    : captured.has(s.key)
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                      : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'}`}>
-                  {captured.has(s.key)
-                    ? <CheckCircle2 className="size-3.5 text-emerald-500 shrink-0" />
-                    : <s.icon className="size-3.5 shrink-0" />}
-                  {s.label}
-                  {s.required && !captured.has(s.key) && <span className="mr-auto text-[9px] text-orange-500 font-black">مطلوب</span>}
-                </button>
-              ))}
-            </div>
+      <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
+        {/* ── Left panel ── */}
+        <div className="w-full md:w-[420px] border-b md:border-b-0 md:border-l border-stone-200 bg-stone-50 p-5 flex flex-col gap-4 overflow-y-auto shrink-0">
+          <div className="bg-orange-50 border border-orange-200 p-4 rounded-xl">
+            <h3 className="text-orange-900 font-bold text-sm flex items-center gap-2 mb-2"><AlertTriangle className="size-4" /> حماية CORS</h3>
+            <p className="text-[11px] text-orange-800 leading-relaxed">لا يمكن استخراج البيانات برمجياً. انسخ يدوياً من البوابة كما هو موضح.</p>
           </div>
 
-          {/* Active section instructions */}
-          <div className="p-4 flex-1 space-y-4">
-            {activeSection && (() => {
-              const sec = SECTION_DEFS.find(s => s.key === activeSection);
-              if (!sec) return null;
-              return (
-                <>
-                  <div className="bg-blue-50 border border-blue-100 p-3 rounded-xl">
-                    <p className="text-xs font-bold text-blue-800 flex items-center gap-2 mb-1">
-                      <sec.icon className="size-3.5" /> {sec.label}
-                    </p>
-                    <p className="text-[11px] text-blue-700 leading-relaxed">{sec.hint}</p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="bg-stone-100 rounded-lg p-3 text-xs text-stone-600 space-y-1.5">
-                      <p className="font-bold text-stone-700 flex items-center gap-1.5"><span className="bg-stone-300 text-stone-700 px-1.5 py-0.5 rounded font-mono text-[10px]">1</span> انقر داخل إطار البوابة على اليمين</p>
-                      <p className="font-bold text-stone-700 flex items-center gap-1.5">
-                        <span className="bg-stone-300 text-stone-700 px-1.5 py-0.5 rounded font-mono text-[10px]">2</span>
-                        اضغط <kbd className="bg-white border border-stone-300 px-1.5 py-0.5 rounded font-mono text-[10px] mx-0.5">Ctrl+A</kbd> ثم <kbd className="bg-white border border-stone-300 px-1.5 py-0.5 rounded font-mono text-[10px] mx-0.5">Ctrl+C</kbd>
-                      </p>
-                      <p className="font-bold text-stone-700 flex items-center gap-1.5"><span className="bg-emerald-500 text-white px-1.5 py-0.5 rounded font-mono text-[10px]">3</span> اضغط الزر أدناه</p>
-                    </div>
-
-                    <button onClick={handleClipboardExtract}
-                      className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-sm transition-all hover:shadow flex items-center justify-center gap-2">
-                      <ClipboardPaste className="size-5" />
-                      استخراج "{sec.label}" من الحافظة
-                    </button>
-
-                    <div className="pt-3 border-t border-stone-200">
-                      <p className="text-[11px] text-stone-500 font-bold mb-2">أو الصق يدوياً (Ctrl+V):</p>
-                      <textarea
-                        value={manualText}
-                        onChange={e => setManualText(e.target.value)}
-                        onPaste={e => {
-                          const text = e.clipboardData.getData('text');
-                          if (text) {
-                            e.preventDefault();
-                            setManualText(text);
-                            processText(activeSection, text);
-                          }
-                        }}
-                        placeholder={`الصق محتوى "${sec.label}" هنا...`}
-                        className="w-full bg-white border border-stone-200 rounded-lg p-3 text-[10px] font-mono text-stone-600 outline-none resize-none h-20 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-                      />
-                      {manualText.trim() && (
-                        <button onClick={handleManualParse}
-                          className="w-full mt-2 py-2 bg-stone-800 hover:bg-stone-900 text-white rounded-lg font-bold text-xs">
-                          تحليل النص
-                        </button>
+          <div className="space-y-4 relative before:absolute before:right-[15px] before:top-2 before:bottom-6 before:w-px before:bg-emerald-200">
+            {[
+              { n: 1, title: 'ابحث عن الملف داخل البوابة', desc: 'استخدم نموذج البحث على اليمين. أدخل رقم الملف والمحكمة.' },
+              { n: 2, title: 'انسخ محتوى الصفحة', desc: 'انقر داخل إطار البوابة ثم اضغط Ctrl+A ثم Ctrl+C. كرر لكل تبويبة (الإجراءات، الأطراف...).' },
+              { n: 3, title: 'استخرج وحلل البيانات', desc: '' },
+            ].map(step => (
+              <div key={step.n} className="relative pl-4">
+                <div className={`absolute right-0 top-0 size-8 rounded-full font-black border-2 border-white flex items-center justify-center shadow-sm text-sm ${step.n === 3 ? 'bg-emerald-600 text-white' : 'bg-emerald-100 text-emerald-700'}`}>{step.n}</div>
+                <div className="mr-12">
+                  <h4 className="font-bold text-sm text-stone-800 mb-1">{step.title}</h4>
+                  {step.desc && <p className="text-xs text-stone-500 leading-relaxed">{step.desc}</p>}
+                  {step.n === 3 && (
+                    <div className="mt-3 space-y-3">
+                      <button onClick={handleReadClipboard}
+                        className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-sm transition-all hover:shadow flex items-center justify-center gap-2">
+                        <ClipboardPaste className="size-5" />
+                        {pasteCount_display > 0 ? `إضافة لصقة جديدة (${pasteCount_display} موجودة)` : 'استخراج من الحافظة'}
+                      </button>
+                      {pasteCount_display > 0 && (
+                        <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 px-3 py-2 rounded-xl text-xs font-bold text-emerald-800">
+                          <CheckCircle2 className="size-4 text-emerald-500" />
+                          {pasteCount_display} لصقة محفوظة — يمكنك إضافة المزيد من التبويبات
+                        </div>
                       )}
-                    </div>
-                  </div>
-                </>
-              );
-            })()}
-
-            {!activeSection && captured.size > 0 && (
-              <div className="space-y-3">
-                <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl text-center">
-                  <CheckCircle2 className="size-8 text-emerald-500 mx-auto mb-2" />
-                  <p className="font-bold text-emerald-800 text-sm">تم استخراج {captured.size} قسم!</p>
-                  <p className="text-xs text-emerald-600 mt-1">يمكنك حفظ الملف أو استخراج أقسام إضافية</p>
-                </div>
-                <button onClick={handleSave} disabled={isSaving}
-                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow flex items-center justify-center gap-2">
-                  <DownloadCloud className="size-5" />
-                  حفظ الملف الكامل في القاعدة
-                </button>
-              </div>
-            )}
-
-            {!activeSection && captured.size === 0 && (
-              <div className="text-center py-8 text-stone-400">
-                <MousePointerClick className="size-10 mx-auto mb-3 text-stone-300" />
-                <p className="text-sm font-medium">ابدأ باختيار قسم واستخراجه</p>
-              </div>
-            )}
-          </div>
-
-          {/* CORS warning */}
-          <div className="p-4 border-t border-stone-200">
-            <div className="bg-orange-50 border border-orange-200 p-3 rounded-xl">
-              <p className="text-[10px] font-bold text-orange-700 flex items-center gap-1.5 mb-1">
-                <AlertTriangle className="size-3" /> حماية CORS
-              </p>
-              <p className="text-[10px] text-orange-600 leading-relaxed">
-                البوابة محمية ضد الاستخراج البرمجي المباشر. استخدم النسخ اليدوي (Ctrl+A → Ctrl+C) لكل قسم كما هو موضح.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* ── Right Panel: Preview / Portal ── */}
-        <div className="flex-1 relative overflow-hidden bg-stone-100">
-          {showPreview && preview ? (
-            /* Extracted data preview */
-            <div className="absolute inset-0 overflow-y-auto bg-white p-6 z-10 animate-in fade-in">
-              <div className="flex justify-between items-center mb-6 pb-4 border-b border-stone-100">
-                <h3 className="font-bold text-xl text-emerald-900 flex items-center gap-2">
-                  <FileCheck2 className="size-6 text-emerald-600" /> البيانات المستخرجة
-                </h3>
-                <div className="flex gap-2">
-                  <button onClick={() => setShowPreview(false)}
-                    className="flex items-center gap-2 px-4 py-2 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-lg font-bold text-sm">
-                    <Eye className="size-4" /> العودة للبوابة
-                  </button>
-                  <button onClick={handleSave} disabled={isSaving}
-                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-sm shadow">
-                    <DownloadCloud className="size-4" />
-                    {isSaving ? '...' : 'حفظ في القاعدة'}
-                  </button>
-                </div>
-              </div>
-
-              {/* Case info grid */}
-              {Object.keys(preview.infoMap).length > 0 && (
-                <div className="mb-6">
-                  <h4 className="font-bold text-stone-700 mb-3 flex items-center gap-2 text-sm">
-                    <FileText className="size-4 text-stone-400" /> بطاقة الملف
-                  </h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                    {Object.entries(preview.infoMap).map(([k, v]) => (
-                      <div key={k} className="bg-stone-50 border border-stone-100 rounded-xl p-3">
-                        <p className="text-[10px] text-stone-500 font-bold mb-1">{k}</p>
-                        <p className="text-sm font-bold text-stone-800">{v}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Parties */}
-              {preview.parties.length > 0 && (
-                <div className="mb-6">
-                  <h4 className="font-bold text-stone-700 mb-3 flex items-center gap-2 text-sm">
-                    <User className="size-4 text-stone-400" /> الأطراف ({preview.parties.length})
-                  </h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {preview.parties.map((p, i) => (
-                      <div key={i} className="bg-stone-50 border border-stone-100 rounded-xl px-3 py-2.5 flex items-center gap-3">
-                        <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded shrink-0">{p.role}</span>
-                        <span className="font-bold text-stone-800 text-sm">{p.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Procedures */}
-              {preview.procedures.length > 0 && (
-                <div>
-                  <h4 className="font-bold text-stone-700 mb-3 flex items-center gap-2 text-sm">
-                    <Activity className="size-4 text-stone-400" /> الإجراءات ({preview.procedures.length})
-                  </h4>
-                  <div className="space-y-2">
-                    {preview.procedures.map((p, i) => (
-                      <div key={i} className="bg-stone-50 border border-stone-100 rounded-xl p-3 flex items-start gap-3">
-                        <span className="font-mono text-xs text-stone-500 bg-white border border-stone-200 px-2 py-1 rounded shrink-0">{p.date}</span>
-                        <div>
-                          <p className="font-bold text-stone-800 text-sm">{p.action}</p>
-                          {p.decision && p.decision !== '-' && (
-                            <p className="text-xs text-emerald-700 mt-0.5">{p.decision}</p>
+                      <div className="border-t border-stone-200 pt-3">
+                        <p className="text-[11px] text-stone-500 mb-1.5 font-bold">أو الصق يدوياً (Ctrl+V):</p>
+                        <textarea
+                          value={pasteData}
+                          onChange={e => setPasteData(e.target.value)}
+                          placeholder="الصق المحتوى هنا... يمكنك إضافة عدة لصقات تباعاً"
+                          className="w-full bg-white border border-stone-200 rounded-lg p-3 text-[10px] font-mono text-stone-600 outline-none resize-none h-28 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 shadow-sm"
+                        />
+                        <div className="flex gap-2 mt-2">
+                          <button onClick={handleManual} disabled={!pasteData.trim()}
+                            className="flex-1 py-2.5 bg-stone-800 disabled:opacity-50 hover:bg-stone-900 text-white rounded-lg font-bold text-xs">
+                            تحليل النص
+                          </button>
+                          {pasteData.trim() && (
+                            <button onClick={handleReset} className="px-3 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold border border-red-200">
+                              مسح
+                            </button>
                           )}
                         </div>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  )}
                 </div>
-              )}
-
-              {Object.keys(preview.infoMap).length === 0 && preview.procedures.length === 0 && preview.parties.length === 0 && (
-                <div className="text-center py-12 text-stone-400">
-                  <AlertCircle className="size-10 mx-auto mb-3 text-stone-300" />
-                  <p>لم يتم استخراج بيانات كافية. حاول نسخ الأقسام مرة أخرى.</p>
-                </div>
-              )}
-            </div>
-          ) : (
-            /* Portal iframe */
-            <>
-              <div className="absolute inset-x-0 top-0 h-9 bg-white/80 backdrop-blur border-b border-stone-200 flex items-center justify-center px-4 z-10 pointer-events-none">
-                <span className="text-xs font-bold text-stone-500 flex items-center gap-2">
-                  <Lock className="size-3 text-stone-400" /> بوابة محاكم الأصلية (مؤمنة ضد الانتحال)
-                </span>
               </div>
-              <iframe
-                src="https://www.mahakim.ma/#/suivi/dossier-suivi"
-                title="Mahakim.ma Portal"
-                className="w-full h-full border-0 absolute inset-0 pt-9 bg-white"
-                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-              />
-              {/* Footer mask — covers the blue contact footer */}
-              <div className="absolute bottom-0 left-0 right-0 h-[220px] bg-gradient-to-t from-stone-100 via-stone-100/80 to-transparent pointer-events-none z-10" />
+            ))}
+          </div>
+        </div>
 
-              {/* Action hint overlay (fades after first section is captured) */}
-              {captured.size === 0 && (
-                <div className="absolute inset-x-0 top-12 flex justify-center z-20 pointer-events-none">
-                  <div className="bg-emerald-900/90 text-emerald-100 px-4 py-2 rounded-full text-xs font-bold backdrop-blur flex items-center gap-2 animate-in slide-in-from-top-2">
-                    <Sparkles className="size-3.5 text-emerald-400" />
-                    ابحث عن ملفك هنا، ثم انسخ كل قسم وأضفه في اللوحة اليسرى
+        {/* ── Right panel: Portal (always mounted) + Results overlay ── */}
+        <div className="flex-1 bg-stone-100 relative w-full h-full overflow-hidden">
+          {/* Portal — always in DOM, just hidden when showing results */}
+          <div className={extractMode === 'portal' ? 'absolute inset-0' : 'absolute inset-0 invisible pointer-events-none'}>
+            <div className="absolute inset-x-0 top-0 h-9 bg-white/80 backdrop-blur border-b border-stone-200 flex items-center justify-center z-10 pointer-events-none">
+              <span className="text-xs font-bold text-stone-500 flex items-center gap-2"><Lock className="size-3 text-stone-400" /> بوابة محاكم الأصلية</span>
+            </div>
+            <PortalIframe />
+            {/* Gradient mask covering blue footer */}
+            <div className="absolute bottom-0 left-0 right-0 h-[220px] bg-gradient-to-t from-stone-100 via-stone-100/70 to-transparent pointer-events-none z-10" />
+          </div>
+
+          {/* Results view */}
+          {extractMode === 'parsed' && result && (
+            <div className="absolute inset-0 bg-white overflow-y-auto p-6 z-20 animate-in fade-in duration-300">
+              <div className="flex justify-between items-center mb-6 pb-5 border-b border-stone-100">
+                <div>
+                  <h3 className="font-bold text-2xl text-emerald-900 flex items-center gap-3">
+                    <FileCheck2 className="size-7 text-emerald-600" /> البيانات المستخرجة بنجاح
+                  </h3>
+                  <p className="text-sm text-stone-500 mt-1">راجع البيانات وتأكد من صحتها قبل الحفظ</p>
+                </div>
+                <div className="flex flex-col gap-2 shrink-0">
+                  <button onClick={() => setExtractMode('portal')}
+                    className="bg-white border-2 border-stone-200 hover:border-emerald-400 text-stone-700 px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2">
+                    <Plus className="size-4" /> إضافة بيانات من تبويبة أخرى
+                  </button>
+                  <button onClick={handleSave}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow">
+                    <DownloadCloud className="size-5" /> حفظ الملف في القاعدة
+                  </button>
+                  <button onClick={handleReset} className="text-xs text-stone-400 hover:text-red-500 underline text-center">إلغاء ومسح</button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+                {[
+                  { label: 'رقم محاكم الشامل', value: result.mahakimId, highlight: true, mono: true },
+                  { label: 'الرقم الوطني', value: result.nationalId, mono: true },
+                  { label: 'المحكمة', value: result.court },
+                  { label: 'تاريخ التسجيل', value: result.date, mono: true },
+                  { label: 'نوع القضية', value: result.type },
+                  { label: 'الشعبة', value: result.section },
+                  { label: 'القاضي / المستشار', value: result.judge },
+                  { label: 'الوضعية / آخر حكم', value: result.status },
+                  { label: 'الموضوع', value: result.subject },
+                ].map((f, i) => (
+                  <div key={i} className={`p-4 rounded-2xl border ${f.highlight ? 'border-emerald-200 bg-emerald-50' : 'border-stone-200 bg-white shadow-sm'}`}>
+                    <span className="text-[10px] font-bold text-stone-500 block mb-1">{f.label}</span>
+                    <span className={`text-sm ${f.mono ? 'font-mono text-stone-700' : 'font-bold text-stone-800'} ${f.highlight ? 'text-emerald-900 font-black text-base' : ''}`}>{f.value}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+                <div>
+                  <h4 className="font-bold text-stone-800 border-b border-stone-200 pb-3 mb-4 flex items-center gap-2 text-base">
+                    <User className="size-5 text-emerald-600" /> الأطراف ({result.parties.length})
+                  </h4>
+                  <div className="bg-stone-50 border border-stone-200 rounded-xl overflow-hidden">
+                    <table className="w-full text-sm text-right">
+                      <thead className="bg-stone-100 text-stone-500 font-bold border-b border-stone-200">
+                        <tr><th className="px-4 py-3 w-1/3">الصفة</th><th className="px-4 py-3">الاسم</th></tr>
+                      </thead>
+                      <tbody className="divide-y divide-stone-100">
+                        {result.parties.map((p, i) => (
+                          <tr key={i}>
+                            <td className="px-4 py-3"><span className="bg-white border border-stone-200 px-2 py-1 rounded-lg text-xs font-bold shadow-sm">{p.role}</span></td>
+                            <td className="px-4 py-3 font-bold text-stone-800">{p.name}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
-              )}
 
-              {/* Show preview button if data exists */}
-              {captured.size > 0 && (
-                <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20 pointer-events-auto">
-                  <button onClick={() => setShowPreview(true)}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-full font-bold text-sm shadow-lg transition-all hover:-translate-y-0.5 hover:shadow-xl">
-                    <Eye className="size-4" /> عرض البيانات المستخرجة ({captured.size} قسم)
-                  </button>
+                <div>
+                  <h4 className="font-bold text-stone-800 border-b border-stone-200 pb-3 mb-4 flex items-center gap-2 text-base">
+                    <Activity className="size-5 text-emerald-600" /> الإجراءات ({result.procedures.length})
+                  </h4>
+                  {result.procedures.length > 0 ? (
+                    <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
+                      {result.procedures.map((proc, i) => (
+                        <div key={i} className="bg-white border border-stone-200 rounded-xl p-4 hover:border-emerald-200 transition-colors">
+                          <p className="font-mono text-xs text-stone-400 mb-1">{proc.date}</p>
+                          <p className="font-bold text-stone-800 text-sm">{proc.action}</p>
+                          {proc.decision && proc.decision !== '-' && (
+                            <p className="text-xs text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg mt-2 flex items-center gap-1.5">
+                              <Gavel className="size-3" /> {proc.decision}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="bg-stone-50 border border-stone-100 rounded-2xl p-8 text-center text-stone-400 text-sm font-bold">
+                      لم يتم العثور على إجراءات
+                    </div>
+                  )}
                 </div>
-              )}
-            </>
+              </div>
+            </div>
           )}
         </div>
       </div>
     </div>
   );
 }
-
-// ─── ResultField Helper ───────────────────────────────────────────────────────
 
 function ResultField({ label, value, mono, highlight }: { label: string; value: string; mono?: boolean; highlight?: boolean }) {
   return (
