@@ -946,6 +946,30 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   const pasteDataRef = useRef('');
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
+  // ── VB.NET Bridge ──────────────────────────────────────────
+  useEffect(() => {
+    let last = '';
+    const id = setInterval(async () => {
+      try {
+        const r = await fetch('http://localhost:5765/latest', {
+          signal: AbortSignal.timeout(1500),
+        });
+        if (r.status === 204 || !r.ok) return;
+        const text = await r.text();
+        if (!text || text.length < 50 || text === last) return;
+        last = text;
+        const sep = pasteDataRef.current.trim()
+          ? `\n\n════════ من VB.NET ════════\n\n` : '';
+        const data = pasteDataRef.current + sep + text;
+        pasteCount.current++;
+        setPasteData(data);
+        setResult(performParsing(data));
+        setExtractMode('parsed');
+      } catch { }
+    }, 2500);
+    return () => clearInterval(id);
+  }, []);
+  // ───────────────────────────────────────────────────────────
   // Keep ref in sync with state (avoids stale closure in paste listener)
   useEffect(() => { pasteDataRef.current = pasteData; }, [pasteData]);
 
