@@ -37,9 +37,9 @@ let DefaultIcon = L.icon({
 L.Marker.prototype.options.icon = DefaultIcon;
 
 import {
-  FileText, Search, Layers, ChevronRight, ChevronLeft, X,
+  FileText, Search, Layers, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, X,
   Target, Upload, Eye, EyeOff, LayoutTemplate,
-  Trash2, Maximize, Palette, Printer,
+  Trash2, Maximize, Palette, Printer, Save,
   Menu, Navigation, Plus, Minus, LocateFixed, Wrench, Combine,
   Circle, Square, Triangle, Settings, MapPin, MousePointer2,
   Zap,
@@ -96,7 +96,7 @@ const MeasureSetup = () => {
   return null;
 };
 
-const GeomanSetup = ({ setCustomLayers }: { setCustomLayers: any }) => {
+const GeomanSetup = ({ setCustomLayers, onLayerImported }: { setCustomLayers: any; onLayerImported?: (id: string, name: string, geojson: any) => void }) => {
   const map = useMap();
   useEffect(() => {
     map.pm.addControls({
@@ -130,7 +130,11 @@ const GeomanSetup = ({ setCustomLayers }: { setCustomLayers: any }) => {
         content += `</div>`;
         layer.bindPopup(content);
         setTimeout(() => { if (layer.openPopup) layer.openPopup(); }, 100);
-        setCustomLayers((prev: any) => [...prev, { id, name: `Couche dessinée (${typeName})`, type: 'drawn', visible: true, color: '#3388ff', leafletLayer: layer }]);
+        setCustomLayers((prev: any) => [...prev, { id, name: `Couche dessinée (${typeName})`, type: 'drawn', visible: true, color: '#3388ff', leafletLayer: layer, geojson }]);
+        // Run chevauchement analysis on drawn polygons
+        if ((e.shape === 'Polygon' || e.shape === 'Rectangle') && onLayerImported) {
+          onLayerImported(id, `Couche dessinée (${typeName})`, geojson);
+        }
       } catch (err) { console.error("Error creating layer", err); }
     };
     const handleRemove = (e: any) => {
@@ -500,7 +504,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
           })}
 
           <FeatureGroup ref={featureGroupRef} />
-          <GeomanSetup setCustomLayers={setCustomLayers} />
+          <GeomanSetup setCustomLayers={setCustomLayers} onLayerImported={handleLayerImported} />
           <MeasureSetup />
           <MapEvents setCoords={setCoords} onIdentify={handleIdentify} />
           <MapResizeTracker isPanelCollapsed={isPanelCollapsed} />
@@ -699,6 +703,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                   lastImportedLayer={lastImportedLayer}
                   forestData={_officialGeoData.forest}
                   communesData={_officialGeoData.communes}
+                  chevauchementResults={chevauchementResults}
                 />
               </div>
             </div>
@@ -862,12 +867,14 @@ function ChevauchementLayerPanel({
 // ─────────────────────────────────────────────────────────────────────────────
 // RapportsTab — cleaned up: no inline chevauchement panel
 // ─────────────────────────────────────────────────────────────────────────────
-function RapportsTab({ lastImportedLayer, forestData, communesData }: {
+function RapportsTab({ lastImportedLayer, forestData, communesData, chevauchementResults }: {
   lastImportedLayer?: { id: string; name: string; geojson: any; chevauchement: ChevauchementResult | null; province?: string | null } | null;
   forestData?: any; communesData?: any;
+  chevauchementResults?: Record<string, ChevauchementResult>;
 }) {
   const [activeReport, setActiveReport] = useState<string | null>(null);
   const chev = lastImportedLayer?.chevauchement;
+  const allChevResults = Object.values(chevauchementResults || {});
 
   const chevBadge = chev
     ? (chev.globalPosition === 'داخل الملك الغابوي'
@@ -913,14 +920,18 @@ function RapportsTab({ lastImportedLayer, forestData, communesData }: {
         <ReportCard
           title="Analyse Chevauchement"
           subtitle="Intersection · Domaine Forestier"
-          desc={chevBadge
+          desc={allChevResults.length > 1
+            ? `${allChevResults.length} couches analysées`
+            : chevBadge
             ? `${chevBadge.label} — ${chev!.totalPercentage.toFixed(1)}%`
             : lastImportedLayer
             ? "Calcul en cours…"
             : "Importez une couche → résultat auto"}
           color={chevBadge?.color ?? "#eab308"} icon={Maximize}
           onClick={() => setActiveReport("Analyse Chevauchement")}
-          badge={chevBadge ? { label: `${chev!.totalPercentage.toFixed(1)}%`, color: chevBadge.color } : undefined}
+          badge={allChevResults.length > 1
+            ? { label: `${allChevResults.length} couches`, color: '#3b82f6' }
+            : chevBadge ? { label: `${chev!.totalPercentage.toFixed(1)}%`, color: chevBadge.color } : undefined}
         />
       </div>
 
@@ -934,7 +945,11 @@ function RapportsTab({ lastImportedLayer, forestData, communesData }: {
         <ExpertiseModal onClose={() => setActiveReport(null)} importedLayer={lastImportedLayer} forestData={forestData} />
       )}
       {activeReport === "Analyse Chevauchement" && (
-        <ChevauchementModal onClose={() => setActiveReport(null)} result={lastImportedLayer?.chevauchement} />
+        <ChevauchementModal
+          onClose={() => setActiveReport(null)}
+          result={allChevResults.length === 1 ? allChevResults[0] : undefined}
+          results={allChevResults.length > 1 ? allChevResults : undefined}
+        />
       )}
     </div>
   );
@@ -1379,27 +1394,41 @@ function CouchesTab({
           {OFFICIAL.map(({ key, label, file, color, weight, tooltip }) => {
             const style = officialStyles[key];
             const isExpanded = expandedSymbo === key;
+            const isOn = officialVisible[key];
             return (
               <div key={key} className="rounded-lg border overflow-hidden transition-all"
-                style={officialVisible[key] ? { borderColor: color, boxShadow: `0 0 0 1px ${color}20` } : { borderColor: 'var(--border-color)' }}>
+                style={isOn ? { borderColor: color, boxShadow: `0 0 0 1px ${color}20` } : { borderColor: 'var(--border-color)' }}>
                 <div className="flex items-center gap-2 px-2.5 py-2 bg-[var(--bg-main)]">
-                  <button onClick={() => toggleOfficial(key, file, color, weight, tooltip)}
-                    className="w-4 h-4 rounded shrink-0 border-2 transition-all hover:scale-110"
-                    style={{ backgroundColor: officialVisible[key] ? style.strokeColor + '40' : 'transparent', borderColor: style.strokeColor }} />
-                  <span className="flex-1 text-xs font-medium text-[var(--text-main)] truncate">{label}</span>
-                  {officialVisible[key] && (
+                  {/* Clickable row: checkbox + name = toggle */}
+                  <button
+                    onClick={() => toggleOfficial(key, file, color, weight, tooltip)}
+                    className="flex items-center gap-2 flex-1 min-w-0 text-left group"
+                  >
+                    <span
+                      className="w-4 h-4 rounded shrink-0 border-2 transition-all flex items-center justify-center group-hover:scale-110"
+                      style={{ backgroundColor: isOn ? style.strokeColor + '40' : 'transparent', borderColor: style.strokeColor }}
+                    >
+                      {isOn && <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: style.strokeColor }} />}
+                    </span>
+                    <span className={`text-xs font-medium truncate transition-colors ${isOn ? 'text-[var(--text-main)]' : 'text-[var(--text-muted)] group-hover:text-[var(--text-main)]'}`}>
+                      {label}
+                    </span>
+                  </button>
+                  {isOn && (
                     <button onClick={() => setExpandedSymbo(isExpanded ? null : key)}
                       className="p-1 rounded hover:bg-[var(--bg-surface)] text-[var(--text-muted)] hover:text-[var(--brand)]">
                       <Palette className="w-3.5 h-3.5" />
                     </button>
                   )}
-                  <span className="text-[8px] font-bold px-1.5 py-0.5 rounded cursor-pointer"
+                  <button
                     onClick={() => toggleOfficial(key, file, color, weight, tooltip)}
-                    style={{ backgroundColor: officialVisible[key] ? style.strokeColor : 'var(--border-color)', color: officialVisible[key] ? '#fff' : 'var(--text-muted)' }}>
-                    {officialVisible[key] ? 'ON' : 'OFF'}
-                  </span>
+                    className="text-[8px] font-bold px-1.5 py-0.5 rounded transition-all"
+                    style={{ backgroundColor: isOn ? style.strokeColor : 'var(--border-color)', color: isOn ? '#fff' : 'var(--text-muted)' }}
+                  >
+                    {isOn ? 'ON' : 'OFF'}
+                  </button>
                 </div>
-                {isExpanded && officialVisible[key] && (
+                {isExpanded && isOn && (
                   <div className="px-3 py-2.5 bg-[var(--bg-surface)] border-t border-[var(--border-color)] space-y-2.5">
                     <p className="text-[9px] font-bold text-[var(--brand)] uppercase tracking-wider">Symbologie</p>
                     <div className="flex items-center justify-between gap-2">
@@ -1734,18 +1763,6 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
           </p>
         </div>
 
-        {/* Chevauchement badge */}
-        {chevauchementResult && chevColor && (
-          <button
-            onClick={() => setShowChev(!showChev)}
-            title={showChev ? "Masquer l'analyse" : "Voir l'analyse chevauchement"}
-            className={cn("shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black tracking-wide transition-all hover:opacity-80", showChev && "ring-1")}
-            style={{ backgroundColor: chevColor + '22', color: chevColor, borderColor: chevColor + '55', ringColor: chevColor }}
-          >
-            {chevauchementResult.totalPercentage.toFixed(0)}%
-          </button>
-        )}
-
         {/* Actions */}
         <div className="flex items-center shrink-0">
           {/* Zoom — hover reveal */}
@@ -1770,10 +1787,36 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
         </div>
       </div>
 
-      {/* ─ Chevauchement panel ─ */}
+      {/* ─ Chevauchement section header (always visible when result exists) ─ */}
+      {chevauchementResult && chevColor && (
+        <div
+          className="flex items-center gap-2 px-2.5 py-1.5 border-t cursor-pointer select-none group/chev"
+          style={{ borderColor: chevColor + '44', backgroundColor: chevColor + '0a' }}
+          onClick={() => setShowChev(!showChev)}
+          role="button"
+          title={showChev ? "Réduire l'analyse" : "Développer l'analyse"}
+        >
+          <div className="w-2 h-2 rounded-full shrink-0 animate-pulse" style={{ backgroundColor: chevColor }} />
+          <span className="text-[9px] font-black tracking-wide uppercase flex-1" style={{ color: chevColor }}>
+            Chevauchement · {chevauchementResult.totalPercentage.toFixed(1)}%
+          </span>
+          <span className="text-[9px] font-bold shrink-0" style={{ color: chevColor }}>
+            {showChev ? '↑ réduire' : '↓ voir'}
+          </span>
+          <div className="w-5 h-5 rounded-md flex items-center justify-center border transition-all group-hover/chev:opacity-100"
+            style={{ borderColor: chevColor + '55', backgroundColor: chevColor + '15', color: chevColor }}>
+            {showChev
+              ? <ChevronUp className="w-3 h-3" />
+              : <ChevronDown className="w-3 h-3" />
+            }
+          </div>
+        </div>
+      )}
+
+      {/* ─ Chevauchement panel body ─ */}
       {showChev && chevauchementResult && (
-        <div className="px-2.5 pb-2.5 pt-0 border-t border-[var(--border-color)]">
-          <div className="pt-2.5">
+        <div className="px-2.5 pb-2.5 pt-0">
+          <div className="pt-2">
             <ChevauchementLayerPanel
               result={chevauchementResult}
               layerName={layer.name}
@@ -1849,14 +1892,34 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
               className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-[var(--brand)]" />
           </div>
 
-          {/* Delete */}
+          {/* Delete + Export */}
           <div className="flex items-center justify-between pt-1 border-t border-[var(--border-color)]">
             <span className="text-[9px] uppercase tracking-wider bg-[var(--bg-main)] px-2 py-0.5 rounded border border-[var(--border-color)] text-[var(--text-muted)] font-bold">
               {layer.type === 'static_polygon' ? 'Référence' : layer.type === 'drawn' ? 'Dessin' : 'Import'}
             </span>
-            <button onClick={onDelete} className="flex items-center gap-1.5 text-[10px] font-bold text-red-500 hover:bg-red-500/10 px-2.5 py-1.5 rounded-lg transition-colors">
-              <Trash2 className="w-3.5 h-3.5" /> Supprimer
-            </button>
+            <div className="flex items-center gap-1">
+              {(layer.geojson || layer.leafletLayer?.toGeoJSON) && (
+                <button
+                  onClick={() => {
+                    try {
+                      const geojson = layer.geojson || layer.leafletLayer?.toGeoJSON?.();
+                      if (!geojson) return;
+                      const blob = new Blob([JSON.stringify(geojson, null, 2)], { type: 'application/json' });
+                      const url = URL.createObjectURL(blob);
+                      Object.assign(document.createElement('a'), { href: url, download: `${layer.name}.geojson` }).click();
+                      URL.revokeObjectURL(url);
+                    } catch {}
+                  }}
+                  className="flex items-center gap-1 text-[10px] font-bold text-[var(--brand)] hover:bg-[var(--brand)]/10 px-2 py-1.5 rounded-lg transition-colors"
+                  title="Télécharger GeoJSON"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <button onClick={onDelete} className="flex items-center gap-1.5 text-[10px] font-bold text-red-500 hover:bg-red-500/10 px-2.5 py-1.5 rounded-lg transition-colors">
+                <Trash2 className="w-3.5 h-3.5" /> Supprimer
+              </button>
+            </div>
           </div>
         </div>
       )}
