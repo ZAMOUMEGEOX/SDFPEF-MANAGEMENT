@@ -246,12 +246,12 @@ export function ChevauchementInlinePanel({ result }: { result: ChevauchementResu
       </div>
       <div className="px-3 py-2 space-y-1">
         <div className="text-[11px] font-bold" style={{ color: col.text, direction: 'rtl' }}>{result.globalPosition}</div>
-        <div className="text-[10px] text-[var(--text-muted)]">
+        <div className="text-[10px] text-(--text-muted)">
           {(result.importedArea / 10000).toFixed(3)} ha · تقاطع: {(result.totalIntersectionArea / 10000).toFixed(3)} ha
         </div>
         {result.hits.slice(0, 3).map((h, i) => (
           <div key={i} className="text-[10px] flex items-center justify-between">
-            <span className="text-[var(--text-main)] truncate flex-1 mr-2">🌲 {h.foret}{h.canton ? ` — ${h.canton}` : ''}</span>
+            <span className="text-(--text-main) truncate flex-1 mr-2">🌲 {h.foret}{h.canton ? ` — ${h.canton}` : ''}</span>
             <span className="font-mono font-bold shrink-0" style={{ color: col.text }}>{h.percentage.toFixed(1)}%</span>
           </div>
         ))}
@@ -264,27 +264,27 @@ export function ChevauchementInlinePanel({ result }: { result: ChevauchementResu
 // UI Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-const inp = "w-full bg-[var(--bg-main)] border border-[var(--border-color)] rounded-lg px-2.5 py-2 text-sm text-[var(--text-main)] focus:outline-none focus:border-[var(--brand)] transition-colors";
-const lbl = "block text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1";
-const sel = "w-full bg-[var(--bg-main)] border border-[var(--border-color)] rounded-lg px-2.5 py-2 text-sm text-[var(--text-main)] focus:outline-none focus:border-[var(--brand)] transition-colors";
+const inp = "w-full bg-(--bg-main) border border-(--border-color) rounded-lg px-2.5 py-2 text-sm text-(--text-main) focus:outline-none focus:border-(--brand) transition-colors";
+const lbl = "block text-[10px] font-semibold text-(--text-muted) uppercase tracking-wider mb-1";
+const sel = "w-full bg-(--bg-main) border border-(--border-color) rounded-lg px-2.5 py-2 text-sm text-(--text-main) focus:outline-none focus:border-(--brand) transition-colors";
 
 function ModalWrap({ title, subtitle, onClose, wide = false, children }: {
   title: string; subtitle?: string; onClose: () => void; wide?: boolean; children: React.ReactNode;
 }) {
   return (
-    <div className="fixed inset-0 z-[2000] flex items-center justify-center p-3 bg-black/65 backdrop-blur-sm">
+    <div className="fixed inset-0 z-2000 flex items-center justify-center p-3 bg-black/65 backdrop-blur-sm">
       <div
-        className={`bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-2xl shadow-2xl w-full flex flex-col overflow-hidden ${wide ? 'max-w-2xl' : 'max-w-lg'}`}
+        className={`bg-(--bg-surface) border border-(--border-color) rounded-2xl shadow-2xl w-full flex flex-col overflow-hidden ${wide ? 'max-w-2xl' : 'max-w-lg'}`}
         style={{ maxHeight: '92vh' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border-color)] bg-[var(--bg-main)] shrink-0">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-(--border-color) bg-(--bg-main) shrink-0">
           <div>
-            <h3 className="text-[var(--text-main)] font-bold text-sm tracking-wide">{title}</h3>
-            {subtitle && <p className="text-[10px] text-[var(--text-muted)] mt-0.5">{subtitle}</p>}
+            <h3 className="text-(--text-main) font-bold text-sm tracking-wide">{title}</h3>
+            {subtitle && <p className="text-[10px] text-(--text-muted) mt-0.5">{subtitle}</p>}
           </div>
           <button onClick={onClose}
-            className="p-1.5 text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] rounded-lg border border-[var(--border-color)] transition-colors">
+            className="p-1.5 text-(--text-muted) hover:text-(--text-main) hover:bg-(--bg-surface) rounded-lg border border-(--border-color) transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -300,18 +300,18 @@ function TabNav({ tabs, active, onChange }: {
   onChange: (id: string) => void;
 }) {
   return (
-    <div className="flex border-b border-[var(--border-color)] shrink-0 bg-[var(--bg-main)] px-1">
+    <div className="flex border-b border-(--border-color) shrink-0 bg-(--bg-main) px-1">
       {tabs.map(tab => (
         <button key={tab.id} onClick={() => onChange(tab.id)}
           className={`
             flex-1 px-2 py-2.5 text-[11px] font-bold tracking-wide transition-all relative
             ${active === tab.id
-              ? 'text-[var(--brand)]'
-              : 'text-[var(--text-muted)] hover:text-[var(--text-main)]'}
+              ? 'text-(--brand)'
+              : 'text-(--text-muted) hover:text-(--text-main)'}
           `}>
           {tab.label}
           {active === tab.id && (
-            <span className="absolute bottom-0 left-2 right-2 h-0.5 rounded-full bg-[var(--brand)]" />
+            <span className="absolute bottom-0 left-2 right-2 h-0.5 rounded-full bg-(--brand)" />
           )}
         </button>
       ))}
@@ -333,7 +333,7 @@ function Field({ label, value, onChange, type = 'text', placeholder = '', readOn
 
 function ActionBar({ children }: { children: React.ReactNode }) {
   return (
-    <div className="shrink-0 px-4 py-3 border-t border-[var(--border-color)] bg-[var(--bg-main)] flex gap-2">
+    <div className="shrink-0 px-4 py-3 border-t border-(--border-color) bg-(--bg-main) flex gap-2">
       {children}
     </div>
   );
@@ -342,7 +342,7 @@ function ActionBar({ children }: { children: React.ReactNode }) {
 function BtnPrimary({ onClick, icon: Icon, children }: any) {
   return (
     <button onClick={onClick}
-      className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-[var(--brand)] hover:opacity-90 text-white font-semibold rounded-xl text-sm active:scale-95 transition-all">
+      className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-(--brand) hover:opacity-90 text-white font-semibold rounded-xl text-sm active:scale-95 transition-all">
       {Icon && <Icon className="w-4 h-4" />}{children}
     </button>
   );
@@ -351,7 +351,7 @@ function BtnPrimary({ onClick, icon: Icon, children }: any) {
 function BtnSecondary({ onClick, icon: Icon, children, title }: any) {
   return (
     <button onClick={onClick} title={title}
-      className="flex items-center justify-center gap-2 px-4 py-2.5 bg-[var(--bg-surface)] border border-[var(--border-color)] hover:border-[var(--brand)] text-[var(--text-main)] font-semibold rounded-xl text-sm active:scale-95 transition-all">
+      className="flex items-center justify-center gap-2 px-4 py-2.5 bg-(--bg-surface) border border-(--border-color) hover:border-(--brand) text-(--text-main) font-semibold rounded-xl text-sm active:scale-95 transition-all">
       {Icon && <Icon className="w-4 h-4" />}{children}
     </button>
   );
@@ -655,11 +655,11 @@ export function FicheModal({ onClose, forestData, communesData, importedLayer }:
           <label className={lbl}>Superficie Déclarée</label>
           <div className="flex items-center gap-2">
             <input value={c.superficieDeclareHa} onChange={e => set('superficieDeclareHa')(e.target.value)} className={`${inp} text-center font-mono`} placeholder="HA" />
-            <span className="text-[10px] font-bold text-[var(--text-muted)]">HA</span>
+            <span className="text-[10px] font-bold text-(--text-muted)">HA</span>
             <input value={c.superficieDeclareAr} onChange={e => set('superficieDeclareAr')(e.target.value)} className={`${inp} text-center font-mono`} placeholder="A" />
-            <span className="text-[10px] font-bold text-[var(--text-muted)]">A</span>
+            <span className="text-[10px] font-bold text-(--text-muted)">A</span>
             <input value={c.superficieDeclareCa} onChange={e => set('superficieDeclareCa')(e.target.value)} className={`${inp} text-center font-mono`} placeholder="CA" />
-            <span className="text-[10px] font-bold text-[var(--text-muted)]">CA</span>
+            <span className="text-[10px] font-bold text-(--text-muted)">CA</span>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-2">
@@ -676,19 +676,19 @@ export function FicheModal({ onClose, forestData, communesData, importedLayer }:
         </div>
         <Field label="Actes de propriété en présence" value={c.actesPropriete} onChange={set('actesPropriete')} />
         {/* Croquis generation */}
-        <div className="border border-[var(--border-color)] rounded-xl overflow-hidden">
-          <div className="px-3 py-2 bg-[var(--bg-main)] flex items-center justify-between border-b border-[var(--border-color)]">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Croquis de Situation</span>
+        <div className="border border-(--border-color) rounded-xl overflow-hidden">
+          <div className="px-3 py-2 bg-(--bg-main) flex items-center justify-between border-b border-(--border-color)">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-(--text-muted)">Croquis de Situation</span>
             <button onClick={generateCroquis}
-              className="flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1.5 rounded-lg bg-[var(--brand)] text-white hover:opacity-90 transition-opacity active:scale-95">
+              className="flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1.5 rounded-lg bg-(--brand) text-white hover:opacity-90 transition-opacity active:scale-95">
               <RefreshCw className="w-3 h-3" />
               Générer le croquis
             </button>
           </div>
           {croquisSvg ? (
-            <div className="p-2 bg-[var(--bg-surface)]" dangerouslySetInnerHTML={{ __html: croquisSvg }} />
+            <div className="p-2 bg-(--bg-surface)" dangerouslySetInnerHTML={{ __html: croquisSvg }} />
           ) : (
-            <div className="h-20 flex items-center justify-center text-[var(--text-muted)] bg-[var(--bg-surface)]">
+            <div className="h-20 flex items-center justify-center text-(--text-muted) bg-(--bg-surface)">
               <p className="text-[10px]">Cliquez «Générer le croquis» pour créer le plan de situation</p>
             </div>
           )}
@@ -704,7 +704,7 @@ export function FicheModal({ onClose, forestData, communesData, importedLayer }:
               const color = v==='TOTAL' ? 'bg-red-600 border-red-600 text-white' : v==='PARTIEL' ? 'bg-orange-500 border-orange-500 text-white' : 'bg-emerald-600 border-emerald-600 text-white';
               return (
                 <button key={v} onClick={() => setC(p => ({...p, 'empiètement': v}))}
-                  className={`flex-1 py-2.5 rounded-xl text-xs font-black border-2 transition-all tracking-widest ${c['empiètement']===v ? color : 'border-[var(--border-color)] text-[var(--text-muted)] hover:border-[var(--brand)]'}`}>
+                  className={`flex-1 py-2.5 rounded-xl text-xs font-black border-2 transition-all tracking-widest ${c['empiètement']===v ? color : 'border-(--border-color) text-(--text-muted) hover:border-(--brand)'}`}>
                   {v}
                 </button>
               );
@@ -716,7 +716,7 @@ export function FicheModal({ onClose, forestData, communesData, importedLayer }:
           <div className="flex gap-2">
             {(['FAVORABLE','DÉFAVORABLE'] as const).map(v => (
               <button key={v} onClick={() => setC(p => ({...p, avis: v}))}
-                className={`flex-1 py-2.5 rounded-xl text-xs font-bold border-2 transition-all ${c.avis===v ? (v==='FAVORABLE'?'bg-emerald-600 text-white border-emerald-600':'bg-red-600 text-white border-red-600') : 'border-[var(--border-color)] text-[var(--text-muted)] hover:border-[var(--brand)]'}`}>
+                className={`flex-1 py-2.5 rounded-xl text-xs font-bold border-2 transition-all ${c.avis===v ? (v==='FAVORABLE'?'bg-emerald-600 text-white border-emerald-600':'bg-red-600 text-white border-red-600') : 'border-(--border-color) text-(--text-muted) hover:border-(--brand)'}`}>
                 {v}
               </button>
             ))}
@@ -1050,9 +1050,9 @@ export function AttestationModal({ onClose, forestData, communesData, importedLa
           <Field label="CPF" value={c.cpf} onChange={set('cpf')} />
         </div>
         {c.foretAr && (
-          <div className="bg-[var(--bg-main)] border border-[var(--border-color)] rounded-lg px-3 py-2 flex items-center gap-2">
-            <span className="text-[10px] text-[var(--text-muted)]">الاسم بالعربية:</span>
-            <span className="text-sm font-bold text-[var(--text-main)]" dir="rtl">{c.foretAr}</span>
+          <div className="bg-(--bg-main) border border-(--border-color) rounded-lg px-3 py-2 flex items-center gap-2">
+            <span className="text-[10px] text-(--text-muted)">الاسم بالعربية:</span>
+            <span className="text-sm font-bold text-(--text-main)" dir="rtl">{c.foretAr}</span>
           </div>
         )}
         <div>
@@ -1063,7 +1063,7 @@ export function AttestationModal({ onClose, forestData, communesData, importedLa
               const color = opt==='داخل الملك الغابوي' ? 'border-red-500 bg-red-500/10 text-red-600' : opt==='جزئيا داخل الملك الغابوي' ? 'border-orange-500 bg-orange-500/10 text-orange-600' : 'border-emerald-600 bg-emerald-600/10 text-emerald-700';
               return (
                 <button key={opt} onClick={() => set('positionDomaine')(opt)}
-                  className={`w-full py-2.5 rounded-xl text-sm font-bold border-2 transition-all text-right px-4 ${active ? color : 'border-[var(--border-color)] text-[var(--text-muted)] hover:border-[var(--brand)]'}`}
+                  className={`w-full py-2.5 rounded-xl text-sm font-bold border-2 transition-all text-right px-4 ${active ? color : 'border-(--border-color) text-(--text-muted) hover:border-(--brand)'}`}
                   dir="rtl">
                   {active ? '✓ ' : ''}{opt}
                 </button>
@@ -1085,7 +1085,7 @@ export function AttestationModal({ onClose, forestData, communesData, importedLa
                     ? prev.rapporteurs.filter(r => r !== name)
                     : [...prev.rapporteurs, name],
                 }))}
-                className={`text-right px-3 py-2 rounded-xl text-xs font-medium border-2 transition-all ${c.rapporteurs.includes(name) ? 'bg-[var(--brand)] text-white border-[var(--brand)]' : 'border-[var(--border-color)] text-[var(--text-muted)] hover:border-[var(--brand)]'}`}
+                className={`text-right px-3 py-2 rounded-xl text-xs font-medium border-2 transition-all ${c.rapporteurs.includes(name) ? 'bg-(--brand) text-white border-(--brand)' : 'border-(--border-color) text-(--text-muted) hover:border-(--brand)'}`}
                 dir="rtl">
                 {c.rapporteurs.includes(name) ? '✓ ' : ''}{name}
               </button>
@@ -1104,7 +1104,7 @@ export function AttestationModal({ onClose, forestData, communesData, importedLa
             <label className={lbl}>الإحداثيات (لامبار) / Coordonnées Lambert</label>
             <button onClick={importCoordsFromLayer}
               disabled={!importedLayer?.geojson}
-              className="flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-lg bg-[var(--brand)]/10 text-[var(--brand)] border border-[var(--brand)]/30 hover:bg-[var(--brand)]/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+              className="flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-lg bg-(--brand)/10 text-(--brand) border border-(--brand)/30 hover:bg-(--brand)/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
               <Download className="w-3 h-3" />
               استيراد من الطبقة
             </button>
@@ -1112,16 +1112,16 @@ export function AttestationModal({ onClose, forestData, communesData, importedLa
 
           {/* Table header */}
           <div className="grid grid-cols-[32px_1fr_1fr_28px] gap-1 mb-1 px-1">
-            <span className="text-[9px] font-bold text-[var(--text-muted)] text-center uppercase">ب.</span>
-            <span className="text-[9px] font-bold text-[var(--text-muted)] text-center uppercase">X Lambert</span>
-            <span className="text-[9px] font-bold text-[var(--text-muted)] text-center uppercase">Y Lambert</span>
+            <span className="text-[9px] font-bold text-(--text-muted) text-center uppercase">ب.</span>
+            <span className="text-[9px] font-bold text-(--text-muted) text-center uppercase">X Lambert</span>
+            <span className="text-[9px] font-bold text-(--text-muted) text-center uppercase">Y Lambert</span>
             <span />
           </div>
 
           <div className="space-y-1.5 max-h-52 overflow-y-auto pr-0.5">
             {c.coordPoints.map((pt, i) => (
               <div key={i} className="grid grid-cols-[32px_1fr_1fr_28px] gap-1 items-center">
-                <span className="text-[11px] text-center font-mono font-bold text-[var(--text-muted)] bg-[var(--bg-main)] border border-[var(--border-color)] rounded-lg py-2">
+                <span className="text-[11px] text-center font-mono font-bold text-(--text-muted) bg-(--bg-main) border border-(--border-color) rounded-lg py-2">
                   B{pt.num}
                 </span>
                 <input
@@ -1137,7 +1137,7 @@ export function AttestationModal({ onClose, forestData, communesData, importedLa
                   className={`${inp} font-mono text-center text-xs`}
                 />
                 <button onClick={() => removePoint(i)}
-                  className="w-7 h-[38px] flex items-center justify-center text-[var(--text-muted)] hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
+                  className="w-7 h-9.5 flex items-center justify-center text-(--text-muted) hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
                   <Minus className="w-3.5 h-3.5" />
                 </button>
               </div>
@@ -1145,28 +1145,28 @@ export function AttestationModal({ onClose, forestData, communesData, importedLa
           </div>
 
           <button onClick={addPoint}
-            className="mt-2 w-full flex items-center justify-center gap-1.5 py-2 border-2 border-dashed border-[var(--border-color)] hover:border-[var(--brand)] text-[var(--text-muted)] hover:text-[var(--brand)] rounded-xl text-xs font-semibold transition-colors">
+            className="mt-2 w-full flex items-center justify-center gap-1.5 py-2 border-2 border-dashed border-(--border-color) hover:border-(--brand) text-(--text-muted) hover:text-(--brand) rounded-xl text-xs font-semibold transition-colors">
             <Plus className="w-3.5 h-3.5" /> نقطة جديدة · Nouveau point
           </button>
         </div>
 
         {/* Croquis section */}
-        <div className="border border-[var(--border-color)] rounded-xl overflow-hidden">
-          <div className="px-3 py-2 bg-[var(--bg-main)] flex items-center justify-between border-b border-[var(--border-color)]">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">التصميم التوضيحي · Croquis</span>
+        <div className="border border-(--border-color) rounded-xl overflow-hidden">
+          <div className="px-3 py-2 bg-(--bg-main) flex items-center justify-between border-b border-(--border-color)">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-(--text-muted)">التصميم التوضيحي · Croquis</span>
             <button onClick={generateCroquis}
-              className="flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1.5 rounded-lg bg-[var(--brand)] text-white hover:opacity-90 transition-opacity active:scale-95">
+              className="flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1.5 rounded-lg bg-(--brand) text-white hover:opacity-90 transition-opacity active:scale-95">
               <RefreshCw className="w-3 h-3" />
               توليد تصميم العقار (شمال للأعلى)
             </button>
           </div>
           {croquisSvg ? (
             <div
-              className="p-2 bg-[var(--bg-surface)]"
+              className="p-2 bg-(--bg-surface)"
               dangerouslySetInnerHTML={{ __html: croquisSvg }}
             />
           ) : (
-            <div className="h-28 flex items-center justify-center text-[var(--text-muted)] bg-[var(--bg-surface)]">
+            <div className="h-28 flex items-center justify-center text-(--text-muted) bg-(--bg-surface)">
               <div className="text-center">
                 <MapPin className="w-6 h-6 mx-auto mb-1 opacity-30" />
                 <p className="text-[10px]">اضغط «توليد تصميم العقار» لإنشاء الكروكي</p>
@@ -1478,24 +1478,24 @@ export function ExpertiseModal({ onClose, importedLayer, forestData }: {
     return (
       <ModalWrap title="Rapport d'Expertise" subtitle="محضر التصريحات · اختر النوع" onClose={onClose}>
         <div className="p-5 space-y-4">
-          <p className="text-[var(--text-muted)] text-xs font-bold uppercase tracking-wider text-center">
+          <p className="text-(--text-muted) text-xs font-bold uppercase tracking-wider text-center">
             ما هو نوع الملف ؟ · Type de rapport
           </p>
           <button onClick={() => setExpertiseType('daawa')}
-            className="w-full text-right px-5 py-4 rounded-xl border-2 border-[var(--border-color)] hover:border-[var(--brand)] bg-[var(--bg-main)] transition-all group">
-            <p className="text-[14px] font-bold text-[var(--text-main)] group-hover:text-[var(--brand)]" dir="rtl">
+            className="w-full text-right px-5 py-4 rounded-xl border-2 border-(--border-color) hover:border-(--brand) bg-(--bg-main) transition-all group">
+            <p className="text-[14px] font-bold text-(--text-main) group-hover:text-(--brand)" dir="rtl">
               دعوى مدنية / استحقاق / جنحية
             </p>
-            <p className="text-[10px] text-[var(--text-muted)] mt-1">
+            <p className="text-[10px] text-(--text-muted) mt-1">
               نزاع عقاري أو دعوى استحقاق أو متابعة جنحية — محضر جنحة غابوية
             </p>
           </button>
           <button onClick={() => setExpertiseType('tahfiz')}
-            className="w-full text-right px-5 py-4 rounded-xl border-2 border-[var(--border-color)] hover:border-[var(--brand)] bg-[var(--bg-main)] transition-all group">
-            <p className="text-[14px] font-bold text-[var(--text-main)] group-hover:text-[var(--brand)]" dir="rtl">
+            className="w-full text-right px-5 py-4 rounded-xl border-2 border-(--border-color) hover:border-(--brand) bg-(--bg-main) transition-all group">
+            <p className="text-[14px] font-bold text-(--text-main) group-hover:text-(--brand)" dir="rtl">
               نزاع عقاري حول مطلب تحفيظ
             </p>
-            <p className="text-[10px] text-[var(--text-muted)] mt-1">
+            <p className="text-[10px] text-(--text-muted) mt-1">
               تعرض على مطلب تحفيظ داخل الملك الغابوي — الظهير 1916
             </p>
           </button>
@@ -1565,8 +1565,8 @@ export function ExpertiseModal({ onClose, importedLayer, forestData }: {
             {RAPPORTEURS_LIST.map(r => <option key={r} value={r}/>)}
           </datalist>
         </div>
-        <div className="pt-2 border-t border-[var(--border-color)]">
-          <p className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2">تقرير الجنحة الغابوية (اختياري)</p>
+        <div className="pt-2 border-t border-(--border-color)">
+          <p className="text-[10px] font-bold text-(--text-muted) uppercase tracking-wider mb-2">تقرير الجنحة الغابوية (اختياري)</p>
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className={lbl}>رقم التقرير</label>
@@ -1637,7 +1637,7 @@ export function ExpertiseModal({ onClose, importedLayer, forestData }: {
           <div className="flex gap-2">
             {(['كليا','جزئيا','خارج'] as const).map(v => (
               <button key={v} onClick={() => setPosition(v)}
-                className={`flex-1 py-2.5 rounded-xl text-sm font-bold border-2 transition-all ${position===v ? 'bg-[var(--brand)] text-white border-[var(--brand)]' : 'border-[var(--border-color)] text-[var(--text-muted)] hover:border-[var(--brand)]'}`}>
+                className={`flex-1 py-2.5 rounded-xl text-sm font-bold border-2 transition-all ${position===v ? 'bg-(--brand) text-white border-(--brand)' : 'border-(--border-color) text-(--text-muted) hover:border-(--brand)'}`}>
                 {v}
               </button>
             ))}
@@ -1671,19 +1671,19 @@ export function ExpertiseModal({ onClose, importedLayer, forestData }: {
             placeholder={expertiseType === 'tahfiz' ? '2003' : '2009'} />
         </div>
         {/* Croquis generation */}
-        <div className="pt-2 border-t border-[var(--border-color)]">
+        <div className="pt-2 border-t border-(--border-color)">
           <div className="flex items-center justify-between mb-2">
             <label className={lbl}>التصميم التوضيحي · CROQUIS</label>
             <button onClick={handleGenerateCroquis}
               disabled={!importedLayer?.geojson}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--brand)] text-white text-[11px] font-bold disabled:opacity-40">
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-(--brand) text-white text-[11px] font-bold disabled:opacity-40">
               <RefreshCw size={12}/> توليد التصميم
             </button>
           </div>
           {croquisSvg
-            ? <div className="p-2 bg-[var(--bg-surface)] rounded-xl border border-[var(--border-color)]"
+            ? <div className="p-2 bg-(--bg-surface) rounded-xl border border-(--border-color)"
                 dangerouslySetInnerHTML={{ __html: croquisSvg }} />
-            : <div className="h-20 flex items-center justify-center text-[var(--text-muted)] text-xs bg-[var(--bg-main)] rounded-xl border border-dashed border-[var(--border-color)]">
+            : <div className="h-20 flex items-center justify-center text-(--text-muted) text-xs bg-(--bg-main) rounded-xl border border-dashed border-(--border-color)">
                 اضغط «توليد التصميم» لإنشاء الخريطة التوضيحية
               </div>
           }
@@ -1696,10 +1696,10 @@ export function ExpertiseModal({ onClose, importedLayer, forestData }: {
     <ModalWrap title="Rapport d'Expertise" subtitle={`محضر التصريحات · ${typeLabel}`} onClose={onClose} wide>
       <div className="px-4 pt-3 pb-1 flex items-center gap-2 shrink-0">
         <button onClick={() => setExpertiseType(null)}
-          className="text-[10px] text-[var(--text-muted)] hover:text-[var(--brand)] font-bold uppercase tracking-wide transition-colors">
+          className="text-[10px] text-(--text-muted) hover:text-(--brand) font-bold uppercase tracking-wide transition-colors">
           ← تغيير النوع
         </button>
-        <span className="text-[var(--border-color)]">|</span>
+        <span className="text-(--border-color)">|</span>
         <span className="text-[11px] font-bold" style={{ color: expertiseType === 'daawa' ? '#ef4444' : '#16a34a' }}>
           {expertiseType === 'daawa' ? '⚖️ دعوى مدنية / جنحية' : '📋 مطلب التحفيظ'}
         </span>
@@ -1805,7 +1805,7 @@ export function ChevauchementModal({ onClose, result, results }: {
     return (
       <ModalWrap title="Analyse Chevauchement" subtitle="اختر الطبقة · Sélectionner une couche" onClose={onClose}>
         <div className="p-5 space-y-3">
-          <p className="text-[var(--text-muted)] text-xs font-bold uppercase tracking-wider">
+          <p className="text-(--text-muted) text-xs font-bold uppercase tracking-wider">
             طبقات متعددة — يرجى اختيار الطبقة المراد تحليلها
           </p>
           {allResults.map((r, i) => {
@@ -1813,10 +1813,10 @@ export function ChevauchementModal({ onClose, result, results }: {
               : r.globalPosition === 'جزئيا داخل الملك الغابوي' ? '#f97316' : '#22c55e';
             return (
               <button key={i} onClick={() => setSelectedResult(r)}
-                className="w-full text-right px-4 py-3 rounded-xl border-2 border-[var(--border-color)] hover:border-[var(--brand)] bg-[var(--bg-main)] transition-all flex items-center justify-between gap-3">
+                className="w-full text-right px-4 py-3 rounded-xl border-2 border-(--border-color) hover:border-(--brand) bg-(--bg-main) transition-all flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-[13px] font-bold text-[var(--text-main)] truncate">{r.layerName}</p>
-                  <p className="text-[10px] font-mono text-[var(--text-muted)]">{(r.importedArea/10000).toFixed(3)} ha</p>
+                  <p className="text-[13px] font-bold text-(--text-main) truncate">{r.layerName}</p>
+                  <p className="text-[10px] font-mono text-(--text-muted)">{(r.importedArea/10000).toFixed(3)} ha</p>
                 </div>
                 <div className="shrink-0 flex flex-col items-end gap-1">
                   <span className="text-[13px] font-black font-mono" style={{ color: ic }}>{r.totalPercentage.toFixed(1)}%</span>
@@ -1840,7 +1840,7 @@ export function ChevauchementModal({ onClose, result, results }: {
         <div className="p-5 space-y-4">
           <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
             <p className="text-amber-600 text-xs font-bold uppercase tracking-wider mb-2">Utilisation</p>
-            <p className="text-[var(--text-main)] text-sm">L'analyse se lance automatiquement à l'import d'une couche polygone.</p>
+            <p className="text-(--text-main) text-sm">L'analyse se lance automatiquement à l'import d'une couche polygone.</p>
           </div>
           <div className="space-y-2">
             {[
@@ -1850,8 +1850,8 @@ export function ChevauchementModal({ onClose, result, results }: {
               "Revenez ici pour le rapport PDF complet",
             ].map((s, i) => (
               <div key={i} className="flex gap-3 items-start">
-                <span className="w-6 h-6 rounded-full bg-[var(--brand)] text-white text-xs font-bold flex items-center justify-center shrink-0">{i+1}</span>
-                <p className="text-[var(--text-main)] text-sm pt-0.5">{s}</p>
+                <span className="w-6 h-6 rounded-full bg-(--brand) text-white text-xs font-bold flex items-center justify-center shrink-0">{i+1}</span>
+                <p className="text-(--text-main) text-sm pt-0.5">{s}</p>
               </div>
             ))}
           </div>
@@ -1879,7 +1879,7 @@ export function ChevauchementModal({ onClose, result, results }: {
             const active = r === activeResult;
             return (
               <button key={i} onClick={() => setSelectedResult(r)}
-                className={`shrink-0 px-3 py-1.5 rounded-lg text-[11px] font-bold border-2 transition-all ${active ? 'text-white' : 'bg-[var(--bg-main)] text-[var(--text-muted)] border-[var(--border-color)] hover:border-[var(--brand)]'}`}
+                className={`shrink-0 px-3 py-1.5 rounded-lg text-[11px] font-bold border-2 transition-all ${active ? 'text-white' : 'bg-(--bg-main) text-(--text-muted) border-(--border-color) hover:border-(--brand)'}`}
                 style={active ? { background: ic, borderColor: ic } : {}}>
                 {r.layerName}
               </button>
@@ -1898,17 +1898,17 @@ export function ChevauchementModal({ onClose, result, results }: {
             </div>
             <span className="text-3xl font-black font-mono" style={{ color: statusColor }}>{activeResult.totalPercentage.toFixed(1)}%</span>
           </div>
-          <div className="px-4 py-3 grid grid-cols-3 gap-4 bg-[var(--bg-main)] text-center">
+          <div className="px-4 py-3 grid grid-cols-3 gap-4 bg-(--bg-main) text-center">
             <div>
-              <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider">Couche</p>
-              <p className="text-[11px] font-bold text-[var(--text-main)] truncate">{activeResult.layerName}</p>
+              <p className="text-[9px] text-(--text-muted) uppercase tracking-wider">Couche</p>
+              <p className="text-[11px] font-bold text-(--text-main) truncate">{activeResult.layerName}</p>
             </div>
             <div>
-              <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider">Surface totale</p>
-              <p className="text-[11px] font-bold font-mono text-[var(--text-main)]">{(activeResult.importedArea/10000).toFixed(3)} ha</p>
+              <p className="text-[9px] text-(--text-muted) uppercase tracking-wider">Surface totale</p>
+              <p className="text-[11px] font-bold font-mono text-(--text-main)">{(activeResult.importedArea/10000).toFixed(3)} ha</p>
             </div>
             <div>
-              <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider">Intersection</p>
+              <p className="text-[9px] text-(--text-muted) uppercase tracking-wider">Intersection</p>
               <p className="text-[11px] font-bold font-mono" style={{ color: statusColor }}>{(activeResult.totalIntersectionArea/10000).toFixed(3)} ha</p>
             </div>
           </div>
@@ -1917,19 +1917,19 @@ export function ChevauchementModal({ onClose, result, results }: {
         {/* Breakdown per forest */}
         {activeResult.hits.length > 0 && (
           <div className="space-y-2">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] px-1">Détail par forêt</p>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-(--text-muted) px-1">Détail par forêt</p>
             {activeResult.hits.map((h, i) => (
-              <div key={i} className="bg-[var(--bg-main)] border border-[var(--border-color)] rounded-xl px-3 py-2.5 flex items-center gap-3">
+              <div key={i} className="bg-(--bg-main) border border-(--border-color) rounded-xl px-3 py-2.5 flex items-center gap-3">
                 <div className="flex-1 min-w-0">
-                  <p className="text-[12px] font-bold text-[var(--text-main)] truncate">🌲 {h.foret}{h.canton ? ` — ${h.canton}` : ''}</p>
-                  {h.foretAr && <p className="text-[10px] text-[var(--text-muted)] truncate" dir="rtl">{h.foretAr}</p>}
+                  <p className="text-[12px] font-bold text-(--text-main) truncate">🌲 {h.foret}{h.canton ? ` — ${h.canton}` : ''}</p>
+                  {h.foretAr && <p className="text-[10px] text-(--text-muted) truncate" dir="rtl">{h.foretAr}</p>}
                 </div>
                 <div className="shrink-0 flex flex-col items-end gap-1">
                   <span className="text-[13px] font-black font-mono" style={{ color: statusColor }}>{h.percentage.toFixed(1)}%</span>
-                  <div className="w-20 h-1.5 rounded-full bg-[var(--border-color)] overflow-hidden">
+                  <div className="w-20 h-1.5 rounded-full bg-(--border-color) overflow-hidden">
                     <div className="h-full rounded-full" style={{ width: `${Math.min(100, h.percentage)}%`, backgroundColor: statusColor }} />
                   </div>
-                  <span className="text-[9px] font-mono text-[var(--text-muted)]">{(h.intersectionArea/10000).toFixed(3)} ha</span>
+                  <span className="text-[9px] font-mono text-(--text-muted)">{(h.intersectionArea/10000).toFixed(3)} ha</span>
                 </div>
               </div>
             ))}
