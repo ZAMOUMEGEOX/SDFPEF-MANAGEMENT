@@ -465,9 +465,9 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 
   // ─── RENDER ────────────────────────────────────────────────────────────────
   return (
-    <div className="flex w-full h-full font-sans bg-[var(--bg-main)] flex-col md:flex-row">
+    <div className="flex w-full h-full font-sans bg-(--bg-main) flex-col md:flex-row">
       {/* ── Map Area ── */}
-      <div className="relative bg-[#121214] border-b md:border-b-0 md:border-r border-[var(--border-color)] overflow-hidden h-[35vh] md:h-full md:flex-1 shrink-0 z-10 md:shrink">
+      <div className="relative bg-[#121214] border-b md:border-b-0 md:border-r border-(--border-color) overflow-hidden h-[35vh] md:h-full md:flex-1 shrink-0 z-10 md:shrink">
         <MapContainer center={[35.6, -5.35]} zoom={12} zoomControl={false} className="h-full w-full cursor-crosshair outline-none bg-[#e5e7eb]">
           <MapResizeHandler />
           <LayersControl position="topright">
@@ -515,7 +515,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 
         {/* Identify Panel */}
         {identifyPanel && identifyPanel.results.length > 0 && (
-          <div className="absolute bottom-10 left-4 z-[1001] w-72 md:w-80 pointer-events-auto">
+          <div className="absolute bottom-10 left-4 z-1001 w-72 md:w-80 pointer-events-auto">
             <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-zinc-200 dark:border-zinc-700 overflow-hidden">
               <div className="flex items-center justify-between px-3 py-2 bg-zinc-50 dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700">
                 <div className="flex items-center gap-2">
@@ -539,7 +539,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                         {props.map(([key, val]) => (
                           <tr key={key} className="border-b border-zinc-50 dark:border-zinc-800 last:border-0">
                             <td className="py-0.5 pr-2 font-semibold text-zinc-400 dark:text-zinc-500 w-1/3 align-top truncate">{key}</td>
-                            <td className="py-0.5 text-zinc-700 dark:text-zinc-300 font-medium break-words">{String(val)}</td>
+                            <td className="py-0.5 text-zinc-700 dark:text-zinc-300 font-medium wrap-break-word">{String(val)}</td>
                           </tr>
                         ))}
                       </tbody></table>
@@ -552,7 +552,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
         )}
 
         {/* Search Bar */}
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 md:left-6 md:translate-x-0 z-[1000] pointer-events-auto w-[90vw] md:w-[380px]">
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 md:left-6 md:translate-x-0 z-1000 pointer-events-auto w-[90vw] md:w-95">
           <div className="flex items-center bg-white rounded-full shadow-[0_2px_8px_rgba(0,0,0,0.2)] pl-3 pr-2 py-2 w-full">
             <button className="p-2 text-gray-700 hover:text-black transition-colors rounded-full hover:bg-gray-100 mr-2"><Menu className="size-5" /></button>
             <input
@@ -567,13 +567,13 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
               <button onClick={() => { setSearchQuery(''); setSearchResults([]); setShowDropdown(false); }} className="p-1.5 text-gray-400 hover:text-gray-700"><X className="size-4" /></button>
             )}
             <button onClick={() => handleMapSearch()} className="p-2 text-gray-600 hover:text-gray-900"><Search className="size-5" /></button>
-            <div className="w-[1px] h-6 bg-gray-300 mx-1" />
+            <div className="w-px h-6 bg-gray-300 mx-1" />
             <button className="p-2 text-blue-600 hover:bg-blue-50 rounded-full" title="Itinéraire">
               <Navigation className="size-5" style={{ transform: 'rotate(45deg)' }} />
             </button>
           </div>
           {showDropdown && searchResults.length > 0 && (
-            <div className="absolute top-[calc(100%+8px)] left-0 right-0 bg-white rounded-xl shadow-xl border border-gray-100 overflow-hidden z-[1001]">
+            <div className="absolute top-[calc(100%+8px)] left-0 right-0 bg-white rounded-xl shadow-xl border border-gray-100 overflow-hidden z-1001">
               {searchResults.map((result: any, i: number) => {
                 const parts = result.display_name.split(',');
                 return (
@@ -595,30 +595,30 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
         <button
           onClick={() => { setActiveTab('documents'); setIsPanelCollapsed(false); }}
           title="Ouvrir les documents"
-          className="absolute bottom-16 right-6 z-[1001] w-12 h-12 rounded-full flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 text-white shadow-[0_4px_14px_rgba(16,185,129,0.5)] border-2 border-emerald-400/30 transition-all active:scale-95"
+          className="absolute bottom-16 right-6 z-1001 w-12 h-12 rounded-full flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 text-white shadow-[0_4px_14px_rgba(16,185,129,0.5)] border-2 border-emerald-400/30 transition-all active:scale-95"
         >
           <span className="text-[11px] font-black tracking-tighter leading-none">IA</span>
         </button>
 
         {/* Zoom Controls */}
-        <div className="absolute bottom-6 right-6 flex flex-col gap-3 z-[1000] pointer-events-auto">
+        <div className="absolute bottom-6 right-6 flex flex-col gap-3 z-1000 pointer-events-auto">
           <button onClick={() => window.dispatchEvent(new CustomEvent('locateUser'))}
-            className="w-[42px] h-[42px] flex items-center justify-center bg-[#1a1a1c] hover:bg-[#2a2a2c] text-blue-400 hover:text-blue-300 transition-colors border border-white/5 rounded-[14px] shadow-[0_2px_8px_rgba(0,0,0,0.4)]">
+            className="w-10.5 h-10.5 flex items-center justify-center bg-[#1a1a1c] hover:bg-[#2a2a2c] text-blue-400 hover:text-blue-300 transition-colors border border-white/5 rounded-[14px] shadow-[0_2px_8px_rgba(0,0,0,0.4)]">
             <LocateFixed className="size-5" />
           </button>
           <div className="flex flex-col bg-[#1a1a1c] rounded-[14px] shadow-[0_2px_8px_rgba(0,0,0,0.4)] overflow-hidden border border-white/5">
-            <button onClick={() => window.dispatchEvent(new CustomEvent('zoomIn'))} className="w-[42px] h-[42px] flex items-center justify-center hover:bg-[#2a2a2c] text-neutral-300 hover:text-white transition-colors">
+            <button onClick={() => window.dispatchEvent(new CustomEvent('zoomIn'))} className="w-10.5 h-10.5 flex items-center justify-center hover:bg-[#2a2a2c] text-neutral-300 hover:text-white transition-colors">
               <Plus className="size-6" strokeWidth={2.5} />
             </button>
-            <div className="w-5 h-[1px] bg-white/10 mx-auto" />
-            <button onClick={() => window.dispatchEvent(new CustomEvent('zoomOut'))} className="w-[42px] h-[42px] flex items-center justify-center hover:bg-[#2a2a2c] text-neutral-300 hover:text-white transition-colors">
+            <div className="w-5 h-px bg-white/10 mx-auto" />
+            <button onClick={() => window.dispatchEvent(new CustomEvent('zoomOut'))} className="w-10.5 h-10.5 flex items-center justify-center hover:bg-[#2a2a2c] text-neutral-300 hover:text-white transition-colors">
               <Minus className="size-6" strokeWidth={2.5} />
             </button>
           </div>
         </div>
 
         {/* Coordinate HUD */}
-        <div className="absolute bottom-4 left-4 md:left-[110px] z-[1000] bg-[#1a1a1c]/80 backdrop-blur-md border border-white/10 rounded-lg px-3 py-1 flex items-center gap-3 shadow-[0_2px_6px_rgba(0,0,0,0.5)] pointer-events-auto">
+        <div className="absolute bottom-4 left-4 md:left-27.5 z-1000 bg-[#1a1a1c]/80 backdrop-blur-md border border-white/10 rounded-lg px-3 py-1 flex items-center gap-3 shadow-[0_2px_6px_rgba(0,0,0,0.5)] pointer-events-auto">
           <div className="flex items-center gap-1.5">
             <div className="size-1.5 rounded-full bg-emerald-500" />
             <span className="text-white font-mono text-[10px] tracking-wide">{coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}</span>
@@ -631,27 +631,27 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       {/* ── Sidebar ── */}
       <div
         className={cn(
-          "flex-[0_0_auto] flex flex-col bg-[var(--bg-surface)] border-l border-[var(--border-color)] text-[var(--text-main)] transition-all duration-300 relative z-10 shrink-0",
-          isPanelCollapsed ? "w-0 overflow-hidden md:w-16 cursor-pointer items-center justify-center hover:bg-[var(--bg-main)]" : "w-full md:w-[340px]"
+          "flex-[0_0_auto] flex flex-col bg-(--bg-surface) border-l border-(--border-color) text-(--text-main) transition-all duration-300 relative z-10 shrink-0",
+          isPanelCollapsed ? "w-0 overflow-hidden md:w-16 cursor-pointer items-center justify-center hover:bg-(--bg-main)" : "w-full md:w-85"
         )}
         onClick={() => isPanelCollapsed && setIsPanelCollapsed(false)}
       >
         {isPanelCollapsed && (
           <div className="flex flex-col items-center py-5 h-full w-full" onClick={() => setIsPanelCollapsed(false)}>
-            <button className="p-2 text-[var(--text-muted)] hover:text-[var(--text-main)] bg-[var(--bg-main)] rounded-lg border border-[var(--border-color)] shadow-sm mb-6">
+            <button className="p-2 text-(--text-muted) hover:text-(--text-main) bg-(--bg-main) rounded-lg border border-(--border-color) shadow-sm mb-6">
               <ChevronLeft className="w-4 h-4" />
             </button>
             <div className="flex flex-col gap-2 w-full px-3 items-center">
               {[{ id:'couches', icon: Layers, title:'Couches'}, { id:'recherche', icon: Search, title:'Recherche'}, { id:'geotools', icon: Wrench, title:'Outils'}, { id:'documents', icon: FileText, title:'Documents'}].map(({ id, icon: Icon, title }) => (
                 <button key={id} onClick={(e) => { e.stopPropagation(); setActiveTab(id as TabId); setIsPanelCollapsed(false); }}
-                  className={`p-2 rounded-lg flex items-center justify-center transition-colors ${activeTab===id ? 'bg-[var(--bg-surface)] text-[var(--brand)] border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)]'}`} title={title}>
+                  className={`p-2 rounded-lg flex items-center justify-center transition-colors ${activeTab===id ? 'bg-(--bg-surface) text-(--brand) border border-(--border-color)' : 'text-(--text-muted) hover:text-(--text-main) hover:bg-(--bg-main)'}`} title={title}>
                   <Icon className="w-4 h-4" />
                 </button>
               ))}
             </div>
             <div className="mt-auto px-3 w-full flex justify-center">
               {setCurrentView && (
-                <button onClick={(e) => { e.stopPropagation(); setCurrentView('dashboard'); }} className="p-2 text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)] rounded-lg">
+                <button onClick={(e) => { e.stopPropagation(); setCurrentView('dashboard'); }} className="p-2 text-(--text-muted) hover:text-(--text-main) hover:bg-(--bg-main) rounded-lg">
                   <LayoutTemplate className="w-4 h-4" />
                 </button>
               )}
@@ -660,18 +660,18 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
         )}
 
         {!isPanelCollapsed && (
-          <div className="flex flex-col h-full w-full min-w-[280px]">
+          <div className="flex flex-col h-full w-full min-w-70">
             {/* Header */}
-            <div className="p-3 shrink-0 bg-[var(--bg-surface)] flex flex-col gap-3">
+            <div className="p-3 shrink-0 bg-(--bg-surface) flex flex-col gap-3">
               <div className="flex justify-between items-center px-1">
-                <h2 className="text-[var(--text-main)] font-semibold text-sm tracking-wide flex items-center gap-1.5">
-                  <Settings className="w-4 h-4 text-[var(--text-muted)]" /> Outils
+                <h2 className="text-(--text-main) font-semibold text-sm tracking-wide flex items-center gap-1.5">
+                  <Settings className="w-4 h-4 text-(--text-muted)" /> Outils
                 </h2>
-                <button onClick={() => setIsPanelCollapsed(true)} className="p-1 text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)] rounded-md">
+                <button onClick={() => setIsPanelCollapsed(true)} className="p-1 text-(--text-muted) hover:text-(--text-main) hover:bg-(--bg-main) rounded-md">
                   <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
-              <div className="flex gap-1 bg-[var(--bg-main)] p-1 rounded-lg border border-[var(--border-color)] mt-1">
+              <div className="flex gap-1 bg-(--bg-main) p-1 rounded-lg border border-(--border-color) mt-1">
                 <TabButton active={activeTab==='couches'}   onClick={() => setActiveTab('couches')}   icon={Layers}   label="Couches" />
                 <TabButton active={activeTab==='recherche'} onClick={() => setActiveTab('recherche')} icon={Search}   label="Recherche" />
                 <TabButton active={activeTab==='geotools'}  onClick={() => setActiveTab('geotools')}  icon={Wrench}   label="Outils" />
@@ -720,7 +720,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 function TabButton({ active, onClick, icon: Icon, label }: any) {
   return (
     <button onClick={onClick}
-      className={`flex-1 flex flex-col items-center justify-center p-2 rounded-md transition-all ${active ? 'bg-[var(--bg-surface)] text-[var(--text-main)] shadow-sm border border-[var(--border-color)]' : 'text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-main)]'}`}>
+      className={`flex-1 flex flex-col items-center justify-center p-2 rounded-md transition-all ${active ? 'bg-(--bg-surface) text-(--text-main) shadow-sm border border-(--border-color)' : 'text-(--text-muted) hover:bg-(--bg-surface) hover:text-(--text-main)'}`}>
       <Icon className="w-4 h-4 mb-1" />
       <span className="text-[10px] font-semibold tracking-wide">{label}</span>
     </button>
@@ -735,31 +735,31 @@ function ExcelSheetModal({ sheets, fileName, onSelect, onClose }: {
   onSelect: (sheet: string) => void; onClose: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-2xl shadow-2xl w-80 overflow-hidden">
-        <div className="px-4 py-3 border-b border-[var(--border-color)] flex items-center justify-between">
+    <div className="fixed inset-0 z-9999 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="bg-(--bg-surface) border border-(--border-color) rounded-2xl shadow-2xl w-80 overflow-hidden">
+        <div className="px-4 py-3 border-b border-(--border-color) flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-bold text-[var(--text-main)]">Sélectionner une feuille</h3>
-            <p className="text-[10px] text-[var(--text-muted)] mt-0.5 truncate max-w-[220px]">{fileName}</p>
+            <h3 className="text-sm font-bold text-(--text-main)">Sélectionner une feuille</h3>
+            <p className="text-[10px] text-(--text-muted) mt-0.5 truncate max-w-55">{fileName}</p>
           </div>
-          <button onClick={onClose} className="p-1.5 text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-main)] rounded-lg transition-colors">
+          <button onClick={onClose} className="p-1.5 text-(--text-muted) hover:text-(--text-main) hover:bg-(--bg-main) rounded-lg transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
         <div className="p-3 space-y-1.5 max-h-64 overflow-y-auto">
           {sheets.map((s, i) => (
             <button key={s} onClick={() => { onSelect(s); onClose(); }}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[var(--bg-main)] hover:bg-[var(--brand)]/10 border border-[var(--border-color)] hover:border-[var(--brand)]/40 text-left transition-all group">
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl bg-(--bg-main) hover:bg-(--brand)/10 border border-(--border-color) hover:border-(--brand)/40 text-left transition-all group">
               <div className="w-7 h-7 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 flex items-center justify-center shrink-0">
                 <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">{i + 1}</span>
               </div>
-              <span className="text-sm font-medium text-[var(--text-main)] group-hover:text-[var(--brand)] flex-1 truncate">{s}</span>
-              <ChevronRight className="w-4 h-4 text-[var(--text-muted)] opacity-0 group-hover:opacity-100 group-hover:text-[var(--brand)] transition-all" />
+              <span className="text-sm font-medium text-(--text-main) group-hover:text-(--brand) flex-1 truncate">{s}</span>
+              <ChevronRight className="w-4 h-4 text-(--text-muted) opacity-0 group-hover:opacity-100 group-hover:text-(--brand) transition-all" />
             </button>
           ))}
         </div>
         <div className="px-4 pb-3">
-          <button onClick={onClose} className="w-full py-2 text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)] font-medium">Annuler</button>
+          <button onClick={onClose} className="w-full py-2 text-[10px] text-(--text-muted) hover:text-(--text-main) font-medium">Annuler</button>
         </div>
       </div>
     </div>
@@ -808,35 +808,35 @@ function ChevauchementLayerPanel({
       </div>
 
       {/* Body */}
-      <div className="px-3 py-2.5 space-y-2 bg-[var(--bg-main)]">
-        <p className="text-[11px] text-[var(--text-main)] leading-relaxed">{descFr}.</p>
-        <p className="text-[10px] text-[var(--text-muted)] text-right leading-relaxed font-medium" dir="rtl">{descAr}.</p>
+      <div className="px-3 py-2.5 space-y-2 bg-(--bg-main)">
+        <p className="text-[11px] text-(--text-main) leading-relaxed">{descFr}.</p>
+        <p className="text-[10px] text-(--text-muted) text-right leading-relaxed font-medium" dir="rtl">{descAr}.</p>
 
         {/* Stats */}
         {(r.totalArea != null || r.intersectionArea != null) && (
-          <div className="bg-[var(--bg-surface)] rounded-lg border border-[var(--border-color)] px-2.5 py-2 grid grid-cols-2 gap-x-4 gap-y-0.5">
+          <div className="bg-(--bg-surface) rounded-lg border border-(--border-color) px-2.5 py-2 grid grid-cols-2 gap-x-4 gap-y-0.5">
             {r.totalArea != null && <>
-              <span className="text-[10px] text-[var(--text-muted)]">Surface totale</span>
-              <span className="text-[10px] font-mono font-bold text-[var(--text-main)] text-right">{Number(r.totalArea).toFixed(3)} ha</span>
+              <span className="text-[10px] text-(--text-muted)">Surface totale</span>
+              <span className="text-[10px] font-mono font-bold text-(--text-main) text-right">{Number(r.totalArea).toFixed(3)} ha</span>
             </>}
             {r.intersectionArea != null && <>
-              <span className="text-[10px] text-[var(--text-muted)]">Intersection</span>
+              <span className="text-[10px] text-(--text-muted)">Intersection</span>
               <span className="text-[10px] font-mono font-bold text-right" style={{ color: statusColor }}>{Number(r.intersectionArea).toFixed(3)} ha</span>
             </>}
           </div>
         )}
 
         {/* Breakdown per forest/canton */}
-        {result.intersections?.length > 0 && (
+        {(result.intersections?.length ?? 0) > 0 && (
           <div className="space-y-1.5 pt-0.5">
-            {result.intersections.map((inter: any, i: number) => (
+            {result.intersections?.map((inter: any, i: number) => (
               <div key={i} className="flex items-center gap-2">
                 <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: statusColor }} />
-                <span className="text-[10px] text-[var(--text-main)] font-medium flex-1 truncate">
+                <span className="text-[10px] text-(--text-main) font-medium flex-1 truncate">
                   {inter.foret}{inter.canton ? ` — ${inter.canton}` : ''}
                 </span>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <div className="w-14 h-1.5 rounded-full bg-[var(--border-color)] overflow-hidden">
+                  <div className="w-14 h-1.5 rounded-full bg-(--border-color) overflow-hidden">
                     <div className="h-full rounded-full" style={{ width: `${Math.min(100, Number(inter.percentage) || 0)}%`, backgroundColor: statusColor }} />
                   </div>
                   <span className="text-[10px] font-black font-mono w-10 text-right" style={{ color: statusColor }}>
@@ -887,9 +887,9 @@ function RapportsTab({ lastImportedLayer, forestData, communesData, chevauchemen
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between px-1 mb-2">
-        <h2 className="text-[var(--text-main)] font-semibold text-base tracking-tight">Rapports & Documents</h2>
+        <h2 className="text-(--text-main) font-semibold text-base tracking-tight">Rapports & Documents</h2>
         {lastImportedLayer && (
-          <span className="text-[10px] bg-[var(--bg-main)] px-2 py-0.5 rounded-full border border-[var(--border-color)] text-[var(--text-muted)] font-medium truncate max-w-[120px]">
+          <span className="text-[10px] bg-(--bg-main) px-2 py-0.5 rounded-full border border-(--border-color) text-(--text-muted) font-medium truncate max-w-30">
             {lastImportedLayer.name}
           </span>
         )}
@@ -957,22 +957,22 @@ function RapportsTab({ lastImportedLayer, forestData, communesData, chevauchemen
 
 function ReportCard({ title, subtitle, desc, icon: Icon, color, onClick, badge }: any) {
   return (
-    <div onClick={onClick} className="group bg-[var(--bg-main)] border border-[var(--border-color)] hover:border-[var(--brand)] rounded-xl p-3 cursor-pointer transition-all hover:shadow-sm">
+    <div onClick={onClick} className="group bg-(--bg-main) border border-(--border-color) hover:border-(--brand) rounded-xl p-3 cursor-pointer transition-all hover:shadow-sm">
       <div className="flex gap-3 items-center">
-        <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 bg-[var(--bg-surface)] border border-[var(--border-color)] group-hover:border-[var(--brand)]" style={{ color }}>
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 bg-(--bg-surface) border border-(--border-color) group-hover:border-(--brand)" style={{ color }}>
           <Icon className="w-4 h-4" />
         </div>
         <div className="flex-1 min-w-0">
-          <h4 className="text-[var(--text-main)] font-semibold text-[13px] leading-tight">{title}</h4>
-          <div className="text-[9px] uppercase tracking-wider text-[var(--text-muted)] mt-0.5">{subtitle}</div>
-          <p className="text-[10px] text-[var(--text-muted)] leading-snug mt-0.5">{desc}</p>
+          <h4 className="text-(--text-main) font-semibold text-[13px] leading-tight">{title}</h4>
+          <div className="text-[9px] uppercase tracking-wider text-(--text-muted) mt-0.5">{subtitle}</div>
+          <p className="text-[10px] text-(--text-muted) leading-snug mt-0.5">{desc}</p>
         </div>
         {badge && (
           <span className="text-[9px] font-black px-1.5 py-0.5 rounded shrink-0" style={{ backgroundColor: badge.color + '20', color: badge.color }}>
             {badge.label}
           </span>
         )}
-        <ChevronRight className="w-3.5 h-3.5 text-[var(--text-muted)] group-hover:text-[var(--text-main)] opacity-0 group-hover:opacity-100 shrink-0" />
+        <ChevronRight className="w-3.5 h-3.5 text-(--text-muted) group-hover:text-(--text-main) opacity-0 group-hover:opacity-100 shrink-0" />
       </div>
     </div>
   );
@@ -999,40 +999,40 @@ function RechercheTab({ calcLngLatFromLambert }: { calcLngLatFromLambert: (x: nu
       window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat: c.lat, lon: c.lng, display_name: `Lambert (X:${x}, Y:${y})` } }));
     }
   };
-  const inp = "w-full bg-[var(--bg-main)] border border-[var(--border-color)] rounded py-2 px-2 text-sm font-mono focus:outline-none focus:border-[var(--brand)] shadow-sm";
+  const inp = "w-full bg-(--bg-main) border border-(--border-color) rounded py-2 px-2 text-sm font-mono focus:outline-none focus:border-(--brand) shadow-sm";
 
   return (
     <div className="space-y-10">
       <div className="space-y-3">
-        <label className="text-[11px] uppercase font-bold tracking-wider text-[var(--text-muted)]">Rechercher Lieu</label>
+        <label className="text-[11px] uppercase font-bold tracking-wider text-(--text-muted)">Rechercher Lieu</label>
         <div className="flex gap-2">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
-            <input type="text" placeholder="Ex: Forêt Jbel Dersa…" className="w-full bg-[var(--bg-main)] border border-[var(--border-color)] rounded py-2 pl-9 pr-3 text-sm focus:outline-none focus:border-[var(--brand)] shadow-sm"
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-(--text-muted)" />
+            <input type="text" placeholder="Ex: Forêt Jbel Dersa…" className="w-full bg-(--bg-main) border border-(--border-color) rounded py-2 pl-9 pr-3 text-sm focus:outline-none focus:border-(--brand) shadow-sm"
               value={searchQuery} onChange={e => setSearchQuery(e.target.value)} onKeyDown={e => { if (e.key==='Enter' && searchQuery.trim()) window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() })); }} />
           </div>
-          <button onClick={() => { if (searchQuery.trim()) window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() })); }} className="px-3 py-2 bg-[var(--brand)] hover:opacity-90 text-white font-bold text-xs rounded shadow-sm">GO</button>
+          <button onClick={() => { if (searchQuery.trim()) window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() })); }} className="px-3 py-2 bg-(--brand) hover:opacity-90 text-white font-bold text-xs rounded shadow-sm">GO</button>
         </div>
       </div>
-      <div className="space-y-3 pt-8 border-t border-[var(--border-color)]">
-        <label className="text-[11px] uppercase font-bold tracking-wider text-[var(--text-muted)]">Coordonnées WGS84</label>
+      <div className="space-y-3 pt-8 border-t border-(--border-color)">
+        <label className="text-[11px] uppercase font-bold tracking-wider text-(--text-muted)">Coordonnées WGS84</label>
         <div className="flex gap-2">
           <input type="number" step="any" value={lngVal} onChange={e => setLngVal(e.target.value)} placeholder="Longitude" className={`flex-1 min-w-0 ${inp}`} />
           <input type="number" step="any" value={latVal} onChange={e => setLatVal(e.target.value)} placeholder="Latitude"  className={`flex-1 min-w-0 ${inp}`} />
-          <button onClick={handleCenterWGS} className="px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border-color)] hover:bg-[var(--bg-main)] font-bold text-xs rounded shadow-sm">GO</button>
+          <button onClick={handleCenterWGS} className="px-3 py-2 bg-(--bg-surface) border border-(--border-color) hover:bg-(--bg-main) font-bold text-xs rounded shadow-sm">GO</button>
         </div>
       </div>
-      <div className="space-y-3 pt-8 border-t border-[var(--border-color)]">
-        <label className="text-[11px] uppercase font-bold tracking-wider text-[var(--text-muted)]">Coordonnées Lambert Nord</label>
+      <div className="space-y-3 pt-8 border-t border-(--border-color)">
+        <label className="text-[11px] uppercase font-bold tracking-wider text-(--text-muted)">Coordonnées Lambert Nord</label>
         <div className="flex gap-2">
           <input type="number" step="any" value={lambertX} onChange={e => setLambertX(e.target.value)} placeholder="X" className={`flex-1 min-w-0 ${inp}`} />
           <input type="number" step="any" value={lambertY} onChange={e => setLambertY(e.target.value)} placeholder="Y" className={`flex-1 min-w-0 ${inp}`} />
-          <button onClick={handleCenterLambert} className="px-3 py-2 bg-[var(--bg-surface)] border border-[var(--border-color)] hover:bg-[var(--bg-main)] font-bold text-xs rounded shadow-sm">GO</button>
+          <button onClick={handleCenterLambert} className="px-3 py-2 bg-(--bg-surface) border border-(--border-color) hover:bg-(--bg-main) font-bold text-xs rounded shadow-sm">GO</button>
         </div>
       </div>
-      <div className="pt-8 border-t border-[var(--border-color)]">
+      <div className="pt-8 border-t border-(--border-color)">
         <button onClick={() => window.dispatchEvent(new CustomEvent('mapCenterExtent'))}
-          className="w-full py-3 bg-[var(--bg-main)] hover:bg-[var(--bg-surface)] border border-[var(--border-color)] text-[var(--brand)] font-bold rounded-lg text-sm flex items-center justify-center gap-2 shadow-sm">
+          className="w-full py-3 bg-(--bg-main) hover:bg-(--bg-surface) border border-(--border-color) text-(--brand) font-bold rounded-lg text-sm flex items-center justify-center gap-2 shadow-sm">
           <Target className="w-5 h-5" /> Centrer sur M'diq-Tétouan
         </button>
       </div>
@@ -1386,7 +1386,7 @@ function CouchesTab({
 
       {/* Official layers */}
       <div className="mb-4">
-        <h3 className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2.5 px-1 flex items-center gap-1.5">
+        <h3 className="text-[10px] font-bold text-(--text-muted) uppercase tracking-wider mb-2.5 px-1 flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
           Couches Officielles TTH
         </h3>
@@ -1398,7 +1398,7 @@ function CouchesTab({
             return (
               <div key={key} className="rounded-lg border overflow-hidden transition-all"
                 style={isOn ? { borderColor: color, boxShadow: `0 0 0 1px ${color}20` } : { borderColor: 'var(--border-color)' }}>
-                <div className="flex items-center gap-2 px-2.5 py-2 bg-[var(--bg-main)]">
+                <div className="flex items-center gap-2 px-2.5 py-2 bg-(--bg-main)">
                   {/* Clickable row: checkbox + name = toggle */}
                   <button
                     onClick={() => toggleOfficial(key, file, color, weight, tooltip)}
@@ -1410,13 +1410,13 @@ function CouchesTab({
                     >
                       {isOn && <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: style.strokeColor }} />}
                     </span>
-                    <span className={`text-xs font-medium truncate transition-colors ${isOn ? 'text-[var(--text-main)]' : 'text-[var(--text-muted)] group-hover:text-[var(--text-main)]'}`}>
+                    <span className={`text-xs font-medium truncate transition-colors ${isOn ? 'text-(--text-main)' : 'text-(--text-muted) group-hover:text-(--text-main)'}`}>
                       {label}
                     </span>
                   </button>
                   {isOn && (
                     <button onClick={() => setExpandedSymbo(isExpanded ? null : key)}
-                      className="p-1 rounded hover:bg-[var(--bg-surface)] text-[var(--text-muted)] hover:text-[var(--brand)]">
+                      className="p-1 rounded hover:bg-(--bg-surface) text-(--text-muted) hover:text-(--brand)">
                       <Palette className="w-3.5 h-3.5" />
                     </button>
                   )}
@@ -1429,24 +1429,24 @@ function CouchesTab({
                   </button>
                 </div>
                 {isExpanded && isOn && (
-                  <div className="px-3 py-2.5 bg-[var(--bg-surface)] border-t border-[var(--border-color)] space-y-2.5">
-                    <p className="text-[9px] font-bold text-[var(--brand)] uppercase tracking-wider">Symbologie</p>
+                  <div className="px-3 py-2.5 bg-(--bg-surface) border-t border-(--border-color) space-y-2.5">
+                    <p className="text-[9px] font-bold text-(--brand) uppercase tracking-wider">Symbologie</p>
                     <div className="flex items-center justify-between gap-2">
-                      <label className="text-[10px] text-[var(--text-muted)] w-20 shrink-0">Contour</label>
-                      <input type="color" value={style.strokeColor} onChange={(e) => applyLayerStyle(key, {...style, strokeColor: e.target.value})} className="w-8 h-6 rounded border border-[var(--border-color)] cursor-pointer p-0" />
+                      <label className="text-[10px] text-(--text-muted) w-20 shrink-0">Contour</label>
+                      <input type="color" value={style.strokeColor} onChange={(e) => applyLayerStyle(key, {...style, strokeColor: e.target.value})} className="w-8 h-6 rounded border border-(--border-color) cursor-pointer p-0" />
                     </div>
                     <div className="flex items-center gap-2">
-                      <label className="text-[10px] text-[var(--text-muted)] w-20 shrink-0">Épaisseur</label>
-                      <input type="range" min={1} max={6} step={0.5} value={style.weight} onChange={(e) => applyLayerStyle(key, {...style, weight: Number(e.target.value)})} className="flex-1 accent-[var(--brand)]" />
-                      <span className="text-[10px] font-mono text-[var(--brand)] w-6 text-right">{style.weight}</span>
+                      <label className="text-[10px] text-(--text-muted) w-20 shrink-0">Épaisseur</label>
+                      <input type="range" min={1} max={6} step={0.5} value={style.weight} onChange={(e) => applyLayerStyle(key, {...style, weight: Number(e.target.value)})} className="flex-1 accent-(--brand)" />
+                      <span className="text-[10px] font-mono text-(--brand) w-6 text-right">{style.weight}</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <label className="text-[10px] text-[var(--text-muted)] w-20 shrink-0">Transparence</label>
-                      <input type="range" min={0} max={0.5} step={0.01} value={style.fillOpacity} onChange={(e) => applyLayerStyle(key, {...style, fillOpacity: Number(e.target.value)})} className="flex-1 accent-[var(--brand)]" />
-                      <span className="text-[10px] font-mono text-[var(--brand)] w-8 text-right">{Math.round(style.fillOpacity*100)}%</span>
+                      <label className="text-[10px] text-(--text-muted) w-20 shrink-0">Transparence</label>
+                      <input type="range" min={0} max={0.5} step={0.01} value={style.fillOpacity} onChange={(e) => applyLayerStyle(key, {...style, fillOpacity: Number(e.target.value)})} className="flex-1 accent-(--brand)" />
+                      <span className="text-[10px] font-mono text-(--brand) w-8 text-right">{Math.round(style.fillOpacity*100)}%</span>
                     </div>
                     <button onClick={() => applyLayerStyle(key, { fillColor: color+'30', strokeColor: color, weight, fillOpacity: 0.07 })}
-                      className="w-full py-1 text-[9px] font-semibold text-[var(--text-muted)] hover:text-[var(--brand)] border border-[var(--border-color)] hover:border-[var(--brand)] rounded">
+                      className="w-full py-1 text-[9px] font-semibold text-(--text-muted) hover:text-(--brand) border border-(--border-color) hover:border-(--brand) rounded">
                       Réinitialiser
                     </button>
                   </div>
@@ -1455,19 +1455,19 @@ function CouchesTab({
             );
           })}
         </div>
-        <div className="h-px bg-[var(--border-color)] mt-3 mb-1 opacity-50" />
+        <div className="h-px bg-(--border-color) mt-3 mb-1 opacity-50" />
       </div>
 
       {/* Import header */}
-      <div className="flex justify-between items-center px-1 pb-3 border-b border-[var(--border-color)]">
-        <h2 className="text-[var(--brand)] flex items-center gap-2 font-semibold text-sm tracking-wide">
+      <div className="flex justify-between items-center px-1 pb-3 border-b border-(--border-color)">
+        <h2 className="text-(--brand) flex items-center gap-2 font-semibold text-sm tracking-wide">
           Couches importées
-          <span className="text-[10px] bg-[var(--bg-surface)] px-2 py-0.5 rounded-full text-[var(--text-main)] font-mono border border-[var(--border-color)]">
+          <span className="text-[10px] bg-(--bg-surface) px-2 py-0.5 rounded-full text-(--text-main) font-mono border border-(--border-color)">
             {customLayers.length}
           </span>
         </h2>
         <button onClick={() => fileInputRef.current?.click()}
-          className="text-[11px] flex items-center gap-1.5 bg-[var(--brand)] hover:opacity-90 text-white px-3 py-1.5 rounded-lg font-semibold shadow-sm">
+          className="text-[11px] flex items-center gap-1.5 bg-(--brand) hover:opacity-90 text-white px-3 py-1.5 rounded-lg font-semibold shadow-sm">
           <Upload size={14} /> Importer
         </button>
         <input type="file" ref={fileInputRef} onChange={handleImport}
@@ -1476,9 +1476,9 @@ function CouchesTab({
       </div>
 
       {/* Custom layers list */}
-      <div className="space-y-2 max-h-[420px] overflow-y-auto pr-0.5 select-none">
+      <div className="space-y-2 max-h-105 overflow-y-auto pr-0.5 select-none">
         {customLayers.length === 0 && (
-          <div className="text-center py-10 text-[var(--text-muted)] border border-dashed border-[var(--border-color)] rounded-xl bg-[var(--bg-main)]">
+          <div className="text-center py-10 text-(--text-muted) border border-dashed border-(--border-color) rounded-xl bg-(--bg-main)">
             <Layers className="w-8 h-8 mx-auto mb-3 opacity-50" />
             <p className="text-xs font-semibold">Aucune couche importée</p>
             <p className="text-[10px] mt-1 opacity-70">GeoJSON · CSV · KML · SHP · XLSX</p>
@@ -1619,13 +1619,13 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
     }
   };
 
-  const sel = "w-full bg-[var(--bg-main)] border border-[var(--border-color)] text-[var(--text-main)] rounded-lg p-2 text-sm focus:outline-none focus:border-[var(--brand)]";
+  const sel = "w-full bg-(--bg-main) border border-(--border-color) text-(--text-main) rounded-lg p-2 text-sm focus:outline-none focus:border-(--brand)";
   return (
     <div className="space-y-4">
-      <h2 className="text-[var(--text-main)] font-semibold text-base tracking-tight px-1">Géotraitement</h2>
+      <h2 className="text-(--text-main) font-semibold text-base tracking-tight px-1">Géotraitement</h2>
       <div className="space-y-4">
         <div>
-          <label className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 block">Outil</label>
+          <label className="text-xs font-semibold text-(--text-muted) uppercase tracking-wider mb-1.5 block">Outil</label>
           <select value={tool} onChange={e => setTool(e.target.value)} className={sel}>
             <optgroup label="Informations & Attributs">
               <option value="calculate_geometry">Calculer la Géométrie (Surface / Périmètre)</option>
@@ -1650,7 +1650,7 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
           </select>
         </div>
         <div>
-          <label className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 block">Couche principale</label>
+          <label className="text-xs font-semibold text-(--text-muted) uppercase tracking-wider mb-1.5 block">Couche principale</label>
           <select value={layer1} onChange={e => setLayer1(e.target.value)} className={sel}>
             <option value="">Sélectionner une couche…</option>
             {customLayers.map((l: any) => <option key={l.id} value={l.id}>{l.name}</option>)}
@@ -1658,7 +1658,7 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
         </div>
         {(tool === 'intersect' || tool === 'union') && (
           <div>
-            <label className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 block">Couche secondaire</label>
+            <label className="text-xs font-semibold text-(--text-muted) uppercase tracking-wider mb-1.5 block">Couche secondaire</label>
             <select value={layer2} onChange={e => setLayer2(e.target.value)} className={sel}>
               <option value="">Sélectionner une couche…</option>
               {customLayers.map((l: any) => <option key={l.id} value={l.id}>{l.name}</option>)}
@@ -1667,11 +1667,11 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
         )}
         {tool === 'buffer' && (
           <div>
-            <label className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 block">Distance (mètres)</label>
-            <input type="number" value={radius} onChange={e => setRadius(Number(e.target.value))} min={1} className="w-full bg-[var(--bg-main)] border border-[var(--border-color)] text-[var(--text-main)] rounded-lg p-2 text-sm focus:outline-none focus:border-[var(--brand)]" />
+            <label className="text-xs font-semibold text-(--text-muted) uppercase tracking-wider mb-1.5 block">Distance (mètres)</label>
+            <input type="number" value={radius} onChange={e => setRadius(Number(e.target.value))} min={1} className="w-full bg-(--bg-main) border border-(--border-color) text-(--text-main) rounded-lg p-2 text-sm focus:outline-none focus:border-(--brand)" />
           </div>
         )}
-        <button onClick={executeTool} className="w-full mt-4 bg-[var(--brand)] hover:opacity-90 text-white font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2">
+        <button onClick={executeTool} className="w-full mt-4 bg-(--brand) hover:opacity-90 text-white font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2">
           <Combine className="w-4 h-4" /> Exécuter
         </button>
       </div>
@@ -1720,11 +1720,11 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
     <div className={cn(
       "rounded-xl border overflow-hidden transition-all group/layer",
       layer.visible
-        ? "bg-[var(--bg-main)] border-[var(--border-color)]"
-        : "bg-transparent border-[var(--border-color)]/40 opacity-55 hover:opacity-80",
+        ? "bg-(--bg-main) border-(--border-color)"
+        : "bg-transparent border-(--border-color)/40 opacity-55 hover:opacity-80",
     )}>
       {/* ─ Main row ─ */}
-      <div className="flex items-center gap-2 px-2.5 py-2 min-h-[44px]">
+      <div className="flex items-center gap-2 px-2.5 py-2 min-h-11">
         {/* Color swatch → opens picker */}
         <div className="relative shrink-0">
           <button
@@ -1739,11 +1739,11 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
           {showColorPicker && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setShowColorPicker(false)} />
-              <div className="absolute left-0 top-6 z-50 bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-xl p-2.5 shadow-2xl">
+              <div className="absolute left-0 top-6 z-50 bg-(--bg-surface) border border-(--border-color) rounded-xl p-2.5 shadow-2xl">
                 <div className="grid grid-cols-5 gap-1.5">
                   {PRESET_COLORS.map(c => (
                     <button key={c} onClick={() => { onChangeColor(c); setShowColorPicker(false); }}
-                      className={cn("w-5 h-5 rounded-full border-2 hover:scale-110 transition-transform", layer.color === c ? "border-[var(--text-main)] shadow-sm" : "border-transparent")}
+                      className={cn("w-5 h-5 rounded-full border-2 hover:scale-110 transition-transform", layer.color === c ? "border-(--text-main) shadow-sm" : "border-transparent")}
                       style={{ backgroundColor: c }}
                     />
                   ))}
@@ -1755,10 +1755,10 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
 
         {/* Name + type */}
         <div className="flex-1 min-w-0">
-          <p className={cn("text-[12px] font-semibold leading-tight truncate", layer.visible ? "text-[var(--text-main)]" : "text-[var(--text-muted)]")}>
+          <p className={cn("text-[12px] font-semibold leading-tight truncate", layer.visible ? "text-(--text-main)" : "text-(--text-muted)")}>
             {layer.name}
           </p>
-          <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wide font-medium">
+          <p className="text-[9px] text-(--text-muted) uppercase tracking-wide font-medium">
             {layer.type === 'static_polygon' ? 'référence' : layer.type === 'drawn' ? 'dessin' : 'import'}
           </p>
         </div>
@@ -1767,21 +1767,21 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
         <div className="flex items-center shrink-0">
           {/* Zoom — hover reveal */}
           <button onClick={onZoom} title="Centrer la vue"
-            className="p-1.5 text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] rounded-md opacity-0 group-hover/layer:opacity-100 transition-all">
+            className="p-1.5 text-(--text-muted) hover:text-(--text-main) hover:bg-(--bg-surface) rounded-md opacity-0 group-hover/layer:opacity-100 transition-all">
             <Maximize className="w-3.5 h-3.5" />
           </button>
           {/* Visibility */}
           <button onClick={onToggle} title={layer.visible ? "Masquer" : "Afficher"}
             className={cn("p-1.5 rounded-md transition-colors",
-              layer.visible ? "text-[var(--brand)] hover:bg-[var(--brand)]/10" : "text-[var(--text-muted)] hover:bg-[var(--bg-surface)]")}>
+              layer.visible ? "text-(--brand) hover:bg-(--brand)/10" : "text-(--text-muted) hover:bg-(--bg-surface)")}>
             {layer.visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
           </button>
           {/* Settings */}
           <button onClick={() => setShowStyle(!showStyle)} title="Paramètres de couche"
             className={cn("p-1.5 rounded-md transition-colors",
               showStyle
-                ? "bg-[var(--bg-surface)] text-[var(--brand)] border border-[var(--border-color)]"
-                : "text-[var(--text-muted)] hover:bg-[var(--bg-surface)] opacity-0 group-hover/layer:opacity-100")}>
+                ? "bg-(--bg-surface) text-(--brand) border border-(--border-color)"
+                : "text-(--text-muted) hover:bg-(--bg-surface) opacity-0 group-hover/layer:opacity-100")}>
             <Settings className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -1836,15 +1836,15 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
 
       {/* ─ Style panel ─ */}
       {showStyle && (
-        <div className="px-3 py-3 border-t border-[var(--border-color)] bg-[var(--bg-surface)] space-y-3">
+        <div className="px-3 py-3 border-t border-(--border-color) bg-(--bg-surface) space-y-3">
           {/* Symbol picker (points only) */}
           {hasPoints && (
             <div className="flex items-center justify-between">
-              <span className="text-[9px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Symbole</span>
-              <div className="flex gap-0.5 bg-[var(--bg-main)] p-0.5 rounded-lg border border-[var(--border-color)]">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted)">Symbole</span>
+              <div className="flex gap-0.5 bg-(--bg-main) p-0.5 rounded-lg border border-(--border-color)">
                 {([['circle', Circle], ['square', Square], ['triangle', Triangle]] as const).map(([sym, Icon]) => (
                   <button key={sym} onClick={() => onChangeSymbol(sym)}
-                    className={cn("p-1.5 rounded transition-colors", (!layer.symbol || layer.symbol === sym) ? "bg-[var(--brand)] text-white shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
+                    className={cn("p-1.5 rounded transition-colors", (!layer.symbol || layer.symbol === sym) ? "bg-(--brand) text-white shadow-sm" : "text-(--text-muted) hover:text-(--text-main)")}>
                     <Icon className="w-3 h-3" />
                   </button>
                 ))}
@@ -1855,14 +1855,14 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
           {/* Fill mode (polygons) */}
           {showFillMode && (
             <div className="flex items-center justify-between">
-              <span className="text-[9px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Remplissage</span>
-              <div className="flex gap-0.5 bg-[var(--bg-main)] p-0.5 rounded-lg border border-[var(--border-color)]">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted)">Remplissage</span>
+              <div className="flex gap-0.5 bg-(--bg-main) p-0.5 rounded-lg border border-(--border-color)">
                 {[['fill', 'Rempli'], ['outline', 'Contour']].map(([mode, label]) => (
                   <button key={mode} onClick={() => onChangeFillMode(mode)}
                     className={cn("px-2.5 py-1 rounded text-[10px] font-bold transition-colors",
                       (mode === 'fill' ? !layer.fillMode || layer.fillMode === 'fill' : layer.fillMode === mode)
-                        ? "bg-[var(--brand)] text-white shadow-sm"
-                        : "text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
+                        ? "bg-(--brand) text-white shadow-sm"
+                        : "text-(--text-muted) hover:text-(--text-main)")}>
                     {label}
                   </button>
                 ))}
@@ -1873,28 +1873,28 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
           {/* Opacity */}
           <div>
             <div className="flex justify-between items-center mb-1.5">
-              <span className="text-[9px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Opacité</span>
-              <span className="text-[10px] font-mono font-bold text-[var(--brand)]">{Math.round((layer.opacity ?? 1) * 100)}%</span>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted)">Opacité</span>
+              <span className="text-[10px] font-mono font-bold text-(--brand)">{Math.round((layer.opacity ?? 1) * 100)}%</span>
             </div>
             <input type="range" min="0.05" max="1" step="0.05" value={layer.opacity ?? 1}
               onChange={e => onChangeOpacity(parseFloat(e.target.value))}
-              className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-[var(--brand)]" />
+              className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-(--brand)" />
           </div>
 
           {/* Size/weight */}
           <div>
             <div className="flex justify-between items-center mb-1.5">
-              <span className="text-[9px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Épaisseur / Taille</span>
-              <span className="text-[10px] font-mono font-bold text-[var(--brand)]">{layer.size ?? 6}px</span>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted)">Épaisseur / Taille</span>
+              <span className="text-[10px] font-mono font-bold text-(--brand)">{layer.size ?? 6}px</span>
             </div>
             <input type="range" min="1" max="20" step="1" value={layer.size ?? 6}
               onChange={e => onChangeSize(parseInt(e.target.value))}
-              className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-[var(--brand)]" />
+              className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-(--brand)" />
           </div>
 
           {/* Delete + Export */}
-          <div className="flex items-center justify-between pt-1 border-t border-[var(--border-color)]">
-            <span className="text-[9px] uppercase tracking-wider bg-[var(--bg-main)] px-2 py-0.5 rounded border border-[var(--border-color)] text-[var(--text-muted)] font-bold">
+          <div className="flex items-center justify-between pt-1 border-t border-(--border-color)">
+            <span className="text-[9px] uppercase tracking-wider bg-(--bg-main) px-2 py-0.5 rounded border border-(--border-color) text-(--text-muted) font-bold">
               {layer.type === 'static_polygon' ? 'Référence' : layer.type === 'drawn' ? 'Dessin' : 'Import'}
             </span>
             <div className="flex items-center gap-1">
@@ -1910,7 +1910,7 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
                       URL.revokeObjectURL(url);
                     } catch {}
                   }}
-                  className="flex items-center gap-1 text-[10px] font-bold text-[var(--brand)] hover:bg-[var(--brand)]/10 px-2 py-1.5 rounded-lg transition-colors"
+                  className="flex items-center gap-1 text-[10px] font-bold text-(--brand) hover:bg-(--brand)/10 px-2 py-1.5 rounded-lg transition-colors"
                   title="Télécharger GeoJSON"
                 >
                   <Save className="w-3.5 h-3.5" />
