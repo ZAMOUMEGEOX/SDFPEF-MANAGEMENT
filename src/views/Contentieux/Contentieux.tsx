@@ -306,15 +306,33 @@ function performParsing(text: string) {
   }
 
   // ── Section boundary detection ──
-  const procIdx   = clean.search(/لائحة الإجراءات/);
-  const partIdx   = clean.search(/لائحة الأطراف/);
+  // Finds the occurrence whose following ~1500 chars actually contain data.
+  // Manual paste (single block) → returns the first match, identical to old .search().
+  // VB.NET paste (multiple blocks, each repeating empty section headers) → skips the
+  // empty blocks and locks onto the block that truly holds the rows.
+  const findSection = (re: RegExp, dataMarker: RegExp): number => {
+    const g = new RegExp(re.source, 'g');
+    let m: RegExpExecArray | null;
+    let firstIdx = -1;
+    while ((m = g.exec(clean)) !== null) {
+      if (firstIdx === -1) firstIdx = m.index;
+      const slice = clean.substring(m.index, m.index + 1500);
+      if (dataMarker.test(slice)) return m.index;
+    }
+    return firstIdx;
+  };
+
+  const procIdx   = findSection(/لائحة الإجراءات/, /\d{2}\/\d{2}\/\d{4}/);
+  const partIdx   = findSection(/لائحة الأطراف/, /مدعي|مدعى عليه|متهم|مستأنف|طالب|اسم الطرف/);
   const expertIdx = clean.search(/لائحة الخبرات/);
   const appealIdx = clean.search(/عرائض الطعن/);
   const relIdx    = clean.search(/الملفات المرتبطة/);
 
   const sectionEnd = (startIdx: number): number => {
-    const candidates = [procIdx, partIdx, expertIdx, appealIdx, relIdx]
-      .filter(i => i > startIdx && i !== startIdx);
+    // Stop at the page footer ("معلومات الاتصال") or the next real section after this one.
+    const footer = clean.indexOf('معلومات الاتصال', startIdx + 20);
+    const candidates = [procIdx, partIdx, expertIdx, appealIdx, relIdx, footer]
+      .filter(i => i > startIdx + 20);
     return candidates.length > 0 ? Math.min(...candidates) : clean.length;
   };
 
