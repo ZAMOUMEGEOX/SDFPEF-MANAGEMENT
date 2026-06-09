@@ -233,6 +233,12 @@ export function exportAllCasesXLSX(cases: Case[]) {
 // ─── Smart Parser ─────────────────────────────────────────────────────────────
 
 function performParsing(text: string) {
+  console.log('=== RAW LEN:', text.length);
+  console.log('=== HAS proc:', text.includes('لائحة الإجراءات'));
+  console.log('=== HAS part:', text.includes('لائحة الأطراف'));
+  console.log('=== HAS tab:', text.includes('\t'));
+  console.log('=== HAS مدعي:', text.includes('مدعي'));
+  console.log('=== HAS date:', /\d{2}\/\d{2}\/\d{4}/.test(text));
   const clean = text.replace(/[\r]/g, '').replace(/\n{3,}/g, '\n\n').trim();
   const tokens = clean.split(/[\t\n]+/).map(s => s.trim()).filter(Boolean);
 
