@@ -328,17 +328,28 @@ function performParsing(text: string) {
   };
 
   // Header occurrence whose following window actually contains the section's data.
+  // We scan a generous window and, among the qualifying headers, keep the one whose data
+  // marker appears EARLIEST after it (closest real table), which is the true section.
   const findSection = (re: RegExp, dataMarker: RegExp): number => {
     const idxs = allIdx(re);
     if (idxs.length === 0) return -1;
+    let best = -1, bestDist = Infinity;
     for (const i of idxs) {
-      if (dataMarker.test(clean.substring(i, i + 2000))) return i;
+      const window = clean.substring(i, i + 3000);
+      const mm = dataMarker.exec(window);
+      if (mm && mm.index < bestDist) { bestDist = mm.index; best = i; }
     }
-    return idxs[0];
+    return best !== -1 ? best : idxs[0];
   };
 
-  const procIdx   = findSection(/لائحة الإجراءات/, /\d{2}\/\d{2}\/\d{4}/);
-  const partIdx   = findSection(/لائحة الأطراف/, /مدعي|مدعى عليه|متهم|مستأنف|طالب|اسم الطرف/);
+  const procIdx   = findSection(/لائحة الإجراءات/, /\n\d{2}\/\d{2}\/\d{4}/);
+  // Parties: the real table is a line that starts with a role keyword followed by a TAB
+  // (e.g. "مدعي\tالدولة المغربية..."), or the table header "الصفة ... اسم الطرف".
+  // This avoids matching the word "المدعى عليه" that appears inside procedure decisions.
+  const partIdx   = findSection(
+    /لائحة الأطراف/,
+    /\n(مدعي|مدعى عليه|متهم|مستأنف عليه|مستأنف|طالب|مطلوب|نيابة عامة|المطالب بالحق المدني|مدخل في الدعوى)\t|الصفة\t/
+  );
   const expertIdx = clean.search(/لائحة الخبرات/);
   const appealIdx = clean.search(/عرائض الطعن/);
   const relIdx    = clean.search(/الملفات المرتبطة/);
