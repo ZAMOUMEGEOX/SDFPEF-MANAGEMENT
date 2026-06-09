@@ -306,15 +306,63 @@ function performParsing(text: string) {
   }
 
   // ── Section boundary detection ──
-  const procIdx   = clean.search(/لائحة الإجراءات/);
-  const partIdx   = clean.search(/لائحة الأطراف/);
+  // The portal repeats a tab navigation menu where the five section titles appear on
+  // consecutive lines ("لائحة الإجراءات / لائحة الأطراف / لائحة الخبرات / ..."). The
+  // actual data table follows further down. Older logic cut a section at the next title
+  // marker, which — because the markers cluster together in that menu — produced an
+  // almost-empty slice (0 procedures). VB.NET pastes the whole page (all 5 tabs at once),
+  // so every block carries that menu; the manual two-paste flow hid the problem.
+  //
+  // Strategy: for a section we find the *header occurrence that is actually followed by
+  // that section's data* (a date for procedures, a role word for parties). Its content
+  // then runs until the page footer or the next data-bearing section header — never a
+  // bare menu line.
+
+  // All indices of a marker, as a plain array.
+  const allIdx = (re: RegExp): number[] => {
+    const g = new RegExp(re.source, 'g');
+    const out: number[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = g.exec(clean)) !== null) out.push(m.index);
+    return out;
+  };
+
+  // Header occurrence whose following window actually contains the section's data.
+  // We scan a generous window and, among the qualifying headers, keep the one whose data
+  // marker appears EARLIEST after it (closest real table), which is the true section.
+  const findSection = (re: RegExp, dataMarker: RegExp): number => {
+    const idxs = allIdx(re);
+    if (idxs.length === 0) return -1;
+    let best = -1, bestDist = Infinity;
+    for (const i of idxs) {
+      const window = clean.substring(i, i + 3000);
+      const mm = dataMarker.exec(window);
+      if (mm && mm.index < bestDist) { bestDist = mm.index; best = i; }
+    }
+    return best !== -1 ? best : idxs[0];
+  };
+
+  const procIdx   = findSection(/لائحة الإجراءات/, /\n\d{2}\/\d{2}\/\d{4}/);
+  // Parties: the real table is a line that starts with a role keyword followed by a TAB
+  // (e.g. "مدعي\tالدولة المغربية..."), or the table header "الصفة ... اسم الطرف".
+  // This avoids matching the word "المدعى عليه" that appears inside procedure decisions.
+  const partIdx   = findSection(
+    /لائحة الأطراف/,
+    /\n(مدعي|مدعى عليه|متهم|مستأنف عليه|مستأنف|طالب|مطلوب|نيابة عامة|المطالب بالحق المدني|مدخل في الدعوى)\t|الصفة\t/
+  );
   const expertIdx = clean.search(/لائحة الخبرات/);
   const appealIdx = clean.search(/عرائض الطعن/);
   const relIdx    = clean.search(/الملفات المرتبطة/);
 
+  // End of a section = the page footer, OR the nearest *data-bearing* section header that
+  // sits clearly after the data starts. We ignore markers that fall inside the same tab
+  // menu (within ~120 chars of the start) so the procedures/parties tables aren't clipped.
   const sectionEnd = (startIdx: number): number => {
-    const candidates = [procIdx, partIdx, expertIdx, appealIdx, relIdx]
-      .filter(i => i > startIdx && i !== startIdx);
+    const footer1 = clean.indexOf('معلومات الاتصال', startIdx + 20);
+    const footer2 = clean.indexOf('جميع الحقوق محفوظة', startIdx + 20);
+    const dataStarts = [procIdx, partIdx].filter(i => i > startIdx + 120);
+    const footers = [footer1, footer2].filter(i => i > startIdx + 20);
+    const candidates = [...dataStarts, ...footers];
     return candidates.length > 0 ? Math.min(...candidates) : clean.length;
   };
 
@@ -1003,10 +1051,9 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
     if (!remoteNum.trim()) return;
     setIsSearching(true);
     try {
-      const primaryCourts = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
-      // إذا بدأت بـ "استئناف" → استئنافية، وإلا ابتدائية
       const isAppeal = remoteCourt.startsWith('استئناف ');
       const courtName = isAppeal ? remoteCourt.replace('استئناف ', '').trim() : remoteCourt;
+      const primaryCourts = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
       const isPrimary = !isAppeal && primaryCourts.includes(remoteCourt);
       const cmd = `${remoteNum}|${remoteMark}|${remoteYear}|${courtName}|${isPrimary ? 'primary' : 'appeal'}`;
       await fetch('http://localhost:5765/search', {
@@ -1134,41 +1181,33 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
               <div className="grid grid-cols-3 gap-2">
                 <div className="flex flex-col gap-1">
                   <label className="text-[10px] text-stone-500 font-bold text-center">رقم</label>
-                  <input
-                    placeholder="221" value={remoteNum}
+                  <input placeholder="221" value={remoteNum}
                     onChange={e => setRemoteNum(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
-                    className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  />
+                    className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-[10px] text-stone-500 font-bold text-center">رمز</label>
-                  <input
-                    placeholder="1101" value={remoteMark}
+                  <input placeholder="1101" value={remoteMark}
                     onChange={e => setRemoteMark(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
-                    className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  />
+                    className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-[10px] text-stone-500 font-bold text-center">سنة</label>
-                  <input
-                    placeholder="2024" value={remoteYear}
+                  <input placeholder="2024" value={remoteYear}
                     onChange={e => setRemoteYear(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
-                    className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  />
+                    className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
                 </div>
               </div>
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] text-stone-500 font-bold">المحكمة</label>
-                <select
-                  value={remoteCourt} onChange={e => setRemoteCourt(e.target.value)}
-                  className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none"
-                >
+                <select value={remoteCourt} onChange={e => setRemoteCourt(e.target.value)}
+                  className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none">
                   <optgroup label="محاكم استئناف">
                     {['تطوان','طنجة','الحسيمة'].map(c => (
-                      <option key={'appeal-'+c} value={'استئناف '+c}>{'استئناف '+c}</option>
+                      <option key={'ap-'+c} value={'استئناف '+c}>{'استئناف '+c}</option>
                     ))}
                   </optgroup>
                   <optgroup label="محاكم ابتدائية">
@@ -1178,20 +1217,16 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
                   </optgroup>
                 </select>
               </div>
-              <button
-                onClick={handleRemoteSearch}
+              <button onClick={handleRemoteSearch}
                 disabled={isSearching || !remoteNum.trim()}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl py-2.5 font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-sm"
-              >
-                {isSearching ? (
-                  <><RefreshCw className="size-4 animate-spin" /> جاري البحث في بوابة محاكم...</>
-                ) : (
-                  <><Search className="size-4" /> بحث تلقائي</>
-                )}
+                className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl py-2.5 font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-sm">
+                {isSearching
+                  ? <><RefreshCw className="size-4 animate-spin" /> جاري البحث في بوابة محاكم...</>
+                  : <><Search className="size-4" /> بحث تلقائي</>}
               </button>
               {isSearching && (
                 <p className="text-[11px] text-emerald-600 text-center animate-pulse">
-                  ⏳ يتم البحث في بوابة محاكم... سيظهر الملف تلقائياً
+                  ⏳ يتم البحث... سيظهر الملف تلقائياً بعد اكتمال النسخ
                 </p>
               )}
             </div>
