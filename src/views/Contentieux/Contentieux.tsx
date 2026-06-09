@@ -233,12 +233,6 @@ export function exportAllCasesXLSX(cases: Case[]) {
 // ─── Smart Parser ─────────────────────────────────────────────────────────────
 
 function performParsing(text: string) {
-  console.log('=== RAW LEN:', text.length);
-  console.log('=== HAS proc:', text.includes('لائحة الإجراءات'));
-  console.log('=== HAS part:', text.includes('لائحة الأطراف'));
-  console.log('=== HAS tab:', text.includes('\t'));
-  console.log('=== HAS مدعي:', text.includes('مدعي'));
-  console.log('=== HAS date:', /\d{2}\/\d{2}\/\d{4}/.test(text));
   const clean = text.replace(/[\r]/g, '').replace(/\n{3,}/g, '\n\n').trim();
   const tokens = clean.split(/[\t\n]+/).map(s => s.trim()).filter(Boolean);
 
@@ -312,20 +306,35 @@ function performParsing(text: string) {
   }
 
   // ── Section boundary detection ──
-  // Finds the occurrence whose following ~1500 chars actually contain data.
-  // Manual paste (single block) → returns the first match, identical to old .search().
-  // VB.NET paste (multiple blocks, each repeating empty section headers) → skips the
-  // empty blocks and locks onto the block that truly holds the rows.
-  const findSection = (re: RegExp, dataMarker: RegExp): number => {
+  // The portal repeats a tab navigation menu where the five section titles appear on
+  // consecutive lines ("لائحة الإجراءات / لائحة الأطراف / لائحة الخبرات / ..."). The
+  // actual data table follows further down. Older logic cut a section at the next title
+  // marker, which — because the markers cluster together in that menu — produced an
+  // almost-empty slice (0 procedures). VB.NET pastes the whole page (all 5 tabs at once),
+  // so every block carries that menu; the manual two-paste flow hid the problem.
+  //
+  // Strategy: for a section we find the *header occurrence that is actually followed by
+  // that section's data* (a date for procedures, a role word for parties). Its content
+  // then runs until the page footer or the next data-bearing section header — never a
+  // bare menu line.
+
+  // All indices of a marker, as a plain array.
+  const allIdx = (re: RegExp): number[] => {
     const g = new RegExp(re.source, 'g');
+    const out: number[] = [];
     let m: RegExpExecArray | null;
-    let firstIdx = -1;
-    while ((m = g.exec(clean)) !== null) {
-      if (firstIdx === -1) firstIdx = m.index;
-      const slice = clean.substring(m.index, m.index + 1500);
-      if (dataMarker.test(slice)) return m.index;
+    while ((m = g.exec(clean)) !== null) out.push(m.index);
+    return out;
+  };
+
+  // Header occurrence whose following window actually contains the section's data.
+  const findSection = (re: RegExp, dataMarker: RegExp): number => {
+    const idxs = allIdx(re);
+    if (idxs.length === 0) return -1;
+    for (const i of idxs) {
+      if (dataMarker.test(clean.substring(i, i + 2000))) return i;
     }
-    return firstIdx;
+    return idxs[0];
   };
 
   const procIdx   = findSection(/لائحة الإجراءات/, /\d{2}\/\d{2}\/\d{4}/);
@@ -334,11 +343,15 @@ function performParsing(text: string) {
   const appealIdx = clean.search(/عرائض الطعن/);
   const relIdx    = clean.search(/الملفات المرتبطة/);
 
+  // End of a section = the page footer, OR the nearest *data-bearing* section header that
+  // sits clearly after the data starts. We ignore markers that fall inside the same tab
+  // menu (within ~120 chars of the start) so the procedures/parties tables aren't clipped.
   const sectionEnd = (startIdx: number): number => {
-    // Stop at the page footer ("معلومات الاتصال") or the next real section after this one.
-    const footer = clean.indexOf('معلومات الاتصال', startIdx + 20);
-    const candidates = [procIdx, partIdx, expertIdx, appealIdx, relIdx, footer]
-      .filter(i => i > startIdx + 20);
+    const footer1 = clean.indexOf('معلومات الاتصال', startIdx + 20);
+    const footer2 = clean.indexOf('جميع الحقوق محفوظة', startIdx + 20);
+    const dataStarts = [procIdx, partIdx].filter(i => i > startIdx + 120);
+    const footers = [footer1, footer2].filter(i => i > startIdx + 20);
+    const candidates = [...dataStarts, ...footers];
     return candidates.length > 0 ? Math.min(...candidates) : clean.length;
   };
 
