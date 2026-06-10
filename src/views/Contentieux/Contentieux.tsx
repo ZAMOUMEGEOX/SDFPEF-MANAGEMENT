@@ -377,10 +377,44 @@ function performParsing(text: string) {
   // Try tab-separated first (clean table copy)
   const tabRows = procLines.filter(l => l.includes('\t') && l.match(/\d{2}\/\d{2}\/\d{4}/));
   if (tabRows.length > 0) {
-    tabRows.forEach(row => {
+    // Build a full index so we can look ahead for "orphan" decision lines
+    // e.g. "رقم 889" then "عدم الاختصاص..." on separate lines after "حكم قطعي\t..."
+    tabRows.forEach((row, ri) => {
       const parts = row.split('\t').map(s => s.trim());
       const dm = parts[0].match(/(\d{2}\/\d{2}\/\d{4})/);
-      if (dm && parts[1]) procedures.push({ date: dm[1], action: parts[1], decision: parts[2] || '' });
+      if (!dm || !parts[1]) return;
+      let action = parts[1];
+      let decision = parts[2] || '';
+
+      // If decision is empty, scan subsequent procLines for a non-date non-tab orphan line
+      // This handles "حكم قطعي\nرقم 889\n\nعدم الاختصاص..." split across lines
+      if (!decision) {
+        // Find this row's position in procLines
+        const rowIdx = procLines.indexOf(row);
+        if (rowIdx !== -1) {
+          let j = rowIdx + 1;
+          while (j < procLines.length) {
+            const nextLine = procLines[j];
+            // Stop if we hit the next date row or a tab row with date
+            if (nextLine.match(dateRe) || (nextLine.includes('\t') && nextLine.match(dateRe))) break;
+            // Skip "رقم NNN" lines — append to action
+            if (/^رقم\s+\d+/.test(nextLine)) {
+              action = action + ' ' + nextLine;
+              j++;
+              continue;
+            }
+            // A non-date line with content = decision
+            const candidate = nextLine.replace(/\t/g, '').trim();
+            if (candidate && candidate.length > 2) {
+              decision = candidate;
+              break;
+            }
+            j++;
+          }
+        }
+      }
+
+      procedures.push({ date: dm[1], action, decision });
     });
   } else {
     // Line-by-line
