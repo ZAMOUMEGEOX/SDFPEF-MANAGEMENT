@@ -1062,6 +1062,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   const [remoteCourt, setRemoteCourt] = useState('تطوان');
   const [isSearching, setIsSearching] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
+  const [extensionReady, setExtensionReady] = useState(false);
 
   // فحص هل تطبيق VB.NET شغّال كل 5 ثوان
   useEffect(() => {
@@ -1081,19 +1082,69 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
     if (result) setIsSearching(false);
   }, [result]);
 
+  // ── Chrome Extension: PING/PONG للكشف عن الإضافة ──────────────
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.source !== window) return;
+      if (e.data?.type === 'MAHAKIM_PONG' || e.data?.type === 'MAHAKIM_EXTENSION_LOADED') {
+        setExtensionReady(true);
+      }
+    };
+    window.addEventListener('message', handler);
+    const ping = () => window.postMessage({ type: 'MAHAKIM_PING' }, '*');
+    ping();
+    const id = setInterval(ping, 5000);
+    return () => { window.removeEventListener('message', handler); clearInterval(id); };
+  }, []);
+
+  // ── Chrome Extension: استقبال النتائج/الأخطاء ─────────────────
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.source !== window) return;
+      const d = e.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'MAHAKIM_RESULT' && d.text) {
+        const sep = pasteDataRef.current.trim()
+          ? `\n\n════════ من الإضافة ════════\n\n` : '';
+        const data = pasteDataRef.current + sep + d.text;
+        pasteCount.current++;
+        setPasteData(data);
+        setResult(performParsing(data));
+        setExtractMode('parsed');
+        setIsSearching(false);
+      }
+      if (d.type === 'MAHAKIM_ERROR') {
+        setIsSearching(false);
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+  // ───────────────────────────────────────────────────────────────
+
   const handleRemoteSearch = async () => {
     if (!remoteNum.trim()) return;
     setIsSearching(true);
+    const isAppeal = remoteCourt.startsWith('استئناف ');
+    const courtName = isAppeal ? remoteCourt.replace('استئناف ', '').trim() : remoteCourt;
+    const primaryCourts = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
+    const isPrimary = !isAppeal && primaryCourts.includes(remoteCourt);
+
+    // الإضافة أولاً
+    if (extensionReady) {
+      window.postMessage({
+        type: 'MAHAKIM_TO_EXTENSION',
+        payload: { numero: remoteNum.trim(), mark: remoteMark.trim(), year: remoteYear.trim(), court: courtName, isPrimary },
+      }, '*');
+      setTimeout(() => setIsSearching(false), 90000); // مهلة أمان
+      return;
+    }
+
+    // سقوط احتياطي: جسر VB.NET القديم
     try {
-      const isAppeal = remoteCourt.startsWith('استئناف ');
-      const courtName = isAppeal ? remoteCourt.replace('استئناف ', '').trim() : remoteCourt;
-      const primaryCourts = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
-      const isPrimary = !isAppeal && primaryCourts.includes(remoteCourt);
       const cmd = `${remoteNum}|${remoteMark}|${remoteYear}|${courtName}|${isPrimary ? 'primary' : 'appeal'}`;
       await fetch('http://localhost:5765/search', {
-        method: 'POST',
-        body: cmd,
-        signal: AbortSignal.timeout(3000),
+        method: 'POST', body: cmd, signal: AbortSignal.timeout(3000),
       });
     } catch {
       setIsSearching(false);
@@ -1206,11 +1257,11 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
         {/* ── Left panel ── */}
         <div className="w-full md:w-[420px] border-b md:border-b-0 md:border-l border-stone-200 bg-stone-50 p-5 flex flex-col gap-4 overflow-y-auto shrink-0">
           {/* ── بوابة محاكم المدمجة ── */}
-          {bridgeReady ? (
+          {(bridgeReady || extensionReady) ? (
             <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 space-y-3">
               <div className="flex items-center gap-2 text-emerald-700 font-bold text-sm">
                 <span className="size-2 bg-emerald-500 rounded-full animate-pulse shrink-0" />
-                بوابة محاكم — متصلة
+                {extensionReady ? 'بوابة محاكم — عبر الإضافة 🧩' : 'بوابة محاكم — متصلة'}
               </div>
               <div className="grid grid-cols-3 gap-2">
                 <div className="flex flex-col gap-1">
@@ -1271,7 +1322,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
                 <p className="text-[11px] text-orange-800 leading-relaxed">لا يمكن استخراج البيانات برمجياً. انسخ يدوياً من البوابة كما هو موضح.</p>
               </div>
               <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-[11px] text-amber-800 font-medium">
-                💡 شغّل تطبيق <strong>MahakimApp</strong> للبحث التلقائي بدون نسخ يدوي
+                💡 ثبّت إضافة <strong>Mahakim Bridge</strong> للبحث التلقائي بدون نسخ يدوي
               </div>
             </div>
           )}
