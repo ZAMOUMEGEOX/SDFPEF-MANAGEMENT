@@ -1146,6 +1146,8 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   const pasteCount = useRef(0);
   const pasteDataRef = useRef('');
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  // علَم: بحث جديد عبر الإضافة جارٍ — نتيجته الأولى تستبدل البيانات بدل أن تتراكم
+  const freshSearchRef = useRef(false);
 
   // ── VB.NET Bridge — استقبال البيانات تلقائياً ──────────────
   useEffect(() => {
@@ -1224,17 +1226,28 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
       const d = e.data;
       if (!d || typeof d !== 'object') return;
       if (d.type === 'MAHAKIM_RESULT' && d.text) {
-        const sep = pasteDataRef.current.trim()
-          ? `\n\n════════ من الإضافة ════════\n\n` : '';
-        const data = pasteDataRef.current + sep + d.text;
-        pasteCount.current++;
-        setPasteData(data);
-        setResult(performParsing(data));
+        // بحث جديد عبر الإضافة → استبدل البيانات (ملف مختلف).
+        // وإلا (تبويبة إضافية / لصق يدوي لاحق) → تراكم فوق نفس الملف.
+        const isFresh = freshSearchRef.current;
+        freshSearchRef.current = false;
+        if (isFresh) {
+          pasteCount.current = 1;
+          setPasteData(d.text);
+          setResult(performParsing(d.text));
+        } else {
+          const sep = pasteDataRef.current.trim()
+            ? `\n\n════════ من الإضافة ════════\n\n` : '';
+          const data = pasteDataRef.current + sep + d.text;
+          pasteCount.current++;
+          setPasteData(data);
+          setResult(performParsing(data));
+        }
         setExtractMode('parsed');
         setIsSearching(false);
         setSearchStage('');
       }
       if (d.type === 'MAHAKIM_ERROR') {
+        freshSearchRef.current = false;
         setIsSearching(false);
         setSearchStage('');
         const ERR_AR: Record<string, string> = {
@@ -1276,6 +1289,8 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
 
     // الإضافة أولاً
     if (extensionReady) {
+      // علّم أن نتيجة هذا البحث ملف جديد كامل — يجب أن تستبدل لا تتراكم
+      freshSearchRef.current = true;
       window.postMessage({
         type: 'MAHAKIM_TO_EXTENSION',
         payload: { numero: remoteNum.trim(), mark: remoteMark.trim(), year: remoteYear.trim(), court: courtName, isPrimary },
