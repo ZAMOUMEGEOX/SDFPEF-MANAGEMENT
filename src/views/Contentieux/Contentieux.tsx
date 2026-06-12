@@ -48,6 +48,78 @@ export interface Case {
   executionAmountRecovered?: string;
   procedures?: { date: string; action: string; decision: string; number?: string }[];
   parties?: { role: string; name: string }[];
+  /** آخر مزامنة/استخراج من بوابة محاكم (ISO) — لتجنب التكرار وتتبع حداثة البيانات */
+  lastSyncedAt?: string;
+  /** عدد مرات المزامنة من البوابة */
+  syncCount?: number;
+}
+
+// ─── أدوات المزامنة (منع التكرار + كشف الجديد) ──────────────────────────────
+
+/** مفتاح مطابقة موحَّد للملف: الرقم الوطني أولاً ثم رقم محاكم */
+function caseMatchKey(c: { nationalId?: string; mahakimId?: string }): string {
+  const nid = (c.nationalId || '').replace(/\D/g, '');
+  if (nid.length >= 8) return 'N:' + nid;
+  const mid = (c.mahakimId || '').replace(/\s/g, '');
+  if (mid) return 'M:' + mid;
+  return '';
+}
+
+/** هل هذا الإجراء موجود في القائمة؟ (مطابقة تاريخ + نوع الإجراء) */
+function procExists(list: { date: string; action: string }[], p: { date: string; action: string }) {
+  const norm = (s: string) => (s || '').replace(/\s+/g, ' ').trim();
+  return list.some(x => x.date === p.date && norm(x.action) === norm(p.action));
+}
+
+/**
+ * دمج استخراج جديد فوق ملف موجود:
+ * - يحافظ على المعرف الداخلي وكل البيانات اليدوية (محضر، عقوبات، تنفيذ، تبليغ).
+ * - يحدّث بيانات البوابة (المحكمة، القاضي، الوضعية، الموضوع...).
+ * - يضيف الإجراءات والأطراف الجديدة فقط (بدون تكرار).
+ * - يرجع الملف المدموج + عدد الإجراءات الجديدة المكتشفة.
+ */
+function mergeCaseUpdate(existing: Case, incoming: Case): { merged: Case; newProcs: number; newParties: number } {
+  const oldProcs = existing.procedures || [];
+  const addProcs = (incoming.procedures || []).filter(p => !procExists(oldProcs, p));
+  const oldParties = existing.parties || [];
+  const normName = (s: string) => (s || '').replace(/\s+/g, ' ').trim();
+  const addParties = (incoming.parties || []).filter(
+    np => !oldParties.some(op => normName(op.name) === normName(np.name) && op.role === np.role)
+  );
+
+  const pick = (nv?: string, ov?: string) => (nv && nv !== '-' && nv !== 'غير محدد' && nv !== 'غير محددة' ? nv : ov);
+
+  const merged: Case = {
+    ...existing,
+    // بيانات البوابة — الأحدث يغلب إن كان ذا قيمة
+    mahakimId: pick(incoming.mahakimId, existing.mahakimId),
+    nationalId: pick(incoming.nationalId, existing.nationalId),
+    court: pick(incoming.court, existing.court) || existing.court,
+    type: pick(incoming.type, existing.type) || existing.type,
+    subject: pick(incoming.subject, existing.subject) || existing.subject,
+    date: pick(incoming.date, existing.date) || existing.date,
+    judge: pick(incoming.judge, existing.judge),
+    section: pick(incoming.section, existing.section),
+    status: pick(incoming.status, existing.status) || existing.status,
+    nextSession: pick(incoming.nextSession, existing.nextSession),
+    defendant: pick(incoming.defendant, existing.defendant),
+    procedures: [...oldProcs, ...addProcs],
+    parties: [...oldParties, ...addParties],
+    lastSyncedAt: new Date().toISOString(),
+    syncCount: (existing.syncCount || 0) + 1,
+  };
+  return { merged, newProcs: addProcs.length, newParties: addParties.length };
+}
+
+/** عرض ودّي لمدة منذ آخر مزامنة + لون الحالة */
+function syncAge(iso?: string): { label: string; cls: string } | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return null;
+  const days = Math.floor((Date.now() - t) / 86400000);
+  const label = days <= 0 ? 'اليوم' : days === 1 ? 'أمس' : `منذ ${days} يوم`;
+  const cls = days <= 3 ? 'text-emerald-600' : days <= 14 ? 'text-amber-600' : 'text-red-500';
+  return { label, cls };
 }
 
 const recentCases: Case[] = [
@@ -130,6 +202,9 @@ export function exportSingleCaseXLSX(c: Case) {
   rows.push(['القاضي المقرر', c.judge || '', 'تاريخ التسجيل', c.date]);
   rows.push(['موضوع النزاع', c.subject, 'الخصم الرئيسي', c.defendant || '']);
   rows.push(['الوضعية', c.status, 'الجلسة القادمة', c.nextSession || '']);
+  if (c.lastSyncedAt) {
+    rows.push(['آخر مزامنة من البوابة', new Date(c.lastSyncedAt).toLocaleString('fr-MA'), 'عدد المزامنات', c.syncCount || 1]);
+  }
 
   // ── Parties ──
   if (c.parties && c.parties.length > 0) {
@@ -195,6 +270,7 @@ export function exportAllCasesXLSX(cases: Case[]) {
     'الغرامة (د.م)', 'التعويضات (د.م)', 'الإرجاع',
     'صلح', 'حالة التنفيذ', 'طريقة التبليغ', 'تاريخ التبليغ',
     'تاريخ التنفيذ', 'المبالغ المستخلصة (د.م)', 'عائق التنفيذ',
+    'آخر مزامنة من البوابة', 'عدد المزامنات',
   ];
 
   const data = cases.map(c => {
@@ -219,6 +295,7 @@ export function exportAllCasesXLSX(cases: Case[]) {
       c.fine ? Number(c.fine) : '', c.compensation ? Number(c.compensation) : '', c.restitution || '',
       c.reconciliation ? 'نعم' : '', c.executionStatus || '', c.notificationMethod || '', c.notificationDate || '',
       c.executionDate || '', c.executionAmountRecovered ? Number(c.executionAmountRecovered) : '', c.executionObstacle || '',
+      c.lastSyncedAt ? new Date(c.lastSyncedAt).toLocaleString('fr-MA') : '', c.syncCount || '',
     ];
   });
 
@@ -529,6 +606,15 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit }: {
               ملف: <span className="font-mono text-emerald-700">{caseData.mahakimId || caseData.id}</span>
             </h2>
             {caseData.mahakimId && <p className="text-xs text-stone-400 font-mono mt-0.5">مرجع: {caseData.id}</p>}
+            {(() => {
+              const sa = syncAge(caseData.lastSyncedAt);
+              if (!sa) return null;
+              return (
+                <p className={`text-[11px] font-bold mt-0.5 flex items-center gap-1 ${sa.cls}`}>
+                  <RefreshCw className="size-3" /> آخر مزامنة من البوابة: {sa.label}{caseData.syncCount ? ` (×${caseData.syncCount})` : ''}
+                </p>
+              );
+            })()}
           </div>
         </div>
         <div className="flex gap-2 flex-wrap">
@@ -727,6 +813,30 @@ export function Contentieux() {
   const handleSort = (k: string) => setSortConfig(p => ({ key: k, dir: p?.key === k && p.dir === 'asc' ? 'desc' : 'asc' }));
 
   const handleSaveCase = async (saved: Case) => {
+    // ── منع التكرار: هل يوجد ملف بنفس الرقم الوطني / رقم محاكم؟ ──
+    const key = caseMatchKey(saved);
+    const existing = key
+      ? cases.find(c => c.id !== saved.id && caseMatchKey(c) === key)
+      : undefined;
+
+    if (existing) {
+      const { merged, newProcs, newParties } = mergeCaseUpdate(existing, saved);
+      await saveCase(merged);
+      setCases(prev => prev.map(c => (c.id === merged.id ? merged : c)));
+      if (selectedCase?.id === merged.id) setSelectedCase(merged);
+      setIsWizardOpen(false); setWizardData(null);
+      const news = [
+        newProcs > 0 ? `${newProcs} إجراء جديد` : '',
+        newParties > 0 ? `${newParties} طرف جديد` : '',
+      ].filter(Boolean).join(' و ');
+      alert(
+        `✅ الملف ${merged.mahakimId || merged.id} موجود مسبقاً — تم تحديثه بدل إنشاء نسخة مكررة.\n` +
+        (news ? `🆕 اكتُشف: ${news}.` : 'ℹ️ لا جديد منذ آخر مزامنة.')
+      );
+      return;
+    }
+
+    // ملف جديد فعلاً
     await saveCase(saved);
     setCases(prev => { const e = prev.find(c => c.id === saved.id); return e ? prev.map(c => c.id === saved.id ? saved : c) : [saved, ...prev]; });
     if (selectedCase?.id === saved.id) setSelectedCase(saved);
@@ -908,11 +1018,20 @@ export function Contentieux() {
                               checked={selectedIds.has(c.id)}
                               onChange={() => setSelectedIds(prev => { const s = new Set(prev); s.has(c.id) ? s.delete(c.id) : s.add(c.id); return s; })} />
                           </td>
-                          {/* رقم الملف في المحكمة */}
+                          {/* رقم الملف في المحكمة + آخر مزامنة */}
                           <td className="px-3 py-3.5">
                             {c.mahakimId
                               ? <span className="font-mono font-black text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg text-xs">{c.mahakimId}</span>
                               : <span className="font-mono text-stone-400 text-xs italic">غير مسجل</span>}
+                            {(() => {
+                              const sa = syncAge(c.lastSyncedAt);
+                              if (!sa) return null;
+                              return (
+                                <p className={`text-[9px] font-bold mt-1 flex items-center gap-1 ${sa.cls}`}>
+                                  <RefreshCw className="size-2.5" /> مزامنة: {sa.label}{c.syncCount ? ` (×${c.syncCount})` : ''}
+                                </p>
+                              );
+                            })()}
                           </td>
                           {/* المحكمة + الشعبة */}
                           <td className="px-3 py-3.5 max-w-[180px]">
@@ -1061,6 +1180,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   const [remoteYear, setRemoteYear] = useState('');
   const [remoteCourt, setRemoteCourt] = useState('تطوان');
   const [isSearching, setIsSearching] = useState(false);
+  const [searchStage, setSearchStage] = useState('');
   const [bridgeReady, setBridgeReady] = useState(false);
   const [extensionReady, setExtensionReady] = useState(false);
 
@@ -1097,7 +1217,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
     return () => { window.removeEventListener('message', handler); clearInterval(id); };
   }, []);
 
-  // ── Chrome Extension: استقبال النتائج/الأخطاء ─────────────────
+  // ── Chrome Extension: استقبال النتائج/الأخطاء/التقدم (v6) ────
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (e.source !== window) return;
@@ -1112,9 +1232,29 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
         setResult(performParsing(data));
         setExtractMode('parsed');
         setIsSearching(false);
+        setSearchStage('');
       }
       if (d.type === 'MAHAKIM_ERROR') {
         setIsSearching(false);
+        setSearchStage('');
+        const ERR_AR: Record<string, string> = {
+          no_results: 'لا توجد نتيجة لهذا الرقم في هذه المحكمة',
+          timeout: 'انتهت المهلة — أعد المحاولة',
+          tab_closed: 'أُغلق تبويب البوابة قبل الاكتمال',
+          website_tab_closed: 'أُغلق تبويب الموقع قبل الاكتمال',
+          extension_unreachable: 'تعذّر الوصول للإضافة — أعد تحميل الصفحة',
+          point_outside_viewport: 'البوابة خارج مجال الرؤية — كبّر النافذة وأعد المحاولة',
+        };
+        const k = String(d.error || '');
+        alert('⚠️ فشل البحث التلقائي: ' + (ERR_AR[k] || k));
+      }
+      // مرحلة التقدم الحية من الإضافة (v6)
+      if (d.type === 'MAHAKIM_PROGRESS') {
+        setSearchStage(String(d.stage || ''));
+      }
+      // الإضافة تطلب إظهار البوابة قبل بدء الأتمتة داخل الـ iframe (v6)
+      if (d.type === 'MAHAKIM_SHOW_PORTAL') {
+        setExtractMode('portal');
       }
     };
     window.addEventListener('message', handler);
@@ -1124,7 +1264,11 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
 
   const handleRemoteSearch = async () => {
     if (!remoteNum.trim()) return;
+    // v6: الإضافة تعمل داخل iframe البوابة في هذه الصفحة —
+    // يجب أن يكون الإطار معروضاً (مركّباً في DOM) قبل بدء الأتمتة.
+    setExtractMode('portal');
     setIsSearching(true);
+    setSearchStage('');
     const isAppeal = remoteCourt.startsWith('استئناف ');
     const courtName = isAppeal ? remoteCourt.replace('استئناف ', '').trim() : remoteCourt;
     const primaryCourts = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
@@ -1226,6 +1370,9 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
       defendant: result.defendant,
       parties: result.parties,
       procedures: result.procedures,
+      // ختم المزامنة: هذا الملف جاء من بوابة محاكم الآن
+      lastSyncedAt: new Date().toISOString(),
+      syncCount: 1,
     };
     onSave(newCase);
     handleReset();
@@ -1311,7 +1458,9 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
               </button>
               {isSearching && (
                 <p className="text-[11px] text-emerald-600 text-center animate-pulse">
-                  ⏳ يتم البحث... سيظهر الملف تلقائياً بعد اكتمال النسخ
+                  ⏳ {searchStage
+                    ? <>المرحلة: <span className="font-bold">{searchStage}</span></>
+                    : 'يتم البحث... سيظهر الملف تلقائياً بعد اكتمال النسخ'}
                 </p>
               )}
             </div>
