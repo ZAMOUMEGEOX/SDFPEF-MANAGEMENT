@@ -42,7 +42,8 @@ import {
   Trash2, Maximize, Palette, Printer, Save,
   Menu, Navigation, Plus, Minus, LocateFixed, Wrench, Combine,
   Circle, Square, Triangle, Settings, MapPin, MousePointer2,
-  Zap,
+  Zap, PenLine, RotateCcw, Bell, BarChart3, AlertTriangle,
+  Edit3, CheckCircle, History, TrendingUp, RefreshCw,
 } from 'lucide-react';
 import { ViewState } from '../../types';
 import { cn } from '../../lib/utils';
@@ -64,6 +65,28 @@ export interface MapLayer {
   id: string; name: string; type: string; visible: boolean; color: string;
   areaCoords?: [number, number][]; geojson?: any; leafletLayer?: any;
 }
+type ToastItem = {
+  id: string; type: 'success' | 'warning' | 'error' | 'info';
+  title: string; msg?: string;
+};
+
+// ─── Session persistence ──────────────────────────────────────────────────────
+const SESSION_KEY = 'domaine_forestier_session_v2';
+const saveSessionToStorage = (layers: any[]) => {
+  try {
+    const data = layers.map(({ leafletLayer, ...rest }: any) => rest);
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ v: 2, ts: Date.now(), layers: data }));
+  } catch {}
+};
+const loadSessionFromStorage = (): any[] => {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.layers) ? parsed.layers : [];
+  } catch { return []; }
+};
+const clearSession = () => { try { localStorage.removeItem(SESSION_KEY); } catch {} };
 
 // ─── Module-level GeoJSON data store ─────────────────────────────────────────
 const _officialGeoData: Record<string, any> = {};
@@ -148,7 +171,7 @@ const GeomanSetup = ({ setCustomLayers, onLayerImported }: { setCustomLayers: an
   return null;
 };
 
-const MapEvents = ({ setCoords, onIdentify }: { setCoords: any; onIdentify?: (latlng: any, results: any[]) => void }) => {
+const MapEvents = ({ setCoords, onIdentify, customLayersRef }: { setCoords: any; onIdentify?: (latlng: any, results: any[]) => void; customLayersRef?: React.MutableRefObject<any[]> }) => {
   useMapEvents({
     mousemove(e) { setCoords({ lat: e.latlng.lat, lng: e.latlng.lng }); },
     click(e) {
@@ -169,6 +192,30 @@ const MapEvents = ({ setCoords, onIdentify }: { setCoords: any; onIdentify?: (la
               const meta = LAYER_META[key] || { label: key, color: '#888' };
               results.push({ key, label: meta.label, color: meta.color, properties: feature.properties || {} });
               break;
+            }
+          } catch {}
+        }
+      }
+      // Also check custom imported layers
+      if (customLayersRef?.current) {
+        for (const layer of customLayersRef.current) {
+          if (!layer.visible || !layer.geojson) continue;
+          try {
+            const gj = layer.geojson;
+            const features = gj.type === 'FeatureCollection' ? gj.features : [gj];
+            for (const feat of features) {
+              if (!feat?.geometry) continue;
+              const geomType = feat.geometry.type;
+              if ((geomType === 'Polygon' || geomType === 'MultiPolygon') && turf.booleanPointInPolygon(pt, feat)) {
+                const area = turf.area(feat);
+                const areaStr = area < 10000 ? `${area.toFixed(1)} m²` : `${(area/10000).toFixed(3)} ha`;
+                results.push({
+                  key: layer.id, label: `📂 ${layer.name}`,
+                  color: layer.color || '#38bdf8',
+                  properties: { 'Type': layer.type === 'imported' ? 'Import' : 'Dessin', 'Surface': areaStr, ...feat.properties }
+                });
+                break;
+              }
             }
           } catch {}
         }
@@ -325,6 +372,22 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     results: Array<{ key: string; label: string; color: string; properties: Record<string, any> }>;
   } | null>(null);
 
+  // ── Toast notifications ───────────────────────────────────────────────────
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const addToast = useCallback((item: Omit<ToastItem, 'id'>) => {
+    const id = `toast-${Date.now()}-${Math.random()}`;
+    setToasts(prev => [...prev.slice(-4), { ...item, id }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 6000);
+  }, []);
+  const dismissToast = (id: string) => setToasts(prev => prev.filter(t => t.id !== id));
+
+  // ── Undo/History ──────────────────────────────────────────────────────────
+  const [layerHistory, setLayerHistory] = useState<any[][]>([]);
+  const pushHistory = useCallback((layers: any[]) => {
+    setLayerHistory(prev => [...prev.slice(-19), layers.map(({ leafletLayer, ...rest }: any) => rest)]);
+  }, []);
+  const canUndo = layerHistory.length > 0;
+
   const handleIdentify = (latlng: any, results: any[]) => {
     if (results.length === 0) { setIdentifyPanel(null); return; }
     setIdentifyPanel({ latlng: { lat: latlng.lat, lng: latlng.lng }, results });
@@ -349,6 +412,15 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
   } | null>(null);
 
   const [customLayers, setCustomLayers] = useState<any[]>([]);
+  // Ref for MapEvents identify (avoids stale closure)
+  const customLayersRef = useRef<any[]>([]);
+  useEffect(() => { customLayersRef.current = customLayers; }, [customLayers]);
+
+  // ── Auto-save session ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const timer = setTimeout(() => { saveSessionToStorage(customLayers); }, 800);
+    return () => clearTimeout(timer);
+  }, [customLayers]);
 
   // ── Enhanced search ───────────────────────────────────────────────────────
   const fetchSearchResults = async (query: string) => {
@@ -434,6 +506,17 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       try {
         chev = runChevauchementAnalysis(geojson, forestData, name);
         setChevauchementResults(prev => ({ ...prev, [layerId]: chev! }));
+        // ── Overlap alert if > 5% ──
+        if (chev && chev.totalPercentage > 5) {
+          const isTotal = chev.globalPosition === 'داخل الملك الغابوي';
+          addToast({
+            type: isTotal ? 'error' : 'warning',
+            title: isTotal ? '⚠ Inclusion totale détectée' : `⚠ Chevauchement ${chev.totalPercentage.toFixed(1)}%`,
+            msg: `Couche «${name}» ${isTotal ? 'est entièrement dans' : 'chevauche'} le Domaine Forestier`,
+          });
+        } else if (chev && chev.totalPercentage === 0) {
+          addToast({ type: 'success', title: '✓ Hors domaine forestier', msg: `La couche «${name}» est hors du Mlak Ghabi` });
+        }
       } catch (e) { console.warn('[Chevauchement]', e); }
       const province = detectProvinceFromGeojson(geojson);
       setLastImportedLayer({ id: layerId, name, geojson, chevauchement: chev, province });
@@ -506,14 +589,67 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
           <FeatureGroup ref={featureGroupRef} />
           <GeomanSetup setCustomLayers={setCustomLayers} onLayerImported={handleLayerImported} />
           <MeasureSetup />
-          <MapEvents setCoords={setCoords} onIdentify={handleIdentify} />
+          <MapEvents setCoords={setCoords} onIdentify={handleIdentify} customLayersRef={customLayersRef} />
           <MapResizeTracker isPanelCollapsed={isPanelCollapsed} />
           <MapCenterUpdater mapTargetCenter={mapTargetCenter} setMapTargetCenter={setMapTargetCenter} />
           <CustomMapEventsHandler setCustomLayers={setCustomLayers} />
           <ScaleControl position="bottomleft" imperial={false} />
         </MapContainer>
 
-        {/* Identify Panel */}
+        {/* ── Toast notifications ── */}
+        {toasts.length > 0 && (
+          <div className="absolute top-16 right-4 z-[1002] flex flex-col gap-2 pointer-events-auto max-w-72">
+            {toasts.map(t => (
+              <div key={t.id}
+                className="flex items-start gap-2.5 px-3.5 py-2.5 rounded-xl shadow-2xl border backdrop-blur-md text-sm animate-in slide-in-from-right-3 fade-in duration-200"
+                style={{
+                  backgroundColor: t.type === 'error' ? '#ef444420' : t.type === 'warning' ? '#f9731620' : t.type === 'success' ? '#22c55e20' : '#3b82f620',
+                  borderColor: t.type === 'error' ? '#ef4444aa' : t.type === 'warning' ? '#f97316aa' : t.type === 'success' ? '#22c55eaa' : '#3b82f6aa',
+                  color: t.type === 'error' ? '#ef4444' : t.type === 'warning' ? '#f97316' : t.type === 'success' ? '#22c55e' : '#3b82f6',
+                }}>
+                <div className="shrink-0 mt-0.5">
+                  {t.type === 'error'   && <AlertTriangle className="w-3.5 h-3.5" />}
+                  {t.type === 'warning' && <Bell className="w-3.5 h-3.5" />}
+                  {t.type === 'success' && <CheckCircle className="w-3.5 h-3.5" />}
+                  {t.type === 'info'    && <BarChart3 className="w-3.5 h-3.5" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[11px] font-bold leading-tight">{t.title}</p>
+                  {t.msg && <p className="text-[10px] mt-0.5 opacity-80 leading-snug">{t.msg}</p>}
+                </div>
+                <button onClick={() => dismissToast(t.id)} className="shrink-0 opacity-60 hover:opacity-100 transition-opacity mt-0.5">
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Undo button ── */}
+        {canUndo && (
+          <div className="absolute top-16 left-4 z-[1001] pointer-events-auto">
+            <button
+              onClick={() => {
+                const prev = layerHistory[layerHistory.length - 1];
+                setLayerHistory(h => h.slice(0, -1));
+                // Remove current leaflet layers and restore previous state
+                setCustomLayers((curr: any[]) => {
+                  curr.forEach((l: any) => {
+                    if (l.leafletLayer) {
+                      if (featureGroupRef.current?.hasLayer(l.leafletLayer)) featureGroupRef.current?.removeLayer(l.leafletLayer);
+                      else l.leafletLayer.remove?.();
+                    }
+                  });
+                  return prev;
+                });
+                addToast({ type: 'info', title: 'Annulation effectuée', msg: 'Retour à l\'état précédent' });
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1a1a1c]/90 hover:bg-[#2a2a2c] text-amber-400 hover:text-amber-300 text-[11px] font-bold rounded-xl border border-white/10 shadow-lg backdrop-blur-md transition-all"
+            >
+              <RotateCcw className="w-3.5 h-3.5" /> Annuler ({layerHistory.length})
+            </button>
+          </div>
+        )}
         {identifyPanel && identifyPanel.results.length > 0 && (
           <div className="absolute bottom-10 left-4 z-1001 w-72 md:w-80 pointer-events-auto">
             <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-zinc-200 dark:border-zinc-700 overflow-hidden">
@@ -681,6 +817,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                   onLayerImported={handleLayerImported}
                   onLayerDeleted={handleLayerDeleted}
                   chevauchementResults={chevauchementResults}
+                  onPushHistory={pushHistory}
                 />
               </div>
               <div style={{ display: activeTab === 'recherche' ? 'block' : 'none' }}>
@@ -981,6 +1118,102 @@ function ReportCard({ title, subtitle, desc, icon: Icon, color, onClick, badge }
 // ─────────────────────────────────────────────────────────────────────────────
 interface PolyPoint { id: string; x: string; y: string; mode: 'lambert' | 'wgs84'; label?: string; }
 
+// ─── Shared PolyBuilder sub-component ────────────────────────────────────────
+function PolyBuilder({
+  polyPoints, polyName, polyMsg, setPolyName, setPolyPoints, setPolyMsg, removePoint, buildPolygon,
+}: {
+  polyPoints: PolyPoint[]; polyName: string; polyMsg: { type: 'success' | 'error'; text: string } | null;
+  setPolyName: (n: string) => void; setPolyPoints: (fn: (prev: PolyPoint[]) => PolyPoint[]) => void;
+  setPolyMsg: (m: { type: 'success' | 'error'; text: string } | null) => void;
+  removePoint: (id: string) => void; buildPolygon: () => void;
+}) {
+  const canBuild = polyPoints.length >= 3;
+  return (
+    <div className="mt-3 rounded-xl border-2 border-amber-400/40 bg-amber-500/5 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-amber-400/25">
+        <div className="flex items-center gap-1.5">
+          <Zap className="w-3 h-3 text-amber-500" />
+          <span className="text-[9px] font-black uppercase tracking-[0.08em] text-amber-600">
+            Polygone · {polyPoints.length} point{polyPoints.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+        <button
+          onClick={() => { setPolyPoints(() => []); setPolyMsg(null); }}
+          className="text-[9px] text-amber-500/70 hover:text-red-500 font-medium transition-colors flex items-center gap-0.5"
+        >
+          <X className="w-2.5 h-2.5" /> Effacer tout
+        </button>
+      </div>
+
+      <div className="px-3 py-2.5 space-y-2.5">
+        {/* Professional layer name input */}
+        <div>
+          <div className="flex items-center gap-1 mb-1.5">
+            <PenLine className="w-3 h-3 text-amber-500" />
+            <span className="text-[9px] font-bold uppercase tracking-wider text-amber-600">Nom de la couche</span>
+          </div>
+          <div className="relative">
+            <input
+              type="text"
+              value={polyName}
+              onChange={e => setPolyName(e.target.value)}
+              placeholder="Ex: Parcelle forestière Nord…"
+              className="w-full bg-white/80 dark:bg-zinc-900/80 border-2 border-amber-400/60 rounded-xl py-2 px-3 text-[13px] font-semibold focus:outline-none focus:border-amber-500 transition-colors text-(--text-main) placeholder:text-amber-400/60 shadow-sm"
+            />
+            {polyName && polyName !== 'Polygone personnalisé' && (
+              <div className="absolute right-2.5 top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full bg-amber-500" />
+            )}
+          </div>
+        </div>
+
+        {/* Points list */}
+        <div className="space-y-1 max-h-40 overflow-y-auto">
+          {polyPoints.map((pt, i) => (
+            <div key={pt.id} className="flex items-center gap-2 group px-2 py-1 rounded-lg hover:bg-amber-500/10 transition-colors">
+              <span className="w-4 h-4 rounded-full bg-amber-500/20 text-amber-600 text-[8px] font-black flex items-center justify-center shrink-0 font-mono">{i + 1}</span>
+              <span className="text-[10px] font-mono text-(--text-muted) flex-1 truncate">
+                <span className={cn("font-black text-[9px] mr-1 px-1 rounded", pt.mode === 'lambert' ? "bg-orange-100 dark:bg-orange-900/30 text-orange-600" : "bg-blue-100 dark:bg-blue-900/30 text-blue-600")}>
+                  {pt.mode === 'lambert' ? 'LN' : 'WGS'}
+                </span>
+                {pt.label}
+              </span>
+              <button onClick={() => removePoint(pt.id)} className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Feedback */}
+        {polyMsg && (
+          <div className={cn("flex items-center gap-1.5 text-[10px] font-semibold px-2 py-1 rounded-lg", polyMsg.type === 'success' ? "bg-emerald-500/10 text-emerald-600" : "bg-red-500/10 text-red-500")}>
+            {polyMsg.type === 'success' ? <CheckCircle className="w-3 h-3 shrink-0" /> : <AlertTriangle className="w-3 h-3 shrink-0" />}
+            {polyMsg.text}
+          </div>
+        )}
+
+        {/* Create button */}
+        <button
+          onClick={buildPolygon}
+          disabled={!canBuild}
+          className={cn(
+            "w-full py-2.5 rounded-xl font-bold text-[12px] flex items-center justify-center gap-1.5 transition-all border-2",
+            canBuild
+              ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-500 shadow-md active:scale-98"
+              : "bg-amber-500/10 text-amber-400/60 border-amber-400/30 cursor-not-allowed"
+          )}
+        >
+          <Zap className="w-3.5 h-3.5" />
+          {canBuild
+            ? `⚡ Créer la couche (${polyPoints.length} pts)`
+            : `Encore ${3 - polyPoints.length} point${3 - polyPoints.length > 1 ? 's' : ''} requis`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function RechercheTab({
   calcLngLatFromLambert, setCustomLayers, featureGroupRef, onLayerImported, setActiveTab, setIsPanelCollapsed,
 }: {
@@ -991,50 +1224,43 @@ function RechercheTab({
   setActiveTab?: (tab: any) => void;
   setIsPanelCollapsed?: (v: boolean) => void;
 }) {
-  const [lngVal, setLngVal]         = useState('');
-  const [latVal, setLatVal]         = useState('');
-  const [lambertX, setLambertX]     = useState('');
-  const [lambertY, setLambertY]     = useState('');
+  const [lngVal, setLngVal]           = useState('');
+  const [latVal, setLatVal]           = useState('');
+  const [lambertX, setLambertX]       = useState('');
+  const [lambertY, setLambertY]       = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-
-  // Per-row poly toggle
   const [lambertPoly, setLambertPoly] = useState(false);
-  const [wgsPoly,     setWgsPoly]     = useState(false);
+  const [wgsPoly, setWgsPoly]         = useState(false);
+  const [polyPoints, setPolyPoints]   = useState<PolyPoint[]>([]);
+  const [polyName, setPolyName]       = useState('Polygone personnalisé');
+  const [polyMsg, setPolyMsg]         = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Shared polygon builder
-  const [polyPoints, setPolyPoints] = useState<PolyPoint[]>([]);
-  const [polyName,   setPolyName]   = useState('Polygone personnalisé');
-  const [polyMsg,    setPolyMsg]    = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-
-  // Shared styles
-  const inp = "flex-1 min-w-0 bg-(--bg-main) border border-(--border-color) rounded-md py-1.5 px-2.5 text-[12px] font-mono focus:outline-none focus:border-(--brand) transition-colors text-(--text-main) placeholder:text-(--text-muted)";
+  const inp = "flex-1 min-w-0 bg-(--bg-main) border border-(--border-color) rounded-lg py-2 px-2.5 text-[12px] font-mono focus:outline-none focus:border-(--brand) transition-colors text-(--text-main) placeholder:text-(--text-muted)";
   const rowLabel = "text-[9px] font-bold uppercase tracking-wider text-(--text-muted) select-none";
 
-  // ── Navigation handlers ───────────────────────────────────────────────────
   const handleCenterLambert = () => {
     const x = parseFloat(lambertX), y = parseFloat(lambertY);
     if (!isNaN(x) && !isNaN(y)) {
       const c = calcLngLatFromLambert(x, y);
-      window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat: c.lat, lon: c.lng, display_name: `Lambert (${x}, ${y})` } }));
+      window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat: c.lat, lon: c.lng, display_name: `Lambert (${x.toFixed(0)}, ${y.toFixed(0)})` } }));
     }
   };
   const handleCenterWGS = () => {
     const lng = parseFloat(lngVal), lat = parseFloat(latVal);
     if (!isNaN(lng) && !isNaN(lat))
-      window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat, lon: lng, display_name: `WGS84 (${lng}, ${lat})` } }));
+      window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat, lon: lng, display_name: `WGS84 (${lng.toFixed(5)}, ${lat.toFixed(5)})` } }));
   };
 
-  // ── Polygon helpers ───────────────────────────────────────────────────────
   const addLambertPoint = () => {
     const x = parseFloat(lambertX), y = parseFloat(lambertY);
     if (isNaN(x) || isNaN(y)) return;
-    setPolyPoints(prev => [...prev, { id: `pt-${Date.now()}`, x: lambertX, y: lambertY, mode: 'lambert', label: `L ${x.toFixed(0)}, ${y.toFixed(0)}` }]);
+    setPolyPoints(prev => [...prev, { id: `pt-${Date.now()}`, x: lambertX, y: lambertY, mode: 'lambert', label: `${x.toFixed(0)}, ${y.toFixed(0)}` }]);
     setPolyMsg(null);
   };
   const addWgsPoint = () => {
     const lng = parseFloat(lngVal), lat = parseFloat(latVal);
     if (isNaN(lng) || isNaN(lat)) return;
-    setPolyPoints(prev => [...prev, { id: `pt-${Date.now()}`, x: lngVal, y: latVal, mode: 'wgs84', label: `W ${lng.toFixed(4)}, ${lat.toFixed(4)}` }]);
+    setPolyPoints(prev => [...prev, { id: `pt-${Date.now()}`, x: lngVal, y: latVal, mode: 'wgs84', label: `${lng.toFixed(5)}, ${lat.toFixed(5)}` }]);
     setPolyMsg(null);
   };
   const removePoint = (id: string) => setPolyPoints(prev => prev.filter(p => p.id !== id));
@@ -1049,25 +1275,46 @@ function RechercheTab({
     if (polyPoints.length < 3) { setPolyMsg({ type: 'error', text: 'Minimum 3 points requis.' }); return; }
     try {
       const coords = polyPoints.map(pointToWGS84);
-      if (coords[0][0] !== coords[coords.length-1][0] || coords[0][1] !== coords[coords.length-1][1]) coords.push([...coords[0]]);
+      if (coords[0][0] !== coords[coords.length - 1][0] || coords[0][1] !== coords[coords.length - 1][1]) coords.push([...coords[0]]);
       const geojson = turf.featureCollection([turf.polygon([coords])]);
       const id = `poly-${Date.now()}`;
       const color = '#f59e0b';
-      const leafletLayer = L.geoJSON(geojson, { style: { color, weight: 2, opacity: 0.9, fillColor: color, fillOpacity: 0.22 } });
+      const name = polyName || 'Polygone';
+
+      // Build popup with measurements
+      const area = turf.area(geojson.features[0]);
+      const perim = turf.length(geojson.features[0], { units: 'kilometers' });
+      const popupHtml = `
+        <div style="min-width:180px;padding:4px 0">
+          <b style="font-size:13px;display:block;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid #eee">📍 ${name}</b>
+          <div style="font-size:11px;line-height:1.8">
+            <b>Surface:</b> ${area < 10000 ? area.toFixed(2) + ' m²' : (area / 10000).toFixed(4) + ' ha'}<br/>
+            <b>Périmètre:</b> ${perim.toFixed(4)} km<br/>
+            <b>Sommets:</b> ${polyPoints.length}<br/>
+            <b>SCR:</b> ${polyPoints.some(p => p.mode === 'lambert') ? 'Lambert Nord / WGS84' : 'WGS84 EPSG:4326'}
+          </div>
+        </div>`;
+
+      const leafletLayer = L.geoJSON(geojson, {
+        style: { color, weight: 2.5, opacity: 0.9, fillColor: color, fillOpacity: 0.22 },
+        onEachFeature: (_, lyr) => { lyr.bindPopup(popupHtml); },
+      });
       if (featureGroupRef?.current) {
         featureGroupRef.current.addLayer(leafletLayer);
         try { const b = leafletLayer.getBounds(); if (b?.isValid()) window.dispatchEvent(new CustomEvent('flyToBounds', { detail: b })); } catch {}
       }
-      setCustomLayers((prev: any) => [...prev, { id, name: polyName || 'Polygone', type: 'imported', visible: true, color, opacity: 0.9, geojson, leafletLayer }]);
-      onLayerImported?.(id, polyName || 'Polygone', geojson);
-      setPolyMsg({ type: 'success', text: `Couche «${polyName}» créée.` });
-      setPolyPoints([]); setPolyName('Polygone personnalisé');
-      if (setActiveTab) setTimeout(() => { setActiveTab('couches'); setIsPanelCollapsed?.(false); }, 600);
-    } catch { setPolyMsg({ type: 'error', text: 'Erreur de création.' }); }
+      setCustomLayers((prev: any) => [...prev, { id, name, type: 'imported', visible: true, color, opacity: 0.9, geojson, leafletLayer }]);
+      onLayerImported?.(id, name, geojson);
+      setPolyMsg({ type: 'success', text: `Couche «${name}» créée avec succès.` });
+      setPolyPoints(() => []);
+      setPolyName('Polygone personnalisé');
+      setLambertPoly(false);
+      setWgsPoly(false);
+      if (setActiveTab) setTimeout(() => { setActiveTab('couches'); setIsPanelCollapsed?.(false); }, 700);
+    } catch { setPolyMsg({ type: 'error', text: 'Erreur lors de la création.' }); }
   };
 
   const hasPoints = polyPoints.length > 0;
-  const canBuild  = polyPoints.length >= 3;
 
   return (
     <div className="space-y-0 pb-4">
@@ -1089,7 +1336,7 @@ function RechercheTab({
           </div>
           <button
             onClick={() => { if (searchQuery.trim()) window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() })); }}
-            className="px-3.5 py-1.5 bg-(--brand) hover:opacity-90 text-white font-bold text-[11px] rounded-md shadow-sm transition-all active:scale-95 shrink-0"
+            className="px-3.5 py-1.5 bg-(--brand) hover:opacity-90 text-white font-bold text-[11px] rounded-lg shadow-sm transition-all active:scale-95 shrink-0"
           >GO</button>
         </div>
       </div>
@@ -1098,29 +1345,26 @@ function RechercheTab({
 
       {/* ── Lambert Nord ─────────────────────────────────────────────────── */}
       <div className="py-4 space-y-2.5">
-        {/* Row header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">
             <span className={rowLabel}>Lambert Nord</span>
             <span className="text-[8px] text-(--text-muted) bg-(--bg-main) border border-(--border-color) rounded px-1 py-px font-mono">EPSG:26191</span>
           </div>
-          {/* Polygon toggle */}
           <button
-            onClick={() => setLambertPoly(v => !v)}
-            title={lambertPoly ? "Désactiver ajout au polygone" : "Activer ajout au polygone"}
+            onClick={() => { setLambertPoly(v => !v); setWgsPoly(false); }}
+            title={lambertPoly ? "Désactiver mode polygone" : "Activer mode polygone Lambert"}
             className={cn(
-              "flex items-center gap-1 text-[9px] font-bold px-2 py-1 rounded-md border transition-all",
+              "flex items-center gap-1 text-[9px] font-bold px-2.5 py-1 rounded-lg border transition-all",
               lambertPoly
-                ? "bg-amber-500/15 border-amber-500/40 text-amber-600"
-                : "border-(--border-color) text-(--text-muted) hover:text-(--text-main) hover:border-(--brand)/40"
+                ? "bg-amber-500/20 border-amber-500/60 text-amber-600 shadow-sm"
+                : "border-(--border-color) text-(--text-muted) hover:text-(--text-main) hover:border-amber-500/40"
             )}
           >
-            <Zap className="w-2.5 h-2.5" />
-            Poly
+            <Zap className="w-2.5 h-2.5" /> Poly
+            {lambertPoly && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />}
           </button>
         </div>
 
-        {/* Inputs */}
         <div className="flex gap-2">
           <input type="number" step="any" value={lambertX} onChange={e => setLambertX(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handleCenterLambert(); }}
@@ -1129,33 +1373,42 @@ function RechercheTab({
             onKeyDown={e => { if (e.key === 'Enter') handleCenterLambert(); }}
             placeholder="Y — Nord" className={inp} />
           <button onClick={handleCenterLambert}
-            className="px-3 py-1.5 bg-(--bg-surface) border border-(--border-color) hover:bg-(--bg-main) text-(--text-main) font-bold text-[11px] rounded-md shadow-sm transition-all active:scale-95 shrink-0">
+            className="px-3 py-1.5 bg-(--bg-surface) border border-(--border-color) hover:bg-(--bg-main) text-(--text-main) font-bold text-[11px] rounded-lg shadow-sm transition-all active:scale-95 shrink-0">
             GO
           </button>
         </div>
 
-        {/* Poly add row — revealed when toggled */}
+        {/* Lambert add row — revealed when Poly is active */}
         {lambertPoly && (
-          <div className="flex items-center gap-2 pl-0.5 pt-0.5 animate-in fade-in slide-in-from-top-1 duration-150">
-            <div className="w-px h-6 bg-amber-400/50 shrink-0" />
-            <p className="text-[10px] text-(--text-muted) flex-1">
+          <div className="flex items-center gap-2 pl-1 animate-in fade-in slide-in-from-top-1 duration-150">
+            <div className="w-px h-5 bg-amber-400/60 shrink-0" />
+            <p className="text-[10px] text-(--text-muted) flex-1 font-mono">
               {lambertX && lambertY
-                ? <span className="font-mono text-amber-600">{parseFloat(lambertX).toFixed(0)}, {parseFloat(lambertY).toFixed(0)}</span>
-                : 'Entrez X et Y ci-dessus'}
+                ? <span className="text-amber-600 font-bold">{parseFloat(lambertX).toFixed(0)}, {parseFloat(lambertY).toFixed(0)}</span>
+                : <span className="italic">Entrez X et Y puis ↓ Ajouter</span>}
             </p>
             <button
               onClick={() => { addLambertPoint(); handleCenterLambert(); }}
               disabled={!lambertX || !lambertY}
               className={cn(
-                "flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-md border transition-all",
+                "flex items-center gap-1 text-[10px] font-bold px-3 py-1 rounded-lg border transition-all",
                 lambertX && lambertY
-                  ? "bg-amber-500/15 border-amber-500/40 text-amber-600 hover:bg-amber-500/25 active:scale-95"
-                  : "border-(--border-color) text-(--text-muted) cursor-not-allowed opacity-50"
+                  ? "bg-amber-500/20 border-amber-500/50 text-amber-600 hover:bg-amber-500/30 active:scale-95"
+                  : "border-(--border-color) text-(--text-muted) cursor-not-allowed opacity-40"
               )}
             >
               <Plus className="w-3 h-3" /> Ajouter
             </button>
           </div>
+        )}
+
+        {/* Inline Poly Builder for Lambert */}
+        {lambertPoly && hasPoints && (
+          <PolyBuilder
+            polyPoints={polyPoints} polyName={polyName} polyMsg={polyMsg}
+            setPolyName={setPolyName} setPolyPoints={setPolyPoints} setPolyMsg={setPolyMsg}
+            removePoint={removePoint} buildPolygon={buildPolygon}
+          />
         )}
       </div>
 
@@ -1169,17 +1422,17 @@ function RechercheTab({
             <span className="text-[8px] text-(--text-muted) bg-(--bg-main) border border-(--border-color) rounded px-1 py-px font-mono">EPSG:4326</span>
           </div>
           <button
-            onClick={() => setWgsPoly(v => !v)}
-            title={wgsPoly ? "Désactiver ajout au polygone" : "Activer ajout au polygone"}
+            onClick={() => { setWgsPoly(v => !v); setLambertPoly(false); }}
+            title={wgsPoly ? "Désactiver mode polygone" : "Activer mode polygone WGS84"}
             className={cn(
-              "flex items-center gap-1 text-[9px] font-bold px-2 py-1 rounded-md border transition-all",
+              "flex items-center gap-1 text-[9px] font-bold px-2.5 py-1 rounded-lg border transition-all",
               wgsPoly
-                ? "bg-amber-500/15 border-amber-500/40 text-amber-600"
-                : "border-(--border-color) text-(--text-muted) hover:text-(--text-main) hover:border-(--brand)/40"
+                ? "bg-amber-500/20 border-amber-500/60 text-amber-600 shadow-sm"
+                : "border-(--border-color) text-(--text-muted) hover:text-(--text-main) hover:border-amber-500/40"
             )}
           >
-            <Zap className="w-2.5 h-2.5" />
-            Poly
+            <Zap className="w-2.5 h-2.5" /> Poly
+            {wgsPoly && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />}
           </button>
         </div>
 
@@ -1191,108 +1444,66 @@ function RechercheTab({
             onKeyDown={e => { if (e.key === 'Enter') handleCenterWGS(); }}
             placeholder="Latitude" className={inp} />
           <button onClick={handleCenterWGS}
-            className="px-3 py-1.5 bg-(--bg-surface) border border-(--border-color) hover:bg-(--bg-main) text-(--text-main) font-bold text-[11px] rounded-md shadow-sm transition-all active:scale-95 shrink-0">
+            className="px-3 py-1.5 bg-(--bg-surface) border border-(--border-color) hover:bg-(--bg-main) text-(--text-main) font-bold text-[11px] rounded-lg shadow-sm transition-all active:scale-95 shrink-0">
             GO
           </button>
         </div>
 
+        {/* WGS add row — revealed when Poly is active */}
         {wgsPoly && (
-          <div className="flex items-center gap-2 pl-0.5 pt-0.5 animate-in fade-in slide-in-from-top-1 duration-150">
-            <div className="w-px h-6 bg-amber-400/50 shrink-0" />
-            <p className="text-[10px] text-(--text-muted) flex-1">
+          <div className="flex items-center gap-2 pl-1 animate-in fade-in slide-in-from-top-1 duration-150">
+            <div className="w-px h-5 bg-amber-400/60 shrink-0" />
+            <p className="text-[10px] text-(--text-muted) flex-1 font-mono">
               {lngVal && latVal
-                ? <span className="font-mono text-amber-600">{parseFloat(lngVal).toFixed(4)}, {parseFloat(latVal).toFixed(4)}</span>
-                : 'Entrez Longitude et Latitude ci-dessus'}
+                ? <span className="text-amber-600 font-bold">{parseFloat(lngVal).toFixed(5)}, {parseFloat(latVal).toFixed(5)}</span>
+                : <span className="italic">Entrez Lon/Lat puis ↓ Ajouter</span>}
             </p>
             <button
               onClick={() => { addWgsPoint(); handleCenterWGS(); }}
               disabled={!lngVal || !latVal}
               className={cn(
-                "flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-md border transition-all",
+                "flex items-center gap-1 text-[10px] font-bold px-3 py-1 rounded-lg border transition-all",
                 lngVal && latVal
-                  ? "bg-amber-500/15 border-amber-500/40 text-amber-600 hover:bg-amber-500/25 active:scale-95"
-                  : "border-(--border-color) text-(--text-muted) cursor-not-allowed opacity-50"
+                  ? "bg-amber-500/20 border-amber-500/50 text-amber-600 hover:bg-amber-500/30 active:scale-95"
+                  : "border-(--border-color) text-(--text-muted) cursor-not-allowed opacity-40"
               )}
             >
               <Plus className="w-3 h-3" /> Ajouter
             </button>
           </div>
         )}
+
+        {/* Inline Poly Builder for WGS84 */}
+        {wgsPoly && hasPoints && (
+          <PolyBuilder
+            polyPoints={polyPoints} polyName={polyName} polyMsg={polyMsg}
+            setPolyName={setPolyName} setPolyPoints={setPolyPoints} setPolyMsg={setPolyMsg}
+            removePoint={removePoint} buildPolygon={buildPolygon}
+          />
+        )}
       </div>
 
-      {/* ── Polygon builder panel — appears only when points exist ────────── */}
-      {hasPoints && (
+      {/* Poly builder shown at bottom if neither toggle active but points exist */}
+      {hasPoints && !lambertPoly && !wgsPoly && (
         <>
           <div className="h-px bg-(--border-color)" />
-          <div className="py-4 space-y-3">
-            {/* Header row */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <Zap className="w-3 h-3 text-amber-500" />
-                <span className={`${rowLabel} text-amber-600`}>Polygone · {polyPoints.length} point{polyPoints.length > 1 ? 's' : ''}</span>
-              </div>
-              <button onClick={() => { setPolyPoints([]); setPolyMsg(null); }} className="text-[9px] text-(--text-muted) hover:text-red-500 transition-colors">
-                Effacer tout
-              </button>
-            </div>
-
-            {/* Layer name */}
-            <input
-              type="text" value={polyName} onChange={e => setPolyName(e.target.value)}
-              placeholder="Nom de la couche…"
-              className={`${inp} w-full`}
+          <div className="pt-3">
+            <PolyBuilder
+              polyPoints={polyPoints} polyName={polyName} polyMsg={polyMsg}
+              setPolyName={setPolyName} setPolyPoints={setPolyPoints} setPolyMsg={setPolyMsg}
+              removePoint={removePoint} buildPolygon={buildPolygon}
             />
-
-            {/* Points list */}
-            <div className="space-y-1">
-              {polyPoints.map((pt, i) => (
-                <div key={pt.id} className="flex items-center gap-2 group">
-                  <span className="w-4 h-4 rounded-full bg-(--brand)/15 text-(--brand) text-[8px] font-black flex items-center justify-center shrink-0 font-mono">{i+1}</span>
-                  <span className="text-[10px] font-mono text-(--text-muted) flex-1 truncate">
-                    <span className={cn("font-bold mr-1", pt.mode === 'lambert' ? "text-orange-500" : "text-blue-500")}>
-                      {pt.mode === 'lambert' ? 'L' : 'W'}
-                    </span>
-                    {pt.label}
-                  </span>
-                  <button onClick={() => removePoint(pt.id)} className="opacity-0 group-hover:opacity-100 text-(--text-muted) hover:text-red-500 transition-all p-px">
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            {/* Feedback */}
-            {polyMsg && (
-              <p className={`text-[10px] font-medium ${polyMsg.type === 'success' ? 'text-emerald-600' : 'text-red-500'}`}>
-                {polyMsg.text}
-              </p>
-            )}
-
-            {/* Create button */}
-            <button
-              onClick={buildPolygon}
-              disabled={!canBuild}
-              className={cn(
-                "w-full py-2 rounded-md font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all border",
-                canBuild
-                  ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-500 shadow-sm active:scale-95"
-                  : "bg-(--bg-main) text-(--text-muted) border-(--border-color) cursor-not-allowed"
-              )}
-            >
-              <Zap className="w-3.5 h-3.5" />
-              {canBuild ? `Créer la couche (${polyPoints.length} pts)` : `Encore ${3 - polyPoints.length} pt${3 - polyPoints.length > 1 ? 's' : ''}`}
-            </button>
           </div>
         </>
       )}
 
-      <div className="h-px bg-(--border-color)" />
+      <div className="h-px bg-(--border-color) mt-4" />
 
       {/* ── Centrer sur l'étendue ── */}
       <div className="pt-4">
         <button
           onClick={() => window.dispatchEvent(new CustomEvent('mapCenterExtent'))}
-          className="w-full py-2 bg-(--bg-main) hover:bg-(--bg-surface) border border-(--border-color) text-(--brand) font-bold rounded-md text-[11px] flex items-center justify-center gap-2 transition-all"
+          className="w-full py-2 bg-(--bg-main) hover:bg-(--bg-surface) border border-(--border-color) text-(--brand) font-bold rounded-lg text-[11px] flex items-center justify-center gap-2 transition-all"
         >
           <Target className="w-3.5 h-3.5" /> Centrer sur M'diq-Tétouan
         </button>
@@ -1333,20 +1544,49 @@ function extractPointFeatures(dataArray: any[]): any[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CouchesTab — with Excel sheet selection, per-layer chevauchement
+// CouchesTab — with Excel sheet selection, per-layer chevauchement, session restore, stats
 // ─────────────────────────────────────────────────────────────────────────────
 function CouchesTab({
   customLayers, setCustomLayers, featureGroupRef, setIsPanelCollapsed,
-  onLayerImported, onLayerDeleted, chevauchementResults,
+  onLayerImported, onLayerDeleted, chevauchementResults, onPushHistory,
 }: {
   customLayers: any[]; setCustomLayers: any; featureGroupRef: any;
   setIsPanelCollapsed: any;
   onLayerImported?: (layerId: string, name: string, geojson: any) => void;
   onLayerDeleted?: (id: string) => void;
   chevauchementResults: Record<string, ChevauchementResult>;
+  onPushHistory?: (layers: any[]) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [excelSheetPending, setExcelSheetPending] = useState<{ wb: any; sheets: string[]; name: string } | null>(null);
+  const [showStats, setShowStats] = useState(false);
+  const [sessionRestored, setSessionRestored] = useState(false);
+
+  // ── Restore session on first mount ─────────────────────────────────────────
+  useEffect(() => {
+    if (sessionRestored) return;
+    setSessionRestored(true);
+    const saved = loadSessionFromStorage();
+    if (saved.length === 0 || customLayers.length > 0) return;
+    const fg = featureGroupRef.current;
+    if (!fg) return;
+    const restored: any[] = [];
+    saved.forEach((l: any) => {
+      if (!l.geojson) { restored.push(l); return; }
+      const color = l.color || '#38bdf8';
+      const op = l.opacity ?? 1;
+      try {
+        const lyr = L.geoJSON(l.geojson, {
+          style: { color, weight: 2, opacity: op, fillColor: color, fillOpacity: l.fillMode === 'outline' ? 0 : op * 0.35 },
+          pointToLayer: (_f, ll) => L.circleMarker(ll, { radius: l.size ?? 6, fillColor: color, color, weight: 1.5, opacity: op, fillOpacity: op * 0.8 }),
+        });
+        if (l.visible !== false) fg.addLayer(lyr);
+        restored.push({ ...l, leafletLayer: lyr });
+      } catch { restored.push(l); }
+    });
+    if (restored.length > 0) setCustomLayers(restored);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [featureGroupRef]);
 
   // Official layers
   const [officialVisible, setOfficialVisible] = useState<Record<string, boolean>>({ forest: true, communes: false, provinces: false, region: false });
@@ -1529,6 +1769,7 @@ function CouchesTab({
 
   const deleteLayer = (id: string) => {
     setCustomLayers((prev: any) => {
+      onPushHistory?.(prev); // push history before deletion
       const layer = prev.find((l: any) => l.id === id);
       if (layer?.leafletLayer) {
         if (featureGroupRef.current?.hasLayer(layer.leafletLayer)) featureGroupRef.current.removeLayer(layer.leafletLayer);
@@ -1648,6 +1889,11 @@ function CouchesTab({
         />
       )}
 
+      {/* Stats panel */}
+      {showStats && (
+        <StatsPanel customLayers={customLayers} chevauchementResults={chevauchementResults} />
+      )}
+
       {/* Official layers */}
       <div className="mb-4">
         <h3 className="text-[10px] font-bold text-(--text-muted) uppercase tracking-wider mb-2.5 px-1 flex items-center gap-1.5">
@@ -1724,12 +1970,40 @@ function CouchesTab({
 
       {/* Import header */}
       <div className="flex justify-between items-center px-1 pb-3 border-b border-(--border-color)">
-        <h2 className="text-(--brand) flex items-center gap-2 font-semibold text-sm tracking-wide">
-          Couches importées
-          <span className="text-[10px] bg-(--bg-surface) px-2 py-0.5 rounded-full text-(--text-main) font-mono border border-(--border-color)">
-            {customLayers.length}
-          </span>
-        </h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-(--brand) flex items-center gap-2 font-semibold text-sm tracking-wide">
+            Couches importées
+            <span className="text-[10px] bg-(--bg-surface) px-2 py-0.5 rounded-full text-(--text-main) font-mono border border-(--border-color)">
+              {customLayers.length}
+            </span>
+          </h2>
+          <button
+            onClick={() => setShowStats(v => !v)}
+            title="Statistiques"
+            className={cn("p-1.5 rounded-lg border transition-all text-[9px] font-bold", showStats ? "bg-(--brand)/15 border-(--brand)/40 text-(--brand)" : "border-(--border-color) text-(--text-muted) hover:text-(--brand) hover:border-(--brand)/40")}
+          >
+            <BarChart3 className="w-3.5 h-3.5" />
+          </button>
+          {customLayers.length > 0 && (
+            <button
+              onClick={() => {
+                if (!confirm('Effacer toutes les couches importées et la session sauvegardée ?')) return;
+                customLayers.forEach((l: any) => {
+                  if (l.leafletLayer) {
+                    if (featureGroupRef.current?.hasLayer(l.leafletLayer)) featureGroupRef.current?.removeLayer(l.leafletLayer);
+                    else l.leafletLayer.remove?.();
+                  }
+                });
+                setCustomLayers([]);
+                clearSession();
+              }}
+              title="Effacer la session"
+              className="p-1.5 rounded-lg border border-(--border-color) text-(--text-muted) hover:text-red-500 hover:border-red-500/40 transition-all"
+            >
+              <RefreshCw className="w-3 h-3" />
+            </button>
+          )}
+        </div>
         <button onClick={() => fileInputRef.current?.click()}
           className="text-[11px] flex items-center gap-1.5 bg-(--brand) hover:opacity-90 text-white px-3 py-1.5 rounded-lg font-semibold shadow-sm">
           <Upload size={14} /> Importer
@@ -1945,6 +2219,78 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// StatsPanel — Statistics dashboard for all layers
+// ─────────────────────────────────────────────────────────────────────────────
+function StatsPanel({ customLayers, chevauchementResults }: { customLayers: any[]; chevauchementResults: Record<string, ChevauchementResult> }) {
+  const polyLayers = customLayers.filter((l: any) => l.geojson && (JSON.stringify(l.geojson).includes('"Polygon"') || JSON.stringify(l.geojson).includes('"MultiPolygon"')));
+  const totalArea = polyLayers.reduce((sum: number, l: any) => { try { return sum + turf.area(l.geojson) / 10000; } catch { return sum; } }, 0);
+  const allResults = Object.entries(chevauchementResults);
+  const avgPct = allResults.length > 0 ? allResults.reduce((s, [, r]) => s + (r.totalPercentage || 0), 0) / allResults.length : 0;
+  const inside = allResults.filter(([, r]) => r.globalPosition === 'داخل الملك الغابوي').length;
+  const partial = allResults.filter(([, r]) => r.globalPosition === 'جزئيا داخل الملك الغابوي').length;
+  const outside = allResults.filter(([, r]) => r.globalPosition === 'خارج الملك الغابوي').length;
+
+  return (
+    <div className="bg-(--bg-main) rounded-xl border border-(--brand)/30 p-3 space-y-3 mb-2 animate-in fade-in slide-in-from-top-2 duration-200">
+      <div className="flex items-center gap-1.5">
+        <BarChart3 className="w-3.5 h-3.5 text-(--brand)" />
+        <span className="text-[10px] font-bold uppercase tracking-wider text-(--brand)">Tableau de bord</span>
+        <span className="text-[8px] text-(--text-muted) ml-auto font-mono">إحصائيات</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {[
+          { label: 'Couches totales', value: String(customLayers.length), color: 'var(--brand)' },
+          { label: 'Surface totale', value: totalArea > 0 ? `${totalArea.toFixed(2)} ha` : '—', color: '#22c55e' },
+          { label: 'Analysées', value: String(allResults.length), color: '#3b82f6' },
+          { label: 'Chevauch. moy.', value: allResults.length > 0 ? `${avgPct.toFixed(1)}%` : '—', color: avgPct > 5 ? '#ef4444' : '#22c55e' },
+        ].map(({ label, value, color }) => (
+          <div key={label} className="bg-(--bg-surface) rounded-lg border border-(--border-color) px-2.5 py-2 flex flex-col gap-0.5">
+            <span className="text-[8px] uppercase tracking-wider text-(--text-muted) font-medium">{label}</span>
+            <span className="text-[15px] font-black font-mono leading-tight" style={{ color }}>{value}</span>
+          </div>
+        ))}
+      </div>
+      {allResults.length > 0 && (
+        <div className="space-y-1.5">
+          <span className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted)">Statuts chevauchement</span>
+          <div className="flex gap-2">
+            {[
+              { label: 'Inclus', count: inside, color: '#ef4444' },
+              { label: 'Partiel', count: partial, color: '#f97316' },
+              { label: 'Hors', count: outside, color: '#22c55e' },
+            ].map(({ label, count, color }) => (
+              <div key={label} className="flex-1 rounded-lg border py-1.5 text-center" style={{ borderColor: color + '44', backgroundColor: color + '12' }}>
+                <p className="text-[13px] font-black" style={{ color }}>{count}</p>
+                <p className="text-[8px] font-bold uppercase" style={{ color }}>{label}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <button
+        onClick={() => {
+          const lines = [
+            `DOMAINE FORESTIER — Statistiques — ${new Date().toLocaleDateString('fr-MA')}`,
+            `Couches totales: ${customLayers.length}`,
+            `Surface totale polygones: ${totalArea.toFixed(3)} ha`,
+            `Couches analysées: ${allResults.length}`,
+            `Chevauchement moyen: ${avgPct.toFixed(2)}%`,
+            `Incluses: ${inside} | Partielles: ${partial} | Hors domaine: ${outside}`,
+          ];
+          const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+          const url = URL.createObjectURL(blob);
+          Object.assign(document.createElement('a'), { href: url, download: 'stats_domaine_forestier.txt' }).click();
+          URL.revokeObjectURL(url);
+        }}
+        className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[10px] font-bold text-(--text-muted) hover:text-(--brand) border border-(--border-color) hover:border-(--brand)/40 rounded-lg transition-all"
+      >
+        <Printer className="w-3 h-3" /> Exporter les statistiques
+      </button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // LayerItem — REDESIGNED: professional minimalist with per-layer chevauchement
 // ─────────────────────────────────────────────────────────────────────────────
 const PRESET_COLORS = ["#22c55e","#38bdf8","#eab308","#ef4444","#a855f7","#ec4899","#f97316","#06b6d4","#84cc16","#f43f5e"];
@@ -2031,21 +2377,31 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
         {/* Name + type */}
         <div className="flex-1 min-w-0">
           {isRenaming ? (
-            <input
-              ref={renameInputRef}
-              type="text"
-              value={renameVal}
-              onChange={e => setRenameVal(e.target.value)}
-              onBlur={commitRename}
-              onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setIsRenaming(false); }}
-              className="w-full text-[12px] font-semibold bg-(--bg-surface) border border-(--brand) rounded px-1.5 py-0.5 outline-none text-(--text-main)"
-              autoFocus
-            />
+            <div className="flex items-center gap-1">
+              <PenLine className="w-3 h-3 text-(--brand) shrink-0" />
+              <input
+                ref={renameInputRef}
+                type="text"
+                value={renameVal}
+                onChange={e => setRenameVal(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+                  if (e.key === 'Escape') setIsRenaming(false);
+                }}
+                className="flex-1 text-[12px] font-semibold bg-(--bg-surface) border-2 border-(--brand) rounded-lg px-2 py-0.5 outline-none text-(--text-main) shadow-sm"
+                autoFocus
+              />
+              <button onMouseDown={e => { e.preventDefault(); commitRename(); }}
+                className="p-0.5 text-emerald-500 hover:text-emerald-400 shrink-0"><CheckCircle className="w-3.5 h-3.5" /></button>
+              <button onMouseDown={e => { e.preventDefault(); setIsRenaming(false); }}
+                className="p-0.5 text-red-400 hover:text-red-500 shrink-0"><X className="w-3.5 h-3.5" /></button>
+            </div>
           ) : (
             <p
-              className={cn("text-[12px] font-semibold leading-tight truncate cursor-text", layer.visible ? "text-(--text-main)" : "text-(--text-muted)")}
+              className={cn("text-[12px] font-semibold leading-tight truncate", layer.visible ? "text-(--text-main)" : "text-(--text-muted)")}
               onDoubleClick={() => { if (onRename) { setRenameVal(layer.name); setIsRenaming(true); } }}
-              title={onRename ? "Double-clic pour renommer" : layer.name}
+              title={onRename ? `Double-clic pour renommer: ${layer.name}` : layer.name}
             >
               {layer.name}
             </p>
@@ -2062,11 +2418,14 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
             className="p-1.5 text-(--text-muted) hover:text-(--text-main) hover:bg-(--bg-surface) rounded-md opacity-0 group-hover/layer:opacity-100 transition-all">
             <Maximize className="w-3.5 h-3.5" />
           </button>
-          {/* Rename — hover reveal */}
-          {onRename && (
-            <button onClick={() => { setRenameVal(layer.name); setIsRenaming(true); }} title="Renommer la couche"
-              className="p-1.5 text-(--text-muted) hover:text-(--text-main) hover:bg-(--bg-surface) rounded-md opacity-0 group-hover/layer:opacity-100 transition-all">
-              <FileText className="w-3.5 h-3.5" />
+          {/* Rename — always visible pencil icon */}
+          {onRename && !isRenaming && (
+            <button
+              onClick={() => { setRenameVal(layer.name); setIsRenaming(true); setTimeout(() => renameInputRef.current?.select(), 50); }}
+              title="Renommer la couche"
+              className="p-1.5 text-(--text-muted) hover:text-(--brand) hover:bg-(--brand)/10 rounded-md transition-all opacity-60 hover:opacity-100 group-hover/layer:opacity-100"
+            >
+              <PenLine className="w-3.5 h-3.5" />
             </button>
           )}
           {/* Visibility */}
