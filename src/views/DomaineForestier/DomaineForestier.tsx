@@ -977,9 +977,9 @@ function ReportCard({ title, subtitle, desc, icon: Icon, color, onClick, badge }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RechercheTab — redesigned: Lambert first, polygon builder, professional UI
+// RechercheTab — pro minimalist: flat rows, inline poly toggle per coord block
 // ─────────────────────────────────────────────────────────────────────────────
-interface PolyPoint { id: string; x: string; y: string; mode: 'lambert' | 'wgs84'; }
+interface PolyPoint { id: string; x: string; y: string; mode: 'lambert' | 'wgs84'; label?: string; }
 
 function RechercheTab({
   calcLngLatFromLambert, setCustomLayers, featureGroupRef, onLayerImported, setActiveTab, setIsPanelCollapsed,
@@ -991,54 +991,57 @@ function RechercheTab({
   setActiveTab?: (tab: any) => void;
   setIsPanelCollapsed?: (v: boolean) => void;
 }) {
-  const [lngVal, setLngVal] = useState('');
-  const [latVal, setLatVal] = useState('');
-  const [lambertX, setLambertX] = useState('');
-  const [lambertY, setLambertY] = useState('');
+  const [lngVal, setLngVal]         = useState('');
+  const [latVal, setLatVal]         = useState('');
+  const [lambertX, setLambertX]     = useState('');
+  const [lambertY, setLambertY]     = useState('');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Polygon builder state
+  // Per-row poly toggle
+  const [lambertPoly, setLambertPoly] = useState(false);
+  const [wgsPoly,     setWgsPoly]     = useState(false);
+
+  // Shared polygon builder
   const [polyPoints, setPolyPoints] = useState<PolyPoint[]>([]);
-  const [polyMode, setPolyMode] = useState<'lambert' | 'wgs84'>('lambert');
-  const [polyPtX, setPolyPtX] = useState('');
-  const [polyPtY, setPolyPtY] = useState('');
-  const [polyName, setPolyName] = useState('Polygone personnalisé');
-  const [polyMsg, setPolyMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [showPolyBuilder, setShowPolyBuilder] = useState(false);
+  const [polyName,   setPolyName]   = useState('Polygone personnalisé');
+  const [polyMsg,    setPolyMsg]    = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const inp = "w-full bg-(--bg-main) border border-(--border-color) rounded-lg py-2 px-3 text-sm font-mono focus:outline-none focus:border-(--brand) focus:ring-1 focus:ring-(--brand)/30 shadow-sm transition-all text-(--text-main) placeholder-zinc-400";
+  // Shared styles
+  const inp = "flex-1 min-w-0 bg-(--bg-main) border border-(--border-color) rounded-md py-1.5 px-2.5 text-[12px] font-mono focus:outline-none focus:border-(--brand) transition-colors text-(--text-main) placeholder:text-(--text-muted)";
+  const rowLabel = "text-[9px] font-bold uppercase tracking-wider text-(--text-muted) select-none";
 
-  const handleCenterWGS = () => {
-    const lng = parseFloat(lngVal), lat = parseFloat(latVal);
-    if (!isNaN(lng) && !isNaN(lat)) window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat, lon: lng, display_name: `Point WGS84 (${lng}, ${lat})` } }));
-  };
+  // ── Navigation handlers ───────────────────────────────────────────────────
   const handleCenterLambert = () => {
     const x = parseFloat(lambertX), y = parseFloat(lambertY);
     if (!isNaN(x) && !isNaN(y)) {
       const c = calcLngLatFromLambert(x, y);
-      window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat: c.lat, lon: c.lng, display_name: `Lambert Nord (X:${x}, Y:${y})` } }));
+      window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat: c.lat, lon: c.lng, display_name: `Lambert (${x}, ${y})` } }));
     }
   };
+  const handleCenterWGS = () => {
+    const lng = parseFloat(lngVal), lat = parseFloat(latVal);
+    if (!isNaN(lng) && !isNaN(lat))
+      window.dispatchEvent(new CustomEvent('mapSearch', { detail: { lat, lon: lng, display_name: `WGS84 (${lng}, ${lat})` } }));
+  };
 
-  // Add a polygon point
-  const addPolyPoint = () => {
-    const x = parseFloat(polyPtX), y = parseFloat(polyPtY);
-    if (isNaN(x) || isNaN(y)) { setPolyMsg({ type: 'error', text: 'Coordonnées invalides.' }); return; }
-    const id = `pt-${Date.now()}-${Math.random().toString(36).slice(2,5)}`;
-    setPolyPoints(prev => [...prev, { id, x: polyPtX, y: polyPtY, mode: polyMode }]);
-    setPolyPtX(''); setPolyPtY('');
+  // ── Polygon helpers ───────────────────────────────────────────────────────
+  const addLambertPoint = () => {
+    const x = parseFloat(lambertX), y = parseFloat(lambertY);
+    if (isNaN(x) || isNaN(y)) return;
+    setPolyPoints(prev => [...prev, { id: `pt-${Date.now()}`, x: lambertX, y: lambertY, mode: 'lambert', label: `L ${x.toFixed(0)}, ${y.toFixed(0)}` }]);
     setPolyMsg(null);
   };
-  const removePolyPoint = (id: string) => setPolyPoints(prev => prev.filter(p => p.id !== id));
+  const addWgsPoint = () => {
+    const lng = parseFloat(lngVal), lat = parseFloat(latVal);
+    if (isNaN(lng) || isNaN(lat)) return;
+    setPolyPoints(prev => [...prev, { id: `pt-${Date.now()}`, x: lngVal, y: latVal, mode: 'wgs84', label: `W ${lng.toFixed(4)}, ${lat.toFixed(4)}` }]);
+    setPolyMsg(null);
+  };
+  const removePoint = (id: string) => setPolyPoints(prev => prev.filter(p => p.id !== id));
 
-  // Convert a PolyPoint to [lng, lat]
   const pointToWGS84 = (pt: PolyPoint): [number, number] => {
     const x = parseFloat(pt.x), y = parseFloat(pt.y);
-    if (pt.mode === 'lambert') {
-      const c = calcLngLatFromLambert(x, y);
-      return [c.lng, c.lat];
-    }
-    // WGS84: x=Longitude, y=Latitude
+    if (pt.mode === 'lambert') { const c = calcLngLatFromLambert(x, y); return [c.lng, c.lat]; }
     return [x, y];
   };
 
@@ -1046,277 +1049,255 @@ function RechercheTab({
     if (polyPoints.length < 3) { setPolyMsg({ type: 'error', text: 'Minimum 3 points requis.' }); return; }
     try {
       const coords = polyPoints.map(pointToWGS84);
-      // Close polygon
-      if (coords[0][0] !== coords[coords.length - 1][0] || coords[0][1] !== coords[coords.length - 1][1]) {
-        coords.push([...coords[0]]);
-      }
+      if (coords[0][0] !== coords[coords.length-1][0] || coords[0][1] !== coords[coords.length-1][1]) coords.push([...coords[0]]);
       const geojson = turf.featureCollection([turf.polygon([coords])]);
       const id = `poly-${Date.now()}`;
       const color = '#f59e0b';
-      const leafletLayer = L.geoJSON(geojson, {
-        style: { color, weight: 2, opacity: 0.9, fillColor: color, fillOpacity: 0.22 },
-      });
+      const leafletLayer = L.geoJSON(geojson, { style: { color, weight: 2, opacity: 0.9, fillColor: color, fillOpacity: 0.22 } });
       if (featureGroupRef?.current) {
         featureGroupRef.current.addLayer(leafletLayer);
-        try {
-          const bounds = leafletLayer.getBounds();
-          if (bounds?.isValid()) window.dispatchEvent(new CustomEvent('flyToBounds', { detail: bounds }));
-        } catch {}
+        try { const b = leafletLayer.getBounds(); if (b?.isValid()) window.dispatchEvent(new CustomEvent('flyToBounds', { detail: b })); } catch {}
       }
-      setCustomLayers((prev: any) => [...prev, {
-        id, name: polyName || 'Polygone personnalisé', type: 'imported', visible: true, color, opacity: 0.9, geojson, leafletLayer,
-      }]);
-      onLayerImported?.(id, polyName || 'Polygone personnalisé', geojson);
-      setPolyMsg({ type: 'success', text: `✅ Polygone «${polyName}» ajouté aux couches.` });
-      setPolyPoints([]);
-      setPolyName('Polygone personnalisé');
-      // Switch to Couches tab
-      if (setActiveTab) { setTimeout(() => { setActiveTab('couches'); setIsPanelCollapsed?.(false); }, 700); }
-    } catch (err) {
-      setPolyMsg({ type: 'error', text: 'Erreur lors de la création du polygone.' });
-    }
+      setCustomLayers((prev: any) => [...prev, { id, name: polyName || 'Polygone', type: 'imported', visible: true, color, opacity: 0.9, geojson, leafletLayer }]);
+      onLayerImported?.(id, polyName || 'Polygone', geojson);
+      setPolyMsg({ type: 'success', text: `Couche «${polyName}» créée.` });
+      setPolyPoints([]); setPolyName('Polygone personnalisé');
+      if (setActiveTab) setTimeout(() => { setActiveTab('couches'); setIsPanelCollapsed?.(false); }, 600);
+    } catch { setPolyMsg({ type: 'error', text: 'Erreur de création.' }); }
   };
 
-  const sectionCard = "rounded-xl border border-(--border-color) bg-(--bg-surface) overflow-hidden mb-4";
-  const sectionHeader = "flex items-center gap-2.5 px-4 py-3 bg-(--bg-main) border-b border-(--border-color)";
-  const goBtn = "px-4 py-2 bg-(--brand) hover:opacity-90 text-white font-bold text-xs rounded-lg shadow-sm transition-all active:scale-95 shrink-0";
-  const goBtn2 = "px-4 py-2 bg-(--bg-surface) border border-(--border-color) hover:bg-(--bg-main) text-(--text-main) font-bold text-xs rounded-lg shadow-sm transition-all active:scale-95 shrink-0";
+  const hasPoints = polyPoints.length > 0;
+  const canBuild  = polyPoints.length >= 3;
 
   return (
-    <div className="space-y-4 pb-4">
-      {/* ── Section 1: Recherche Interne (forêts / communes / couches) ─── */}
-      <div className={sectionCard}>
-        <div className={sectionHeader}>
-          <div className="w-6 h-6 rounded-md bg-(--brand)/15 flex items-center justify-center shrink-0">
-            <Search className="w-3.5 h-3.5 text-(--brand)" />
+    <div className="space-y-0 pb-4">
+
+      {/* ── Recherche interne ────────────────────────────────────────────── */}
+      <div className="pb-4">
+        <p className={rowLabel}>Recherche interne · Forêts / Communes</p>
+        <div className="flex gap-2 mt-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-(--text-muted) pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Forêt Jbel Dersa, Commune Martil…"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && searchQuery.trim()) window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() })); }}
+              className={`${inp} pl-8`}
+            />
           </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-[11px] font-black uppercase tracking-wider text-(--text-main)">Recherche interne</p>
-            <p className="text-[9px] text-(--text-muted) mt-0.5">Forêts · Communes · Cantons · Couches</p>
-          </div>
-        </div>
-        <div className="p-3">
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-(--text-muted)" />
-              <input
-                type="text"
-                placeholder="Ex: Forêt Jbel Dersa, Commune Martil…"
-                className={`${inp} pl-9`}
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && searchQuery.trim()) window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() })); }}
-              />
-            </div>
-            <button
-              onClick={() => { if (searchQuery.trim()) window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() })); }}
-              className={goBtn}
-            >GO</button>
-          </div>
-          <p className="text-[9px] text-(--text-muted) mt-2 px-1">Recherche dans les données locales (Mlak Ghabi, communes, provinces…)</p>
+          <button
+            onClick={() => { if (searchQuery.trim()) window.dispatchEvent(new CustomEvent('mapSearchString', { detail: searchQuery.trim() })); }}
+            className="px-3.5 py-1.5 bg-(--brand) hover:opacity-90 text-white font-bold text-[11px] rounded-md shadow-sm transition-all active:scale-95 shrink-0"
+          >GO</button>
         </div>
       </div>
 
-      {/* ── Section 2: Coordonnées Lambert Nord ── */}
-      <div className={sectionCard}>
-        <div className={sectionHeader}>
-          <div className="w-6 h-6 rounded-md bg-orange-500/15 flex items-center justify-center shrink-0">
-            <MapPin className="w-3.5 h-3.5 text-orange-500" />
+      <div className="h-px bg-(--border-color)" />
+
+      {/* ── Lambert Nord ─────────────────────────────────────────────────── */}
+      <div className="py-4 space-y-2.5">
+        {/* Row header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <span className={rowLabel}>Lambert Nord</span>
+            <span className="text-[8px] text-(--text-muted) bg-(--bg-main) border border-(--border-color) rounded px-1 py-px font-mono">EPSG:26191</span>
           </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-[11px] font-black uppercase tracking-wider text-(--text-main)">Coordonnées Lambert Nord</p>
-            <p className="text-[9px] text-(--text-muted) mt-0.5">EPSG:26191 — Système national Maroc</p>
-          </div>
-        </div>
-        <div className="p-3 space-y-2">
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted) block mb-1">X (Est)</label>
-              <input
-                type="number" step="any" value={lambertX}
-                onChange={e => setLambertX(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleCenterLambert(); }}
-                placeholder="450555"
-                className={inp}
-              />
-            </div>
-            <div>
-              <label className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted) block mb-1">Y (Nord)</label>
-              <input
-                type="number" step="any" value={lambertY}
-                onChange={e => setLambertY(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleCenterLambert(); }}
-                placeholder="455500"
-                className={inp}
-              />
-            </div>
-          </div>
-          <button onClick={handleCenterLambert} className={`w-full ${goBtn} py-2.5 text-[11px]`}>
-            Centrer sur ce point
+          {/* Polygon toggle */}
+          <button
+            onClick={() => setLambertPoly(v => !v)}
+            title={lambertPoly ? "Désactiver ajout au polygone" : "Activer ajout au polygone"}
+            className={cn(
+              "flex items-center gap-1 text-[9px] font-bold px-2 py-1 rounded-md border transition-all",
+              lambertPoly
+                ? "bg-amber-500/15 border-amber-500/40 text-amber-600"
+                : "border-(--border-color) text-(--text-muted) hover:text-(--text-main) hover:border-(--brand)/40"
+            )}
+          >
+            <Zap className="w-2.5 h-2.5" />
+            Poly
           </button>
         </div>
-      </div>
 
-      {/* ── Section 3: Coordonnées WGS84 ── */}
-      <div className={sectionCard}>
-        <div className={sectionHeader}>
-          <div className="w-6 h-6 rounded-md bg-blue-500/15 flex items-center justify-center shrink-0">
-            <MapPin className="w-3.5 h-3.5 text-blue-500" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-[11px] font-black uppercase tracking-wider text-(--text-main)">Coordonnées WGS84</p>
-            <p className="text-[9px] text-(--text-muted) mt-0.5">EPSG:4326 — Latitude / Longitude décimales</p>
-          </div>
-        </div>
-        <div className="p-3 space-y-2">
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted) block mb-1">Longitude</label>
-              <input
-                type="number" step="any" value={lngVal}
-                onChange={e => setLngVal(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleCenterWGS(); }}
-                placeholder="-5.3290"
-                className={inp}
-              />
-            </div>
-            <div>
-              <label className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted) block mb-1">Latitude</label>
-              <input
-                type="number" step="any" value={latVal}
-                onChange={e => setLatVal(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleCenterWGS(); }}
-                placeholder="35.6248"
-                className={inp}
-              />
-            </div>
-          </div>
-          <button onClick={handleCenterWGS} className={`w-full ${goBtn2} py-2.5 text-[11px]`}>
-            Centrer sur ce point
+        {/* Inputs */}
+        <div className="flex gap-2">
+          <input type="number" step="any" value={lambertX} onChange={e => setLambertX(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleCenterLambert(); }}
+            placeholder="X — Est" className={inp} />
+          <input type="number" step="any" value={lambertY} onChange={e => setLambertY(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleCenterLambert(); }}
+            placeholder="Y — Nord" className={inp} />
+          <button onClick={handleCenterLambert}
+            className="px-3 py-1.5 bg-(--bg-surface) border border-(--border-color) hover:bg-(--bg-main) text-(--text-main) font-bold text-[11px] rounded-md shadow-sm transition-all active:scale-95 shrink-0">
+            GO
           </button>
         </div>
-      </div>
 
-      {/* ── Section 4: Constructeur de Polygone ── */}
-      <div className={sectionCard}>
-        <button
-          className={`${sectionHeader} w-full text-left hover:bg-(--bg-surface) transition-colors`}
-          onClick={() => setShowPolyBuilder(v => !v)}
-        >
-          <div className="w-6 h-6 rounded-md bg-amber-500/15 flex items-center justify-center shrink-0">
-            <Zap className="w-3.5 h-3.5 text-amber-500" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-[11px] font-black uppercase tracking-wider text-(--text-main)">Constructeur de Polygone</p>
-            <p className="text-[9px] text-(--text-muted) mt-0.5">Saisir des points → créer une couche polygone</p>
-          </div>
-          <ChevronDown className={`w-4 h-4 text-(--text-muted) transition-transform shrink-0 ${showPolyBuilder ? 'rotate-180' : ''}`} />
-        </button>
-
-        {showPolyBuilder && (
-          <div className="p-3 space-y-3">
-            {/* Nom de la couche */}
-            <div>
-              <label className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted) block mb-1">Nom de la couche</label>
-              <input
-                type="text" value={polyName} onChange={e => setPolyName(e.target.value)}
-                placeholder="Polygone personnalisé"
-                className={inp}
-              />
-            </div>
-
-            {/* Système de coordonnées */}
-            <div>
-              <label className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted) block mb-1">Système de coordonnées</label>
-              <div className="flex gap-1 bg-(--bg-main) p-0.5 rounded-lg border border-(--border-color)">
-                {(['lambert', 'wgs84'] as const).map(m => (
-                  <button key={m} onClick={() => setPolyMode(m)}
-                    className={cn("flex-1 py-1.5 text-[10px] font-bold rounded transition-colors",
-                      polyMode === m ? "bg-(--brand) text-white shadow-sm" : "text-(--text-muted) hover:text-(--text-main)")}>
-                    {m === 'lambert' ? 'Lambert Nord' : 'WGS84'}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Add point inputs */}
-            <div className="bg-(--bg-main) rounded-lg border border-(--border-color) p-2.5 space-y-2">
-              <p className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted)">Ajouter un point</p>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="number" step="any" value={polyPtX}
-                  onChange={e => setPolyPtX(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') addPolyPoint(); }}
-                  placeholder={polyMode === 'lambert' ? 'X (Est)' : 'Longitude'}
-                  className={inp}
-                />
-                <input
-                  type="number" step="any" value={polyPtY}
-                  onChange={e => setPolyPtY(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') addPolyPoint(); }}
-                  placeholder={polyMode === 'lambert' ? 'Y (Nord)' : 'Latitude'}
-                  className={inp}
-                />
-              </div>
-              <button onClick={addPolyPoint} className={`w-full ${goBtn2} py-2`}>
-                + Ajouter le point
-              </button>
-            </div>
-
-            {/* Points list */}
-            {polyPoints.length > 0 && (
-              <div className="space-y-1">
-                <p className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted)">
-                  Points saisis ({polyPoints.length})
-                </p>
-                <div className="space-y-1 max-h-36 overflow-y-auto">
-                  {polyPoints.map((pt, i) => (
-                    <div key={pt.id} className="flex items-center gap-2 bg-(--bg-main) rounded-lg px-2.5 py-1.5 border border-(--border-color)">
-                      <span className="w-4 h-4 rounded-full bg-(--brand)/20 text-(--brand) text-[9px] font-black flex items-center justify-center shrink-0">{i + 1}</span>
-                      <span className="text-[10px] font-mono text-(--text-main) flex-1 truncate">
-                        {pt.mode === 'lambert' ? 'L' : 'W'}· {parseFloat(pt.x).toFixed(1)}, {parseFloat(pt.y).toFixed(1)}
-                      </span>
-                      <button onClick={() => removePolyPoint(pt.id)} className="text-red-400 hover:text-red-600 p-0.5">
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Feedback message */}
-            {polyMsg && (
-              <div className={`text-[10px] font-medium px-3 py-2 rounded-lg border ${polyMsg.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600' : 'bg-red-500/10 border-red-500/30 text-red-500'}`}>
-                {polyMsg.text}
-              </div>
-            )}
-
-            {/* Create polygon button */}
+        {/* Poly add row — revealed when toggled */}
+        {lambertPoly && (
+          <div className="flex items-center gap-2 pl-0.5 pt-0.5 animate-in fade-in slide-in-from-top-1 duration-150">
+            <div className="w-px h-6 bg-amber-400/50 shrink-0" />
+            <p className="text-[10px] text-(--text-muted) flex-1">
+              {lambertX && lambertY
+                ? <span className="font-mono text-amber-600">{parseFloat(lambertX).toFixed(0)}, {parseFloat(lambertY).toFixed(0)}</span>
+                : 'Entrez X et Y ci-dessus'}
+            </p>
             <button
-              onClick={buildPolygon}
-              disabled={polyPoints.length < 3}
+              onClick={() => { addLambertPoint(); handleCenterLambert(); }}
+              disabled={!lambertX || !lambertY}
               className={cn(
-                "w-full py-2.5 rounded-lg font-bold text-[11px] flex items-center justify-center gap-2 transition-all",
-                polyPoints.length >= 3
-                  ? "bg-amber-500 hover:bg-amber-600 text-white shadow-sm active:scale-95"
-                  : "bg-(--bg-main) text-(--text-muted) border border-(--border-color) cursor-not-allowed"
+                "flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-md border transition-all",
+                lambertX && lambertY
+                  ? "bg-amber-500/15 border-amber-500/40 text-amber-600 hover:bg-amber-500/25 active:scale-95"
+                  : "border-(--border-color) text-(--text-muted) cursor-not-allowed opacity-50"
               )}
             >
-              <Zap className="w-3.5 h-3.5" />
-              Créer le polygone {polyPoints.length >= 3 ? `(${polyPoints.length} pts)` : `(${polyPoints.length}/3 min)`}
+              <Plus className="w-3 h-3" /> Ajouter
             </button>
           </div>
         )}
       </div>
 
+      <div className="h-px bg-(--border-color)" />
+
+      {/* ── WGS84 ────────────────────────────────────────────────────────── */}
+      <div className="py-4 space-y-2.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <span className={rowLabel}>WGS84</span>
+            <span className="text-[8px] text-(--text-muted) bg-(--bg-main) border border-(--border-color) rounded px-1 py-px font-mono">EPSG:4326</span>
+          </div>
+          <button
+            onClick={() => setWgsPoly(v => !v)}
+            title={wgsPoly ? "Désactiver ajout au polygone" : "Activer ajout au polygone"}
+            className={cn(
+              "flex items-center gap-1 text-[9px] font-bold px-2 py-1 rounded-md border transition-all",
+              wgsPoly
+                ? "bg-amber-500/15 border-amber-500/40 text-amber-600"
+                : "border-(--border-color) text-(--text-muted) hover:text-(--text-main) hover:border-(--brand)/40"
+            )}
+          >
+            <Zap className="w-2.5 h-2.5" />
+            Poly
+          </button>
+        </div>
+
+        <div className="flex gap-2">
+          <input type="number" step="any" value={lngVal} onChange={e => setLngVal(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleCenterWGS(); }}
+            placeholder="Longitude" className={inp} />
+          <input type="number" step="any" value={latVal} onChange={e => setLatVal(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleCenterWGS(); }}
+            placeholder="Latitude" className={inp} />
+          <button onClick={handleCenterWGS}
+            className="px-3 py-1.5 bg-(--bg-surface) border border-(--border-color) hover:bg-(--bg-main) text-(--text-main) font-bold text-[11px] rounded-md shadow-sm transition-all active:scale-95 shrink-0">
+            GO
+          </button>
+        </div>
+
+        {wgsPoly && (
+          <div className="flex items-center gap-2 pl-0.5 pt-0.5 animate-in fade-in slide-in-from-top-1 duration-150">
+            <div className="w-px h-6 bg-amber-400/50 shrink-0" />
+            <p className="text-[10px] text-(--text-muted) flex-1">
+              {lngVal && latVal
+                ? <span className="font-mono text-amber-600">{parseFloat(lngVal).toFixed(4)}, {parseFloat(latVal).toFixed(4)}</span>
+                : 'Entrez Longitude et Latitude ci-dessus'}
+            </p>
+            <button
+              onClick={() => { addWgsPoint(); handleCenterWGS(); }}
+              disabled={!lngVal || !latVal}
+              className={cn(
+                "flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-md border transition-all",
+                lngVal && latVal
+                  ? "bg-amber-500/15 border-amber-500/40 text-amber-600 hover:bg-amber-500/25 active:scale-95"
+                  : "border-(--border-color) text-(--text-muted) cursor-not-allowed opacity-50"
+              )}
+            >
+              <Plus className="w-3 h-3" /> Ajouter
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ── Polygon builder panel — appears only when points exist ────────── */}
+      {hasPoints && (
+        <>
+          <div className="h-px bg-(--border-color)" />
+          <div className="py-4 space-y-3">
+            {/* Header row */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Zap className="w-3 h-3 text-amber-500" />
+                <span className={`${rowLabel} text-amber-600`}>Polygone · {polyPoints.length} point{polyPoints.length > 1 ? 's' : ''}</span>
+              </div>
+              <button onClick={() => { setPolyPoints([]); setPolyMsg(null); }} className="text-[9px] text-(--text-muted) hover:text-red-500 transition-colors">
+                Effacer tout
+              </button>
+            </div>
+
+            {/* Layer name */}
+            <input
+              type="text" value={polyName} onChange={e => setPolyName(e.target.value)}
+              placeholder="Nom de la couche…"
+              className={`${inp} w-full`}
+            />
+
+            {/* Points list */}
+            <div className="space-y-1">
+              {polyPoints.map((pt, i) => (
+                <div key={pt.id} className="flex items-center gap-2 group">
+                  <span className="w-4 h-4 rounded-full bg-(--brand)/15 text-(--brand) text-[8px] font-black flex items-center justify-center shrink-0 font-mono">{i+1}</span>
+                  <span className="text-[10px] font-mono text-(--text-muted) flex-1 truncate">
+                    <span className={cn("font-bold mr-1", pt.mode === 'lambert' ? "text-orange-500" : "text-blue-500")}>
+                      {pt.mode === 'lambert' ? 'L' : 'W'}
+                    </span>
+                    {pt.label}
+                  </span>
+                  <button onClick={() => removePoint(pt.id)} className="opacity-0 group-hover:opacity-100 text-(--text-muted) hover:text-red-500 transition-all p-px">
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {/* Feedback */}
+            {polyMsg && (
+              <p className={`text-[10px] font-medium ${polyMsg.type === 'success' ? 'text-emerald-600' : 'text-red-500'}`}>
+                {polyMsg.text}
+              </p>
+            )}
+
+            {/* Create button */}
+            <button
+              onClick={buildPolygon}
+              disabled={!canBuild}
+              className={cn(
+                "w-full py-2 rounded-md font-bold text-[11px] flex items-center justify-center gap-1.5 transition-all border",
+                canBuild
+                  ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-500 shadow-sm active:scale-95"
+                  : "bg-(--bg-main) text-(--text-muted) border-(--border-color) cursor-not-allowed"
+              )}
+            >
+              <Zap className="w-3.5 h-3.5" />
+              {canBuild ? `Créer la couche (${polyPoints.length} pts)` : `Encore ${3 - polyPoints.length} pt${3 - polyPoints.length > 1 ? 's' : ''}`}
+            </button>
+          </div>
+        </>
+      )}
+
+      <div className="h-px bg-(--border-color)" />
+
       {/* ── Centrer sur l'étendue ── */}
-      <button
-        onClick={() => window.dispatchEvent(new CustomEvent('mapCenterExtent'))}
-        className="w-full py-3 bg-(--bg-main) hover:bg-(--bg-surface) border border-(--border-color) text-(--brand) font-bold rounded-xl text-sm flex items-center justify-center gap-2 shadow-sm transition-all"
-      >
-        <Target className="w-5 h-5" /> Centrer sur M'diq-Tétouan
-      </button>
+      <div className="pt-4">
+        <button
+          onClick={() => window.dispatchEvent(new CustomEvent('mapCenterExtent'))}
+          className="w-full py-2 bg-(--bg-main) hover:bg-(--bg-surface) border border-(--border-color) text-(--brand) font-bold rounded-md text-[11px] flex items-center justify-center gap-2 transition-all"
+        >
+          <Target className="w-3.5 h-3.5" /> Centrer sur M'diq-Tétouan
+        </button>
+      </div>
+
     </div>
   );
 }
