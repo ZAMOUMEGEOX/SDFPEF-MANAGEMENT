@@ -2257,10 +2257,11 @@ function performParsingPV(text: string): PVRecord {
     }
   }
 
-  // ── الإجراءات (من قسم "بيانات محضر الضابطة القضائية" — لائحة الإجراءات تُعرض افتراضياً) ──
+  // ── الإجراءات (من قسم تبويب "لائحة الإجراءات") ──
   const procedures: { date: string; action: string; decision: string }[] = [];
   const dateRe = /^(\d{2}\/\d{2}\/\d{4})/;
-  const procSec = clean.match(/════════ بيانات محضر الضابطة القضائية ════════([\s\S]*?)(════════|$)/);
+  const procSec = clean.match(/════════ لائحة الإجراءات ════════([\s\S]*?)(════════|$)/)
+    || clean.match(/════════ بيانات محضر الضابطة القضائية ════════([\s\S]*?)(════════|$)/);
   const procSource = procSec ? procSec[1] : clean;
   for (const line of procSource.split('\n').map(l => l.trim()).filter(Boolean)) {
     const parts = line.split('\t').map(s => s.trim()).filter(Boolean);
@@ -2336,7 +2337,8 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   const [extensionReady, setExtensionReady] = useState(false);
 
   // ── شريط بحث محاضر الضابطة القضائية (مخالفات غابوية) ────────
-  const [showPVPanel, setShowPVPanel] = useState(false);
+  const [showPVPanel, setShowPVPanel] = useState(true);
+  const [showDossierPanel, setShowDossierPanel] = useState(true);
   const [pvNumber, setPvNumber] = useState('');
   const [pvYear, setPvYear] = useState('');
   const [pvCourt, setPvCourt] = useState('تطوان');
