@@ -1,5 +1,5 @@
 // src/views/DomaineForestier/DomaineForestier.tsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   MapContainer, TileLayer, Polygon, useMapEvents, useMap,
   Tooltip, LayersControl, FeatureGroup, Popup, ScaleControl,
