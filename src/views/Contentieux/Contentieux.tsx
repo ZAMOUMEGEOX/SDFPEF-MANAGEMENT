@@ -2336,7 +2336,8 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   const [extensionReady, setExtensionReady] = useState(false);
 
   // ── شريط بحث محاضر الضابطة القضائية (مخالفات غابوية) ────────
-  const [showPVPanel, setShowPVPanel] = useState(false);
+  const [showPVPanel, setShowPVPanel] = useState(true);
+  const [showFilesPanel, setShowFilesPanel] = useState(false);
   const [pvNumber, setPvNumber] = useState('');
   const [pvYear, setPvYear] = useState('');
   const [pvCourt, setPvCourt] = useState('تطوان');
@@ -2705,315 +2706,442 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
       </div>
 
       <div className={`flex flex-col md:flex-row flex-1 ${expandedView ? 'overflow-y-auto md:overflow-hidden' : ''}`}>
-        {/* ── Left panel ── */}
-        <div className={`w-full md:w-[420px] ${expandedView ? 'md:max-h-[calc(100vh-72px)]' : 'md:max-h-[85vh]'} border-b md:border-b-0 md:border-l border-stone-200 bg-stone-50 p-5 flex flex-col gap-4 md:overflow-y-auto shrink-0`}>
-          {/* ── بوابة محاكم المدمجة ── */}
-          {(bridgeReady || extensionReady) ? (
-            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 space-y-3">
-              <div className="flex items-center gap-2 text-emerald-700 font-bold text-sm">
-                <span className="size-2 bg-emerald-500 rounded-full animate-pulse shrink-0" />
-                {extensionReady ? 'بوابة محاكم — عبر الإضافة 🧩' : 'بوابة محاكم — متصلة'}
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] text-stone-500 font-bold text-center">رقم</label>
-                  <input placeholder="رقم الملف" value={remoteNum}
-                    onChange={e => setRemoteNum(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
-                    className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] text-stone-500 font-bold text-center">رمز</label>
-                  <input placeholder="رمز الملف" value={remoteMark}
-                    onChange={e => setRemoteMark(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
-                    className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
-                </div>
-                <div className="flex flex-col gap-1 relative" ref={yearMenuRef}>
-                  <label className="text-[10px] text-stone-500 font-bold text-center">سنة</label>
-                  <div className="flex items-stretch gap-1">
-                    <input placeholder="السنة" value={remoteYear}
-                      onChange={e => setRemoteYear(e.target.value)}
-                      onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
-                      className="w-full min-w-0 border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
-                    <button type="button" onClick={() => setShowYearMenu(v => !v)} title="اختر السنة من القائمة"
-                      className="shrink-0 border border-stone-200 rounded-lg px-1.5 bg-white hover:bg-emerald-50 text-stone-500 hover:text-emerald-700 flex items-center justify-center transition-colors">
-                      <ChevronDown className={`size-3.5 transition-transform ${showYearMenu ? 'rotate-180' : ''}`} />
-                    </button>
-                  </div>
-                  {showYearMenu && (
-                    <div className="absolute top-full mt-1 right-0 left-0 z-30 bg-white border border-emerald-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                      {PORTAL_YEARS.map(y => (
-                        <button key={y} type="button"
-                          onClick={() => { setRemoteYear(String(y)); setShowYearMenu(false); }}
-                          className={`w-full text-center px-2 py-1.5 text-xs font-bold hover:bg-emerald-50 ${String(y) === remoteYear ? 'bg-emerald-100 text-emerald-800' : 'text-stone-700'}`}>
-                          {y}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-stone-500 font-bold">المحكمة</label>
-                <select value={remoteCourt} onChange={e => setRemoteCourt(e.target.value)}
-                  className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none">
-                  <optgroup label="محاكم استئناف">
-                    {['تطوان','طنجة','الحسيمة'].map(c => (
-                      <option key={'ap-'+c} value={'استئناف '+c}>{'استئناف '+c}</option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="محاكم ابتدائية">
-                    {['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'].map(c => (
-                      <option key={c}>{c}</option>
-                    ))}
-                  </optgroup>
-                </select>
-              </div>
-              <button onClick={handleRemoteSearch}
-                disabled={isSearching || !remoteNum.trim()}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl py-2.5 font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-sm">
-                {isSearching
-                  ? <><RefreshCw className="size-4 animate-spin" /> جاري البحث في بوابة محاكم...</>
-                  : <><Search className="size-4" /> بحث تلقائي</>}
-              </button>
-              {isSearching && (
-                <p className="text-[11px] text-emerald-600 text-center animate-pulse">
-                  ⏳ {searchStage
-                    ? <>المرحلة: <span className="font-bold">{searchStage}</span></>
-                    : 'يتم البحث... سيظهر الملف تلقائياً بعد اكتمال النسخ'}
-                </p>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <div className="bg-orange-50 border border-orange-200 p-4 rounded-xl">
-                <h3 className="text-orange-900 font-bold text-sm flex items-center gap-2 mb-2"><AlertTriangle className="size-4" /> حماية CORS</h3>
-                <p className="text-[11px] text-orange-800 leading-relaxed">لا يمكن استخراج البيانات برمجياً. انسخ يدوياً من البوابة كما هو موضح.</p>
-              </div>
-              <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-[11px] text-amber-800 font-medium">
-                💡 ثبّت إضافة <strong>Mahakim Bridge</strong> للبحث التلقائي بدون نسخ يدوي
-              </div>
-            </div>
-          )}
+        {/* ── Left panel — شريط الأدوات المستقل ── */}
+        <div className={`w-full md:w-[400px] ${expandedView ? 'md:h-[calc(100vh-72px)]' : 'md:h-[85vh]'} border-b md:border-b-0 md:border-l border-stone-200 bg-stone-50 flex flex-col shrink-0 overflow-hidden`}>
 
-          {/* ── شريط التحليل: استخراج وتنظيم من نص الملف ── */}
-          <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden">
-            <button type="button" onClick={() => setShowManualPanel(v => !v)}
-              className="w-full flex items-center justify-between px-4 py-3 text-sm font-bold text-stone-700 hover:bg-stone-50 transition-colors">
-              <span className="flex items-center gap-2"><ClipboardPaste className="size-4 text-emerald-600" /> شريط التحليل — استخراج وتنظيم البيانات</span>
-              <ChevronDown className={`size-4 text-stone-400 transition-transform ${showManualPanel ? 'rotate-180' : ''}`} />
-            </button>
-            {showManualPanel && (
-              <div className="px-4 pb-4 space-y-2 border-t border-stone-100 pt-3">
-                <p className="text-[11px] text-stone-500 leading-relaxed">
-                  انسخ محتوى صفحة الملف من بوابة محاكم بالكامل (Ctrl+A ثم Ctrl+C) ثم اضغط الزر أدناه لاستخراجه من الحافظة، أو الصقه يدوياً في المربع ثم اضغط «تحليل النص». كرر العملية لكل تبويبة (الإجراءات، الأطراف...) فتُضاف كل لصقة إلى نفس الملف تلقائياً.
-                </p>
-                <button onClick={handleReadClipboard}
-                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-sm transition-all hover:shadow flex items-center justify-center gap-2">
-                  <ClipboardPaste className="size-4" />
-                  {pasteData.trim() ? `إضافة لصقة أخرى (${pasteCount.current + 1})` : 'استخراج من الحافظة'}
-                </button>
-                {pasteData.trim() && (
-                  <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 px-3 py-2 rounded-xl text-xs font-bold text-emerald-800">
-                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                    {pasteCount.current} لصقة محفوظة — كرر لكل تبويبة
-                  </div>
-                )}
-                <textarea
-                  value={pasteData}
-                  onChange={e => setPasteData(e.target.value)}
-                  placeholder="أو الصق المحتوى هنا يدوياً... (Ctrl+V)"
-                  className="w-full bg-stone-50 border border-stone-200 rounded-lg p-3 text-[10px] font-mono text-stone-600 outline-none resize-none h-24 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-                />
-                <div className="flex gap-2">
-                  <button onClick={handleManual} disabled={!pasteData.trim()}
-                    className="flex-1 py-2 bg-stone-800 disabled:opacity-40 hover:bg-stone-900 text-white rounded-lg font-bold text-xs">
-                    تحليل النص
-                  </button>
-                  {pasteData.trim() && (
-                    <button onClick={handleReset} className="px-3 py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold border border-red-200">
-                      مسح الكل
-                    </button>
-                  )}
-                </div>
+          {/* ── شريط حالة الاتصال ── */}
+          <div className="px-4 py-2 border-b border-stone-200 bg-white flex items-center justify-between shrink-0">
+            {extensionReady ? (
+              <div className="flex items-center gap-2">
+                <span className="size-2 bg-emerald-500 rounded-full animate-pulse" />
+                <span className="text-xs font-bold text-emerald-700">Mahakim Bridge مفعّل 🧩</span>
               </div>
+            ) : bridgeReady ? (
+              <div className="flex items-center gap-2">
+                <span className="size-2 bg-amber-500 rounded-full animate-pulse" />
+                <span className="text-xs font-bold text-amber-700">جسر VB.NET متصل</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="size-2 bg-stone-300 rounded-full" />
+                <span className="text-xs font-bold text-stone-400">غير متصل — وضع يدوي</span>
+              </div>
+            )}
+            {!extensionReady && !bridgeReady && (
+              <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-bold border border-amber-200">
+                ثبّت Mahakim Bridge
+              </span>
             )}
           </div>
 
-          {/* ── محاضر الضابطة القضائية (مخالفات غابوية) ── */}
-          <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden">
-            <button type="button" onClick={() => setShowPVPanel(v => !v)}
-              className="w-full flex items-center justify-between px-4 py-3 text-sm font-bold text-stone-700 hover:bg-stone-50 transition-colors">
-              <span className="flex items-center gap-2"><ShieldAlert className="size-4 text-blue-600" /> 🚓 محاضر الضابطة القضائية (مخالفات غابوية)</span>
-              <ChevronDown className={`size-4 text-stone-400 transition-transform ${showPVPanel ? 'rotate-180' : ''}`} />
-            </button>
-            {showPVPanel && (
-              <div className="px-4 pb-4 space-y-3 border-t border-stone-100 pt-3">
-                <p className="text-[11px] text-stone-500 leading-relaxed">
-                  بحث مستقل عن "محضر الضابطة القضائية" — يستخدم هذا الشريط أو شريط "تتبع الملفات" أعلاه، وليس كليهما معاً في الوقت نفسه.
-                </p>
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="flex flex-col gap-1 col-span-2">
-                    <label className="text-[10px] text-stone-500 font-bold text-center">رقم المحضر</label>
-                    <input placeholder="رقم محضر الضابطة القضائية" value={pvNumber}
-                      onChange={e => setPvNumber(e.target.value)}
-                      onKeyDown={e => e.key === 'Enter' && handlePVSearch()}
-                      className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                  </div>
-                  <div className="flex flex-col gap-1 relative" ref={pvYearMenuRef}>
-                    <label className="text-[10px] text-stone-500 font-bold text-center">سنة</label>
-                    <div className="flex items-stretch gap-1">
-                      <input placeholder="السنة" value={pvYear}
-                        onChange={e => setPvYear(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handlePVSearch()}
-                        className="w-full min-w-0 border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                      <button type="button" onClick={() => setPvShowYearMenu(v => !v)} title="اختر السنة من القائمة"
-                        className="shrink-0 border border-stone-200 rounded-lg px-1.5 bg-white hover:bg-blue-50 text-stone-500 hover:text-blue-700 flex items-center justify-center transition-colors">
-                        <ChevronDown className={`size-3.5 transition-transform ${pvShowYearMenu ? 'rotate-180' : ''}`} />
-                      </button>
+          {/* ── منطقة التمرير المستقلة ── */}
+          <div className="flex-1 overflow-y-auto min-h-0">
+            <div className="p-3 flex flex-col gap-2.5">
+
+              {/* ══════════════════════════════════════════════════
+                  1. محاضر الضابطة القضائية (أولاً — مفتوح افتراضياً)
+                 ══════════════════════════════════════════════════ */}
+              <div className="bg-white border border-blue-200 rounded-2xl overflow-visible shadow-sm">
+                <button type="button" onClick={() => setShowPVPanel(v => !v)}
+                  className="w-full flex items-center justify-between px-4 py-3 hover:bg-blue-50/40 transition-colors rounded-2xl">
+                  <div className="flex items-center gap-3">
+                    <div className="size-8 bg-blue-600 rounded-xl flex items-center justify-center shrink-0 shadow-sm">
+                      <ShieldAlert className="size-4 text-white" />
                     </div>
-                    {pvShowYearMenu && (
-                      <div className="absolute top-full mt-1 right-0 left-0 z-30 bg-white border border-blue-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                        {PORTAL_YEARS.map(y => (
-                          <button key={y} type="button"
-                            onClick={() => { setPvYear(String(y)); setPvShowYearMenu(false); }}
-                            className={`w-full text-center px-2 py-1.5 text-xs font-bold hover:bg-blue-50 ${String(y) === pvYear ? 'bg-blue-100 text-blue-800' : 'text-stone-700'}`}>
-                            {y}
+                    <div className="text-right">
+                      <p className="text-sm font-bold text-blue-900">محاضر الضابطة القضائية</p>
+                      <p className="text-[10px] text-blue-500 font-medium">مخالفات غابوية — بحث بالرقم</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {pvIsSearching && <RefreshCw className="size-3.5 text-blue-500 animate-spin" />}
+                    {pvResult && !pvIsSearching && <CheckCircle2 className="size-4 text-emerald-500" />}
+                    <ChevronDown className={`size-4 text-blue-400 transition-transform duration-200 ${showPVPanel ? 'rotate-180' : ''}`} />
+                  </div>
+                </button>
+
+                {showPVPanel && (
+                  <div className="border-t border-blue-100 px-4 pb-4 pt-3 space-y-3">
+
+                    {/* رقم المحضر + السنة */}
+                    <div className="grid grid-cols-5 gap-2">
+                      <div className="col-span-3 flex flex-col gap-1">
+                        <label className="text-[10px] text-stone-500 font-bold">رقم المحضر</label>
+                        <input placeholder="رقم محضر الضابطة..." value={pvNumber}
+                          onChange={e => setPvNumber(e.target.value)}
+                          onKeyDown={e => e.key === 'Enter' && handlePVSearch()}
+                          className="border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
+                      </div>
+                      <div className="col-span-2 flex flex-col gap-1 relative" ref={pvYearMenuRef}>
+                        <label className="text-[10px] text-stone-500 font-bold">السنة</label>
+                        <div className="flex items-stretch gap-1">
+                          <input placeholder="2025" value={pvYear}
+                            onChange={e => setPvYear(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handlePVSearch()}
+                            className="w-full min-w-0 border border-stone-200 rounded-lg px-2 py-2 text-sm text-center bg-white focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100" />
+                          <button type="button" onClick={() => setPvShowYearMenu(v => !v)}
+                            className="shrink-0 border border-stone-200 rounded-lg px-1.5 bg-white hover:bg-blue-50 text-stone-400 hover:text-blue-600 flex items-center justify-center transition-colors">
+                            <ChevronDown className={`size-3.5 transition-transform ${pvShowYearMenu ? 'rotate-180' : ''}`} />
                           </button>
-                        ))}
+                        </div>
+                        {pvShowYearMenu && (
+                          <div className="absolute top-full mt-1 right-0 left-0 z-40 bg-white border border-blue-200 rounded-xl shadow-xl max-h-40 overflow-y-auto">
+                            {PORTAL_YEARS.map(y => (
+                              <button key={y} type="button"
+                                onClick={() => { setPvYear(String(y)); setPvShowYearMenu(false); }}
+                                className={`w-full text-center px-3 py-1.5 text-xs font-bold hover:bg-blue-50 transition-colors ${String(y) === pvYear ? 'bg-blue-100 text-blue-800' : 'text-stone-700'}`}>
+                                {y}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* المحكمة */}
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] text-stone-500 font-bold">المحكمة</label>
+                      <select value={pvCourt} onChange={e => setPvCourt(e.target.value)}
+                        className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 focus:outline-none">
+                        <optgroup label="محاكم استئناف">
+                          {['تطوان','طنجة','الحسيمة'].map(c => (
+                            <option key={'pv-ap-'+c} value={'استئناف '+c}>{'استئناف '+c}</option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="محاكم ابتدائية">
+                          {['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'].map(c => (
+                            <option key={'pv-'+c}>{c}</option>
+                          ))}
+                        </optgroup>
+                      </select>
+                    </div>
+
+                    {/* نوع الضابطة + المصلحة */}
+                    <div className="bg-stone-50 border border-stone-100 rounded-xl p-3 space-y-2">
+                      <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wide">الضابطة القضائية</p>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] text-stone-500 font-bold">نوع الضابطة</label>
+                        <select value={pvAgentType} onChange={e => setPvAgentType(e.target.value)}
+                          className="w-full border border-stone-200 rounded-lg px-3 py-2 text-xs bg-white focus:border-blue-400 focus:outline-none">
+                          {PV_AGENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] text-stone-500 font-bold">المصلحة / الجهة المعنية</label>
+                        <select value={pvAgency} onChange={e => setPvAgency(e.target.value)}
+                          className="w-full border border-stone-200 rounded-lg px-3 py-2 text-xs bg-white focus:border-blue-400 focus:outline-none">
+                          {PV_AGENCIES.map(a => <option key={a} value={a}>{a}</option>)}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* زر البحث + مسح */}
+                    <div className="flex gap-2">
+                      <button onClick={handlePVSearch}
+                        disabled={pvIsSearching || !pvNumber.trim() || !extensionReady}
+                        className="flex-1 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl py-2.5 font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-sm">
+                        {pvIsSearching
+                          ? <><RefreshCw className="size-4 animate-spin" /> جاري البحث...</>
+                          : <><Search className="size-4" /> بحث عن المحضر</>}
+                      </button>
+                      {pvResult && (
+                        <button onClick={() => { setPvResult(null); setPvSearchStage(''); }}
+                          title="مسح النتيجة"
+                          className="px-3 py-2 bg-white hover:bg-red-50 text-stone-400 hover:text-red-500 rounded-xl border border-stone-200 hover:border-red-200 transition-colors">
+                          <X className="size-4" />
+                        </button>
+                      )}
+                    </div>
+
+                    {!extensionReady && (
+                      <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 font-medium">
+                        ⚠️ يتطلب إضافة <strong>Mahakim Bridge</strong> — لا يوجد وضع يدوي لهذا النوع
+                      </p>
+                    )}
+
+                    {pvIsSearching && (
+                      <p className="text-[11px] text-blue-600 text-center animate-pulse font-medium">
+                        ⏳ {pvSearchStage || 'يتم البحث عن المحضر...'}
+                      </p>
+                    )}
+
+                    {/* ── نتيجة المحضر ── */}
+                    {pvResult && (
+                      <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-sm font-bold text-blue-900 flex items-center gap-1.5">
+                            <ShieldAlert className="size-3.5 text-blue-600" /> بيانات المحضر
+                          </h4>
+                          {pvResult.pvCourtRef && (
+                            <span className="font-mono text-[11px] font-bold bg-white border border-blue-200 text-blue-800 px-2 py-0.5 rounded-lg shadow-sm">
+                              {pvResult.pvCourtRef}
+                            </span>
+                          )}
+                        </div>
+                        <div className="space-y-1 text-xs bg-white rounded-lg p-2.5 border border-blue-100">
+                          {pvResult.pvType && <p><span className="text-stone-400">النوع: </span><span className="font-bold text-stone-800">{pvResult.pvType}</span></p>}
+                          {pvResult.pvSubject && <p><span className="text-stone-400">الموضوع: </span><span className="font-bold text-stone-800">{pvResult.pvSubject}</span></p>}
+                          {pvResult.pvAction && <p><span className="text-stone-400">الإجراء: </span><span className="font-bold text-stone-800">{pvResult.pvAction}</span></p>}
+                          {pvResult.court && <p><span className="text-stone-400">المحكمة: </span><span className="font-bold text-stone-800">{pvResult.court}</span></p>}
+                          {pvResult.date && <p><span className="text-stone-400">التاريخ: </span><span className="font-bold font-mono text-stone-800">{pvResult.date}</span></p>}
+                        </div>
+                        {pvResult.parties.length > 0 && (
+                          <div className="space-y-1">
+                            <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wide">الأطراف</p>
+                            {pvResult.parties.map((p, i) => (
+                              <p key={i} className="text-[11px] text-stone-700 bg-white rounded-lg px-2 py-1 border border-stone-100">
+                                <span className="font-bold text-blue-700">{p.role}</span>: {p.name}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                        {pvResult.procedures.length > 0 && (
+                          <div className="space-y-1">
+                            <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wide">الإجراءات</p>
+                            {pvResult.procedures.map((p, i) => (
+                              <p key={i} className="text-[11px] text-stone-600">
+                                <span className="font-mono text-stone-400">{p.date}</span> — <span className="font-bold">{p.action}</span>{p.decision ? `: ${p.decision}` : ''}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                        {pvResult.linkedFileNumber ? (
+                          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 space-y-1.5">
+                            <p className="text-[11px] text-emerald-800">
+                              <span className="text-stone-500">رقم الملف الجنحي: </span>
+                              <span className="font-mono font-bold">{pvResult.linkedFileNumber}</span>
+                            </p>
+                            <button onClick={handleUseLinkedFile}
+                              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg py-1.5 text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all">
+                              <ExternalLink className="size-3" /> بحث عن هذا الملف ↑
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="text-[10px] text-stone-400 text-center">لم يُعثر على رقم الملف الجنحي المرتبط</p>
+                        )}
+                        <button type="button" onClick={() => setPvShowRaw(v => !v)}
+                          className="w-full text-[10px] font-bold text-stone-400 hover:text-stone-600 flex items-center justify-center gap-1 pt-1 border-t border-blue-100">
+                          {pvShowRaw ? 'إخفاء' : 'عرض'} النص الخام
+                          <ChevronDown className={`size-3 transition-transform ${pvShowRaw ? 'rotate-180' : ''}`} />
+                        </button>
+                        {pvShowRaw && (
+                          <textarea readOnly value={pvResult.raw}
+                            className="w-full bg-white border border-stone-200 rounded-lg p-2.5 text-[10px] font-mono text-stone-500 outline-none resize-none h-32" />
+                        )}
                       </div>
                     )}
                   </div>
-                </div>
-
-                <div className="bg-stone-50 border border-stone-200 rounded-xl p-3 space-y-2.5">
-                  <p className="text-[11px] font-bold text-stone-600">المحكمة والضابطة القضائية</p>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-stone-500 font-bold">المحكمة</label>
-                    <select value={pvCourt} onChange={e => setPvCourt(e.target.value)}
-                      className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-500 focus:outline-none">
-                      <optgroup label="محاكم استئناف">
-                        {['تطوان','طنجة','الحسيمة'].map(c => (
-                          <option key={'pv-ap-'+c} value={'استئناف '+c}>{'استئناف '+c}</option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="محاكم ابتدائية">
-                        {['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'].map(c => (
-                          <option key={'pv-'+c}>{c}</option>
-                        ))}
-                      </optgroup>
-                    </select>
-                  </div>
-
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-stone-500 font-bold">نوع الضابطة القضائية</label>
-                    <select value={pvAgentType} onChange={e => setPvAgentType(e.target.value)}
-                      className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-500 focus:outline-none">
-                      {PV_AGENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                    </select>
-                  </div>
-
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-stone-500 font-bold">المصلحة/الجهة المعنية</label>
-                    <select value={pvAgency} onChange={e => setPvAgency(e.target.value)}
-                      className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-500 focus:outline-none">
-                      {PV_AGENCIES.map(a => <option key={a} value={a}>{a}</option>)}
-                    </select>
-                  </div>
-                </div>
-
-                <button onClick={handlePVSearch}
-                  disabled={pvIsSearching || !pvNumber.trim()}
-                  className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl py-2.5 font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-sm">
-                  {pvIsSearching
-                    ? <><RefreshCw className="size-4 animate-spin" /> جاري البحث عن المحضر...</>
-                    : <><Search className="size-4" /> بحث عن المحضر</>}
-                </button>
-                {pvIsSearching && (
-                  <p className="text-[11px] text-blue-600 text-center animate-pulse">
-                    ⏳ {pvSearchStage
-                      ? <>المرحلة: <span className="font-bold">{pvSearchStage}</span></>
-                      : 'يتم البحث...'}
-                  </p>
                 )}
-                {!extensionReady && (
-                  <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-[11px] text-amber-800 font-medium">
-                    💡 يتطلب هذا البحث تفعيل إضافة <strong>Mahakim Bridge</strong> — لا يوجد سقوط احتياطي عبر VB.NET لهذا النوع.
+              </div>
+
+              {/* ══════════════════════════════════════════════════
+                  2. تتبع الملفات القضائية
+                 ══════════════════════════════════════════════════ */}
+              <div className="bg-white border border-emerald-200 rounded-2xl overflow-visible shadow-sm">
+                <button type="button" onClick={() => setShowFilesPanel(v => !v)}
+                  className="w-full flex items-center justify-between px-4 py-3 hover:bg-emerald-50/40 transition-colors rounded-2xl">
+                  <div className="flex items-center gap-3">
+                    <div className={`size-8 rounded-xl flex items-center justify-center shrink-0 shadow-sm ${extensionReady || bridgeReady ? 'bg-emerald-600' : 'bg-stone-400'}`}>
+                      <Search className="size-4 text-white" />
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-bold text-stone-800">تتبع الملفات القضائية</p>
+                      <p className="text-[10px] text-stone-400 font-medium">بحث بالرقم والرمز والسنة</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {isSearching && <RefreshCw className="size-3.5 text-emerald-500 animate-spin" />}
+                    {result && !isSearching && <CheckCircle2 className="size-4 text-emerald-500" />}
+                    <ChevronDown className={`size-4 text-stone-400 transition-transform duration-200 ${showFilesPanel ? 'rotate-180' : ''}`} />
+                  </div>
+                </button>
+
+                {showFilesPanel && (
+                  <div className="border-t border-stone-100 px-4 pb-4 pt-3 space-y-3">
+                    {!(bridgeReady || extensionReady) && (
+                      <div className="bg-orange-50 border border-orange-200 rounded-xl p-3">
+                        <p className="text-[11px] text-orange-800 font-medium flex items-start gap-1.5">
+                          <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />
+                          البحث التلقائي يتطلب <strong>Mahakim Bridge</strong> — استخدم شريط التحليل أدناه للنسخ اليدوي
+                        </p>
+                      </div>
+                    )}
+
+                    {/* رقم / رمز / سنة */}
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] text-stone-500 font-bold text-center">رقم</label>
+                        <input placeholder="الرقم" value={remoteNum}
+                          onChange={e => setRemoteNum(e.target.value)}
+                          onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
+                          className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center bg-white focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100" />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] text-stone-500 font-bold text-center">رمز</label>
+                        <input placeholder="الرمز" value={remoteMark}
+                          onChange={e => setRemoteMark(e.target.value)}
+                          onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
+                          className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center bg-white focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100" />
+                      </div>
+                      <div className="flex flex-col gap-1 relative" ref={yearMenuRef}>
+                        <label className="text-[10px] text-stone-500 font-bold text-center">سنة</label>
+                        <div className="flex items-stretch gap-1">
+                          <input placeholder="2025" value={remoteYear}
+                            onChange={e => setRemoteYear(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
+                            className="w-full min-w-0 border border-stone-200 rounded-lg px-2 py-2 text-sm text-center bg-white focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100" />
+                          <button type="button" onClick={() => setShowYearMenu(v => !v)}
+                            className="shrink-0 border border-stone-200 rounded-lg px-1.5 bg-white hover:bg-emerald-50 text-stone-400 hover:text-emerald-600 flex items-center justify-center transition-colors">
+                            <ChevronDown className={`size-3.5 transition-transform ${showYearMenu ? 'rotate-180' : ''}`} />
+                          </button>
+                        </div>
+                        {showYearMenu && (
+                          <div className="absolute top-full mt-1 right-0 left-0 z-40 bg-white border border-emerald-200 rounded-xl shadow-xl max-h-40 overflow-y-auto">
+                            {PORTAL_YEARS.map(y => (
+                              <button key={y} type="button"
+                                onClick={() => { setRemoteYear(String(y)); setShowYearMenu(false); }}
+                                className={`w-full text-center px-3 py-1.5 text-xs font-bold hover:bg-emerald-50 transition-colors ${String(y) === remoteYear ? 'bg-emerald-100 text-emerald-800' : 'text-stone-700'}`}>
+                                {y}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* المحكمة */}
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] text-stone-500 font-bold">المحكمة</label>
+                      <select value={remoteCourt} onChange={e => setRemoteCourt(e.target.value)}
+                        className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-emerald-400 focus:outline-none">
+                        <optgroup label="محاكم استئناف">
+                          {['تطوان','طنجة','الحسيمة'].map(c => (
+                            <option key={'ap-'+c} value={'استئناف '+c}>{'استئناف '+c}</option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="محاكم ابتدائية">
+                          {['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'].map(c => (
+                            <option key={c}>{c}</option>
+                          ))}
+                        </optgroup>
+                      </select>
+                    </div>
+
+                    {/* أزرار */}
+                    <div className="flex gap-2">
+                      <button onClick={handleRemoteSearch}
+                        disabled={isSearching || !remoteNum.trim() || !(bridgeReady || extensionReady)}
+                        className="flex-1 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl py-2.5 font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-sm">
+                        {isSearching
+                          ? <><RefreshCw className="size-4 animate-spin" /> جاري البحث...</>
+                          : <><Search className="size-4" /> بحث تلقائي</>}
+                      </button>
+                      {result && (
+                        <button onClick={() => setExtractMode(extractMode === 'portal' ? 'parsed' : 'portal')}
+                          className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl border border-emerald-200 transition-colors text-xs font-bold flex items-center gap-1.5 whitespace-nowrap">
+                          <Eye className="size-3.5" />
+                          {extractMode === 'portal' ? 'النتائج' : 'البوابة'}
+                        </button>
+                      )}
+                    </div>
+
+                    {isSearching && (
+                      <p className="text-[11px] text-emerald-700 text-center animate-pulse font-medium">
+                        ⏳ {searchStage || 'يتم البحث... سيظهر الملف تلقائياً'}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
-            )}
 
-            {/* ── نتيجة محضر الضابطة القضائية ── */}
-            {pvResult && (
-              <div className="px-4 pb-4 space-y-2 border-t border-stone-100 pt-3 bg-blue-50/40">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-bold text-blue-900 flex items-center gap-2">
-                    <ShieldAlert className="size-4" /> بيانات المحضر
-                  </h4>
-                  {pvResult.pvCourtRef && (
-                    <span className="font-mono text-xs font-bold bg-white border border-blue-200 text-blue-800 px-2 py-1 rounded-lg">
-                      {pvResult.pvCourtRef}
-                    </span>
-                  )}
-                </div>
-                <div className="space-y-1 text-xs">
-                  {pvResult.pvType && <p><span className="text-stone-500">نوع المحضر: </span><span className="font-bold">{pvResult.pvType}</span></p>}
-                  {pvResult.pvSubject && <p><span className="text-stone-500">موضوع المحضر: </span><span className="font-bold">{pvResult.pvSubject}</span></p>}
-                  {pvResult.pvAction && <p><span className="text-stone-500">الإجراء: </span><span className="font-bold">{pvResult.pvAction}</span></p>}
-                  {pvResult.court && <p><span className="text-stone-500">المحكمة: </span><span className="font-bold">{pvResult.court}</span></p>}
-                  {pvResult.date && <p><span className="text-stone-500">التاريخ: </span><span className="font-bold font-mono">{pvResult.date}</span></p>}
-                </div>
-
-                {pvResult.parties.length > 0 && (
-                  <div className="space-y-1">
-                    <p className="text-xs font-bold text-stone-600">الأطراف</p>
-                    {pvResult.parties.map((p, i) => (
-                      <p key={i} className="text-[11px] text-stone-600">
-                        <span className="font-bold">{p.role}</span>: {p.name}
-                      </p>
-                    ))}
+              {/* ══════════════════════════════════════════════════
+                  3. أداة التحليل — استخراج يدوي
+                 ══════════════════════════════════════════════════ */}
+              <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden shadow-sm">
+                <button type="button" onClick={() => setShowManualPanel(v => !v)}
+                  className="w-full flex items-center justify-between px-4 py-3 hover:bg-stone-50 transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className="size-8 bg-stone-700 rounded-xl flex items-center justify-center shrink-0 shadow-sm">
+                      <ClipboardPaste className="size-4 text-white" />
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-bold text-stone-800">أداة التحليل — استخراج يدوي</p>
+                      <p className="text-[10px] text-stone-400 font-medium">لصق النص وتنظيمه تلقائياً</p>
+                    </div>
                   </div>
-                )}
-
-                {pvResult.procedures.length > 0 && (
-                  <div className="space-y-1">
-                    <p className="text-xs font-bold text-stone-600">الإجراءات</p>
-                    {pvResult.procedures.map((p, i) => (
-                      <p key={i} className="text-[11px] text-stone-600">
-                        <span className="font-mono text-stone-400">{p.date}</span> — <span className="font-bold">{p.action}</span>{p.decision ? `: ${p.decision}` : ''}
-                      </p>
-                    ))}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {pasteData.trim() && <span className="size-1.5 bg-emerald-500 rounded-full" />}
+                    <ChevronDown className={`size-4 text-stone-400 transition-transform duration-200 ${showManualPanel ? 'rotate-180' : ''}`} />
                   </div>
-                )}
+                </button>
 
-                {pvResult.linkedFileNumber ? (
-                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 space-y-2">
-                    <p className="text-xs text-emerald-800">
-                      <span className="text-stone-500">رقم الملف الجنحي: </span>
-                      <span className="font-mono font-bold">{pvResult.linkedFileNumber}</span>
+                {showManualPanel && (
+                  <div className="border-t border-stone-100 px-4 pb-4 pt-3 space-y-2.5">
+                    <p className="text-[11px] text-stone-500 leading-relaxed bg-stone-50 rounded-xl p-3 border border-stone-100">
+                      انسخ صفحة الملف من بوابة محاكم (Ctrl+A ثم Ctrl+C) ثم اضغط «استخراج». كرر لكل تبويبة — الإجراءات، الأطراف... — تُضاف تلقائياً.
                     </p>
-                    <button onClick={handleUseLinkedFile}
-                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg py-2 text-xs font-bold flex items-center justify-center gap-2 transition-all">
-                      <ExternalLink className="size-3.5" /> بحث عن هذا الملف في الشريط الأول
+                    <div className="flex gap-2">
+                      <button onClick={handleReadClipboard}
+                        className="flex-1 py-2.5 bg-stone-800 hover:bg-stone-900 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-sm transition-all">
+                        <ClipboardPaste className="size-4" />
+                        {pasteData.trim() ? `لصقة ${pasteCount.current + 1} — تبويبة جديدة` : 'استخراج من الحافظة'}
+                      </button>
+                      {pasteData.trim() && (
+                        <button onClick={handleReset} title="مسح الكل"
+                          className="px-3 py-2 bg-white border border-stone-200 hover:bg-red-50 hover:border-red-200 text-stone-400 hover:text-red-500 rounded-xl transition-colors">
+                          <Trash2 className="size-4" />
+                        </button>
+                      )}
+                    </div>
+                    {pasteData.trim() && (
+                      <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 px-3 py-2 rounded-xl text-xs font-bold text-emerald-800">
+                        <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                        {pasteCount.current} لصقة محفوظة — كرر لكل تبويبة
+                      </div>
+                    )}
+                    <textarea
+                      value={pasteData}
+                      onChange={e => setPasteData(e.target.value)}
+                      placeholder="أو الصق يدوياً هنا... (Ctrl+V)"
+                      className="w-full bg-stone-50 border border-stone-200 rounded-xl p-2.5 text-[10px] font-mono text-stone-600 outline-none resize-none h-24 focus:border-stone-400 focus:ring-1 focus:ring-stone-200 transition-colors"
+                    />
+                    <div className="flex gap-2">
+                      <button onClick={handleManual} disabled={!pasteData.trim()}
+                        className="flex-1 py-2.5 bg-stone-700 disabled:opacity-40 hover:bg-stone-800 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-sm">
+                        <Sparkles className="size-4" /> تحليل النص
+                      </button>
+                      {result && (
+                        <button onClick={() => setExtractMode(extractMode === 'portal' ? 'parsed' : 'portal')}
+                          className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl border border-emerald-200 transition-colors text-xs font-bold flex items-center gap-1.5">
+                          <Eye className="size-3.5" />
+                          {extractMode === 'portal' ? 'النتائج' : 'البوابة'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ══ حفظ الملف ══ */}
+              {result && (
+                <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3 space-y-2 shadow-sm">
+                  <p className="text-xs font-bold text-emerald-800 flex items-center gap-2">
+                    <FileCheck2 className="size-4 text-emerald-600" /> بيانات جاهزة للحفظ في القاعدة
+                  </p>
+                  <div className="flex gap-2">
+                    <button onClick={handleSave}
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-2.5 font-bold text-sm flex items-center justify-center gap-2 shadow-sm transition-all">
+                      <DownloadCloud className="size-4" /> حفظ في القاعدة
+                    </button>
+                    <button onClick={handleReset} title="إلغاء ومسح"
+                      className="px-3 py-2 bg-white border border-stone-200 hover:bg-red-50 hover:border-red-200 text-stone-400 hover:text-red-500 rounded-xl transition-colors">
+                      <X className="size-4" />
                     </button>
                   </div>
-                ) : (
-                  <p className="text-[11px] text-stone-400">لم يُعثر على "رقم الملف الجنحي" المرتبط في هذا المحضر.</p>
-                )}
+                </div>
+              )}
 
-                <button type="button" onClick={() => setPvShowRaw(v => !v)}
-                  className="w-full text-[11px] font-bold text-stone-500 hover:text-stone-700 flex items-center justify-center gap-1 pt-1">
-                  {pvShowRaw ? 'إخفاء' : 'عرض'} النص الكامل المستخرج
-                  <ChevronDown className={`size-3 transition-transform ${pvShowRaw ? 'rotate-180' : ''}`} />
-                </button>
-                {pvShowRaw && (
-                  <textarea readOnly value={pvResult.raw}
-                    className="w-full bg-stone-50 border border-stone-200 rounded-lg p-3 text-[10px] font-mono text-stone-600 outline-none resize-none h-40" />
-                )}
-              </div>
-            )}
+            </div>
           </div>
         </div>
 
