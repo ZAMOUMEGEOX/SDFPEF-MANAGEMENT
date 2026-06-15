@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronRight, ChevronLeft, Save, Plus, Trash2, X, AlertCircle } from 'lucide-react';
+import { ChevronRight, ChevronLeft, Save, Plus, Trash2, X, AlertCircle, UserCog, CalendarClock, MapPin, FolderOpen } from 'lucide-react';
 import { Case } from '../Contentieux';
 
 const COURTS_BY_LEVEL: Record<string, string[]> = {
@@ -105,7 +105,7 @@ export function CaseWizard({ initialData, onSave, onCancel }: CaseWizardProps) {
 
         {/* Wizard Progress */}
         <div className="flex overflow-x-auto no-scrollbar border-b border-stone-100 bg-stone-50/50 px-4 md:px-6">
-           {['معلومات أساسية', 'محضر المخالفة', 'الأطراف', 'الإجراءات والجلسات', 'جناح التنفيذ'].map((s, i) => (
+           {['معلومات أساسية', 'محضر المخالفة', 'الأطراف', 'الإجراءات والجلسات', 'جناح التنفيذ', 'المتابعة والربط'].map((s, i) => (
               <button 
                 key={i} 
                 onClick={() => setStep(i + 1)}
@@ -449,6 +449,141 @@ export function CaseWizard({ initialData, onSave, onCancel }: CaseWizardProps) {
                 </div>
             </div>
           )}
+
+          {step === 6 && (
+            <div className="space-y-6">
+              {/* المتابعة والمسؤولية */}
+              <div className="bg-white p-4 rounded-xl border border-stone-200 shadow-sm space-y-4">
+                <h3 className="font-bold text-sm text-stone-700 flex items-center gap-2"><UserCog className="size-4 text-blue-500" /> المتابعة والمسؤولية</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                  <div className="space-y-1.5">
+                     <label className="text-sm font-medium text-stone-700">المكلَّف بالملف (مستشار قانوني / محامٍ)</label>
+                     <input type="text" value={formData.assignedTo || ''} onChange={e => updateField('assignedTo', e.target.value)}
+                       className="w-full border border-stone-300 rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="مثال: ذ. فلان الفلاني" />
+                  </div>
+                  <div className="space-y-1.5 flex flex-col">
+                     <label className="text-sm font-medium text-stone-700">تصنيف الملف</label>
+                     <label className="flex items-center gap-3 text-sm font-bold text-amber-800 cursor-pointer bg-amber-50 px-4 py-2.5 rounded-xl border border-amber-200 hover:bg-amber-100 transition-colors h-full">
+                        <input type="checkbox" checked={!!formData.needsReview} onChange={e => updateField('needsReview', e.target.checked)}
+                          className="size-5 rounded text-amber-600 focus:ring-amber-500 border-amber-300" />
+                        وضع علامة «يحتاج تدقيق» يدوياً
+                     </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* آجال مصاريف الخبرة */}
+              <div className="bg-white p-4 rounded-xl border border-stone-200 shadow-sm space-y-4">
+                <h3 className="font-bold text-sm text-stone-700 flex items-center gap-2"><CalendarClock className="size-4 text-purple-500" /> أجل أداء مصاريف الخبرة</h3>
+                <p className="text-xs text-stone-400">يُسقط هذا الأجل الحق في الخبرة إن لم يُؤدَّ المبلغ في موعده. يُحتسب تلقائياً من تاريخ الأمر القضائي.</p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                  <div className="space-y-1.5">
+                     <label className="text-sm font-medium text-stone-700">تاريخ الأمر بأداء المصاريف</label>
+                     <input type="date" value={formData.expertFeeOrderDate || ''} onChange={e => updateField('expertFeeOrderDate', e.target.value)}
+                       className="w-full border border-stone-300 rounded-xl px-4 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" />
+                  </div>
+                  <div className="space-y-1.5">
+                     <label className="text-sm font-medium text-stone-700">عدد أيام الأجل</label>
+                     <input type="number" min="1" value={formData.expertFeeDeadlineDays || ''} onChange={e => updateField('expertFeeDeadlineDays', e.target.value)}
+                       className="w-full border border-stone-300 rounded-xl px-4 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="8 (افتراضي)" />
+                  </div>
+                  <div className="space-y-1.5 flex flex-col">
+                     <label className="text-sm font-medium text-stone-700">حالة الأداء</label>
+                     <label className="flex items-center gap-3 text-sm font-bold text-stone-700 cursor-pointer bg-stone-100 px-4 py-2.5 rounded-xl border border-stone-200 hover:bg-stone-200 transition-colors h-full">
+                        <input type="checkbox" checked={!!formData.expertFeePaid} onChange={e => updateField('expertFeePaid', e.target.checked)}
+                          className="size-5 rounded text-emerald-600 focus:ring-emerald-500 border-stone-300" />
+                        تم الأداء داخل الأجل
+                     </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* الموقع الجغرافي والقطعة الغابوية */}
+              <div className="bg-white p-4 rounded-xl border border-stone-200 shadow-sm space-y-4">
+                <h3 className="font-bold text-sm text-stone-700 flex items-center gap-2"><MapPin className="size-4 text-emerald-600" /> الموقع الجغرافي والقطعة الغابوية</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                  <div className="space-y-1.5">
+                     <label className="text-sm font-medium text-stone-700">مرجع القطعة / الرسم العقاري</label>
+                     <input type="text" value={formData.parcelRef || ''} onChange={e => updateField('parcelRef', e.target.value)}
+                       className="w-full border border-stone-300 rounded-xl px-4 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="مثال: TF 12345/T أو مطلب 6789" />
+                  </div>
+                  <div className="space-y-1.5">
+                     <label className="text-sm font-medium text-stone-700">المساحة المتضررة (هكتار)</label>
+                     <input type="number" min="0" step="0.01" value={formData.parcelArea || ''} onChange={e => updateField('parcelArea', e.target.value)}
+                       className="w-full border border-stone-300 rounded-xl px-4 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="0.00" />
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2">
+                     <label className="text-sm font-medium text-stone-700">القيمة التقديرية للضرر (درهم)</label>
+                     <input type="number" min="0" value={formData.estimatedValue || ''} onChange={e => updateField('estimatedValue', e.target.value)}
+                       className="w-full border border-stone-300 rounded-xl px-4 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="0.00" />
+                  </div>
+                  <div className="space-y-1.5">
+                     <label className="text-sm font-medium text-stone-700">خط العرض (Latitude)</label>
+                     <input type="text" dir="ltr" value={formData.geoLat || ''} onChange={e => updateField('geoLat', e.target.value)}
+                       className="w-full border border-stone-300 rounded-xl px-4 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="مثال: 35.5731" />
+                  </div>
+                  <div className="space-y-1.5">
+                     <label className="text-sm font-medium text-stone-700">خط الطول (Longitude)</label>
+                     <input type="text" dir="ltr" value={formData.geoLng || ''} onChange={e => updateField('geoLng', e.target.value)}
+                       className="w-full border border-stone-300 rounded-xl px-4 py-2 text-sm font-mono focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="مثال: -5.3683" />
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2">
+                     <label className="text-sm font-medium text-stone-700">حدود القطعة (GeoJSON Polygon — اختياري)</label>
+                     <textarea dir="ltr" value={formData.geoPolygon || ''} onChange={e => updateField('geoPolygon', e.target.value)}
+                       className="w-full border border-stone-300 rounded-xl px-4 py-2 text-xs font-mono focus:ring-2 focus:ring-emerald-500 outline-none min-h-[70px]" placeholder='{"type":"Polygon","coordinates":[[[...]]]}' />
+                  </div>
+                </div>
+              </div>
+
+              {/* الوثائق المرفقة */}
+              <div className="bg-white p-4 rounded-xl border border-stone-200 shadow-sm space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-sm text-stone-700 flex items-center gap-2"><FolderOpen className="size-4 text-stone-500" /> الوثائق المرفقة (روابط)</h3>
+                  <button onClick={() => updateField('documents', [...(formData.documents || []), { name: '', url: '', type: '' }])}
+                    className="flex items-center gap-2 text-sm font-bold text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-lg hover:bg-emerald-100 transition-colors">
+                    <Plus className="size-4" /> إضافة وثيقة
+                  </button>
+                </div>
+                <div className="space-y-3">
+                  {(formData.documents || []).map((d, idx) => (
+                    <div key={idx} className="flex gap-3 items-start bg-stone-50 p-3 rounded-xl border border-stone-200">
+                      <div className="space-y-1.5 flex-1">
+                        <label className="text-xs text-stone-500">اسم الوثيقة</label>
+                        <input type="text" value={d.name} onChange={e => {
+                          const docs = [...(formData.documents || [])];
+                          docs[idx] = { ...docs[idx], name: e.target.value };
+                          updateField('documents', docs);
+                        }} placeholder="مثال: نسخة الحكم الابتدائي" className="w-full border border-stone-300 rounded-lg px-3 py-1.5 text-sm outline-none" />
+                      </div>
+                      <div className="space-y-1.5 flex-1">
+                        <label className="text-xs text-stone-500">الرابط (URL)</label>
+                        <input type="text" dir="ltr" value={d.url} onChange={e => {
+                          const docs = [...(formData.documents || [])];
+                          docs[idx] = { ...docs[idx], url: e.target.value };
+                          updateField('documents', docs);
+                        }} placeholder="https://..." className="w-full border border-stone-300 rounded-lg px-3 py-1.5 text-sm font-mono outline-none" />
+                      </div>
+                      <div className="space-y-1.5 w-1/4">
+                        <label className="text-xs text-stone-500">النوع</label>
+                        <input type="text" value={d.type || ''} onChange={e => {
+                          const docs = [...(formData.documents || [])];
+                          docs[idx] = { ...docs[idx], type: e.target.value };
+                          updateField('documents', docs);
+                        }} placeholder="PDF" className="w-full border border-stone-300 rounded-lg px-3 py-1.5 text-sm outline-none" />
+                      </div>
+                      <button onClick={() => updateField('documents', (formData.documents || []).filter((_, i) => i !== idx))}
+                        className="mt-6 p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors">
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
+                  ))}
+                  {(!formData.documents || formData.documents.length === 0) && (
+                    <p className="text-stone-500 text-sm text-center py-4">لا توجد وثائق مرفقة</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
@@ -460,7 +595,7 @@ export function CaseWizard({ initialData, onSave, onCancel }: CaseWizardProps) {
             <ChevronRight className="size-4" /> السابق
           </button>
           
-          {step < 5 ? (
+          {step < 6 ? (
             <button 
               onClick={() => setStep(step + 1)}
               className="flex items-center gap-2 px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-sm transition-colors"

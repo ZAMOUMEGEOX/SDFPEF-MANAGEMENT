@@ -1,9 +1,18 @@
-import React, { useState } from 'react';
-import { X, PieChartIcon, TrendingUp, BarChart3, AlertCircle, Sparkles, Bot, Loader2 } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { X, PieChartIcon, TrendingUp, BarChart3, AlertCircle, Sparkles, Bot, Loader2, ShieldAlert, CalendarClock, Users, MousePointerClick } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Case } from '../Contentieux';
+import { computeDeadlines, buildRepeatOffenderIndex, getQualityFlags } from '@/lib/caseAnalysis';
 
-export function ContentieuxStats({ cases, onClose }: { cases: Case[], onClose: () => void }) {
+/** أوامر التنقل التي يمكن لبطاقات/مبيانات الإحصائيات إصدارها لتصفية القائمة الرئيسية */
+export type StatsNavigateAction =
+  | { type: 'search'; query: string }
+  | { type: 'execStatus'; value: string }
+  | { type: 'deadlineSoon' }
+  | { type: 'needsReview' }
+  | { type: 'repeatOffenders' };
+
+export function ContentieuxStats({ cases, onClose, onNavigate }: { cases: Case[], onClose: () => void, onNavigate?: (action: StatsNavigateAction) => void }) {
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
@@ -74,6 +83,51 @@ export function ContentieuxStats({ cases, onClose }: { cases: Case[], onClose: (
 
   const COLORS = ['#059669', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#8b5cf6', '#ec4899'];
 
+  /** يستدعي onNavigate إن وُجد، ويُغلق اللوحة بحيث تظهر القائمة المُصفّاة فوراً */
+  const nav = (action: StatsNavigateAction) => {
+    if (!onNavigate) return;
+    onNavigate(action);
+  };
+
+  // 5. الآجال القانونية حسب الخطورة (عبر جميع الملفات)
+  const severityCounts = useMemo(() => {
+    const counts: Record<string, number> = { expired: 0, critical: 0, warning: 0, ok: 0 };
+    for (const c of cases) for (const d of computeDeadlines(c)) counts[d.severity] = (counts[d.severity] || 0) + 1;
+    return counts;
+  }, [cases]);
+  const severityData = [
+    { name: 'منتهٍ', key: 'expired', value: severityCounts.expired, color: '#dc2626' },
+    { name: 'حرج (≤3أ)', key: 'critical', value: severityCounts.critical, color: '#f97316' },
+    { name: 'قريب (≤10أ)', key: 'warning', value: severityCounts.warning, color: '#f59e0b' },
+    { name: 'عادي', key: 'ok', value: severityCounts.ok, color: '#10b981' },
+  ];
+  const criticalDeadlineFiles = severityCounts.expired + severityCounts.critical;
+
+  // 6. أكثر الخصوم عوداً (تكرار نفس الخصم في عدة ملفات)
+  const topRepeatOffenders = useMemo(() => {
+    const idx = buildRepeatOffenderIndex(cases);
+    return Array.from(idx.entries())
+      .filter(([, arr]) => arr.length > 1)
+      .map(([name, arr]) => ({ name, count: arr.length }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+  }, [cases]);
+
+  // 7. ملفات تحتاج تدقيقاً (جودة البيانات)
+  const needsReviewCount = useMemo(() => cases.filter(c => c.needsReview || getQualityFlags(c).length > 0).length, [cases]);
+
+  // 8. توزيع الملفات حسب المحكمة والنوع (لائحة 16: مزيد من زوايا التحليل)
+  const courtDist = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const c of cases) { const k = c.court || 'غير محدد'; counts[k] = (counts[k] || 0) + 1; }
+    return Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 8);
+  }, [cases]);
+  const typeDist = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const c of cases) { const k = c.type || 'غير محدد'; counts[k] = (counts[k] || 0) + 1; }
+    return Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 8);
+  }, [cases]);
+
   return (
     <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center md:p-4 z-50 md:overflow-y-auto" dir="rtl">
       <div className="bg-stone-50 md:rounded-2xl w-full h-full md:h-auto md:max-h-[90vh] max-w-6xl shadow-2xl relative flex flex-col md:my-8 animate-in zoom-in-95">
@@ -122,7 +176,7 @@ export function ContentieuxStats({ cases, onClose }: { cases: Case[], onClose: (
           )}
 
           {/* Key Rates */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-6">
             <div className="bg-white p-6 rounded-2xl border border-emerald-100 shadow-sm">
                <div className="flex justify-between items-start mb-4">
                   <h3 className="font-bold text-emerald-800">نسبة التبليغ</h3>
@@ -155,12 +209,40 @@ export function ContentieuxStats({ cases, onClose }: { cases: Case[], onClose: (
                   <span className="text-sm text-stone-500 mb-1">من المبالغ المحكوم بها</span>
                </div>
             </div>
+
+            <button onClick={() => nav({ type: 'deadlineSoon' })}
+              className="bg-white p-6 rounded-2xl border border-red-100 shadow-sm text-right hover:shadow-md hover:-translate-y-0.5 transition-all">
+               <div className="flex justify-between items-start mb-4">
+                  <h3 className="font-bold text-red-800">آجال حرجة/منتهية</h3>
+                  <div className="p-2 bg-red-50 rounded-xl"><CalendarClock className="size-5 text-red-600" /></div>
+               </div>
+               <div className="flex items-end gap-2">
+                  <span className="text-4xl font-black text-red-600 font-mono">{criticalDeadlineFiles}</span>
+                  <span className="text-sm text-stone-500 mb-1">أجل عاجل</span>
+               </div>
+               {onNavigate && <p className="text-[10px] text-stone-400 mt-2 flex items-center gap-1"><MousePointerClick className="size-3" /> انقر للتصفية</p>}
+            </button>
+
+            <button onClick={() => nav({ type: 'needsReview' })}
+              className="bg-white p-6 rounded-2xl border border-amber-100 shadow-sm text-right hover:shadow-md hover:-translate-y-0.5 transition-all">
+               <div className="flex justify-between items-start mb-4">
+                  <h3 className="font-bold text-amber-800">يحتاج تدقيق</h3>
+                  <div className="p-2 bg-amber-50 rounded-xl"><ShieldAlert className="size-5 text-amber-600" /></div>
+               </div>
+               <div className="flex items-end gap-2">
+                  <span className="text-4xl font-black text-amber-600 font-mono">{needsReviewCount}</span>
+                  <span className="text-sm text-stone-500 mb-1">ملف</span>
+               </div>
+               {onNavigate && <p className="text-[10px] text-stone-400 mt-2 flex items-center gap-1"><MousePointerClick className="size-3" /> انقر للتصفية</p>}
+            </button>
           </div>
+
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
              {/* Execution Status Chart */}
              <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm">
                 <h3 className="font-bold text-stone-800 mb-6 text-center">حالة تنفيذ الأحكام (Taux d'exécution)</h3>
+                {onNavigate && <p className="text-[10px] text-stone-400 text-center mb-2 flex items-center justify-center gap-1"><MousePointerClick className="size-3" /> انقر على قطاع للتصفية</p>}
                 <div className="h-[300px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
@@ -175,7 +257,9 @@ export function ContentieuxStats({ cases, onClose }: { cases: Case[], onClose: (
                         label={({name, percent}) => `${name} ${(percent * 100).toFixed(0)}%`}
                       >
                         {executionData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]}
+                            style={{ cursor: onNavigate ? 'pointer' : 'default' }}
+                            onClick={() => nav({ type: 'execStatus', value: entry.name === 'لم يبدأ بعد' ? '__not_started__' : entry.name })} />
                         ))}
                       </Pie>
                       <RechartsTooltip />
@@ -231,6 +315,132 @@ export function ContentieuxStats({ cases, onClose }: { cases: Case[], onClose: (
                   </ResponsiveContainer>
                 </div>
              </div>
+
+             {/* توزيع الملفات حسب الوضعية */}
+             <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm">
+                <h3 className="font-bold text-stone-800 mb-6 text-center">توزيع الملفات حسب الوضعية</h3>
+                {onNavigate && <p className="text-[10px] text-stone-400 text-center mb-2 flex items-center justify-center gap-1"><MousePointerClick className="size-3" /> انقر على قطاع للتصفية</p>}
+                <div className="h-[300px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={statusData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={60}
+                        outerRadius={100}
+                        paddingAngle={5}
+                        dataKey="value"
+                        label={({name, percent}) => `${(percent * 100).toFixed(0)}%`}
+                      >
+                        {statusData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]}
+                            style={{ cursor: onNavigate ? 'pointer' : 'default' }}
+                            onClick={() => nav({ type: 'search', query: entry.name })} />
+                        ))}
+                      </Pie>
+                      <RechartsTooltip />
+                      <Legend />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+             </div>
+
+             {/* الآجال القانونية حسب الخطورة */}
+             <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm">
+                <h3 className="font-bold text-stone-800 mb-6 text-center">الآجال القانونية حسب الخطورة (كل الملفات)</h3>
+                {onNavigate && <p className="text-[10px] text-stone-400 text-center mb-2 flex items-center justify-center gap-1"><MousePointerClick className="size-3" /> انقر على «منتهٍ» أو «حرج» للتصفية</p>}
+                <div className="h-[300px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={severityData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+                      <XAxis dataKey="name" axisLine={false} tickLine={false} />
+                      <YAxis allowDecimals={false} axisLine={false} tickLine={false} />
+                      <RechartsTooltip />
+                      <Bar dataKey="value" radius={[8, 8, 0, 0]}>
+                        {severityData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color}
+                            style={{ cursor: (onNavigate && (entry.key === 'expired' || entry.key === 'critical')) ? 'pointer' : 'default' }}
+                            onClick={() => { if (entry.key === 'expired' || entry.key === 'critical') nav({ type: 'deadlineSoon' }); }} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+             </div>
+
+             {/* توزيع الملفات حسب المحكمة */}
+             <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm">
+                <h3 className="font-bold text-stone-800 mb-6 text-center">توزيع الملفات حسب المحكمة (أعلى 8)</h3>
+                {onNavigate && <p className="text-[10px] text-stone-400 text-center mb-2 flex items-center justify-center gap-1"><MousePointerClick className="size-3" /> انقر على عمود للتصفية</p>}
+                <div className="h-[300px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={courtDist} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+                      <XAxis dataKey="name" axisLine={false} tickLine={false} angle={-30} textAnchor="end" interval={0} height={60} />
+                      <YAxis allowDecimals={false} axisLine={false} tickLine={false} />
+                      <RechartsTooltip />
+                      <Bar dataKey="value" radius={[8, 8, 0, 0]} fill="#3b82f6">
+                        {courtDist.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill="#3b82f6"
+                            style={{ cursor: onNavigate ? 'pointer' : 'default' }}
+                            onClick={() => nav({ type: 'search', query: entry.name })} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+             </div>
+
+             {/* توزيع الملفات حسب النوع */}
+             <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm">
+                <h3 className="font-bold text-stone-800 mb-6 text-center">توزيع الملفات حسب النوع (أعلى 8)</h3>
+                {onNavigate && <p className="text-[10px] text-stone-400 text-center mb-2 flex items-center justify-center gap-1"><MousePointerClick className="size-3" /> انقر على عمود للتصفية</p>}
+                <div className="h-[300px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={typeDist} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+                      <XAxis dataKey="name" axisLine={false} tickLine={false} angle={-30} textAnchor="end" interval={0} height={60} />
+                      <YAxis allowDecimals={false} axisLine={false} tickLine={false} />
+                      <RechartsTooltip />
+                      <Bar dataKey="value" radius={[8, 8, 0, 0]} fill="#8b5cf6">
+                        {typeDist.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill="#8b5cf6"
+                            style={{ cursor: onNavigate ? 'pointer' : 'default' }}
+                            onClick={() => nav({ type: 'search', query: entry.name })} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+             </div>
+
+             {/* أكثر الخصوم عوداً */}
+             {topRepeatOffenders.length > 0 && (
+               <div className="bg-white p-6 rounded-2xl border border-purple-100 shadow-sm lg:col-span-2">
+                  <h3 className="font-bold text-stone-800 mb-1 text-center flex items-center justify-center gap-2"><Users className="size-4 text-purple-600" /> أكثر الخصوم عوداً (تتبع العود)</h3>
+                  <p className="text-xs text-stone-400 text-center mb-4">أسماء ظهرت في أكثر من ملف واحد كخصم/متهم</p>
+                  {onNavigate && <p className="text-[10px] text-stone-400 text-center mb-2 flex items-center justify-center gap-1"><MousePointerClick className="size-3" /> انقر على اسم لعرض ملفاته</p>}
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={topRepeatOffenders} layout="vertical" margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#E5E7EB" />
+                        <XAxis type="number" allowDecimals={false} axisLine={false} tickLine={false} />
+                        <YAxis type="category" dataKey="name" width={160} axisLine={false} tickLine={false} />
+                        <RechartsTooltip formatter={(val: number) => [`${val} ملف`, 'عدد الملفات']} />
+                        <Bar dataKey="count" radius={[0, 8, 8, 0]} fill="#a855f7">
+                          {topRepeatOffenders.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill="#a855f7"
+                              style={{ cursor: onNavigate ? 'pointer' : 'default' }}
+                              onClick={() => nav({ type: 'search', query: entry.name })} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+               </div>
+             )}
+
 
           </div>
         </div>
