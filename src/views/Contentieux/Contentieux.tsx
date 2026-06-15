@@ -1,24 +1,15 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
-  Search, Plus, FileText, CheckCircle2, Clock, AlertCircle,
-  ChevronLeft, ChevronDown, Scale, Shield, User, FilePlus2, Activity, Landmark,
+  Search, Filter, Plus, FileText, CheckCircle2, Clock, AlertCircle,
+  ChevronLeft, Scale, Shield, User, FilePlus2, Activity, Landmark,
   AlertTriangle, DownloadCloud, ClipboardPaste, Lock, MousePointerClick,
   Trash2, Download, Printer, PieChartIcon, Gavel, FileCheck2, Check,
-  FileSpreadsheet, Database, RefreshCw, X, Eye, Sparkles, FileDown,
-  Maximize2, Minimize2, CalendarDays, MapPin, Users, ShieldAlert,
-  FolderOpen, UserCog, CalendarClock, ExternalLink, ListChecks
+  FileSpreadsheet, Database, RefreshCw, X, Eye, Sparkles
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { CaseWizard } from './components/CaseWizard';
-import { ContentieuxStats, type StatsNavigateAction } from './components/ContentieuxStats';
+import { ContentieuxStats } from './components/ContentieuxStats';
 import { loadCases, saveCase, deleteCase, deleteCases } from '@/lib/contentieux';
-import {
-  computeDeadlines, nearestDeadline, getCriticalDeadlinesCount,
-  relatedCasesBySameDefendant, getQualityFlags, needsManualReview,
-  decodeNationalId, buildICS, downloadTextFile, buildRepeatOffenderIndex,
-  getCurrentUser, setCurrentUser, appendAuditEntry,
-  type DeadlineItem,
-} from '@/lib/caseAnalysis';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -61,38 +52,6 @@ export interface Case {
   lastSyncedAt?: string;
   /** عدد مرات المزامنة من البوابة */
   syncCount?: number;
-
-  // ── المسؤولية والمتابعة ──────────────────────────────────────────
-  /** المكلَّف بالملف (مستشار قانوني / محامٍ) */
-  assignedTo?: string;
-  /** علم يدوي: الملف يحتاج تدقيقاً (بالإضافة للفحص التلقائي) */
-  needsReview?: boolean;
-  /** سجل التتبع: من عدّل وماذا ومتى */
-  auditLog?: { date: string; user: string; action: string }[];
-
-  // ── الآجال ────────────────────────────────────────────────────────
-  /** تاريخ الأمر القضائي بأداء مصاريف الخبرة */
-  expertFeeOrderDate?: string;
-  /** هل تم أداء مصاريف الخبرة؟ */
-  expertFeePaid?: boolean;
-  /** عدد أيام أجل أداء مصاريف الخبرة (افتراضي 8 إن لم يُحدَّد) */
-  expertFeeDeadlineDays?: string;
-
-  // ── الربط المكاني (سلسلة القيمة: شرطة غابوية / دومين / تحسس بعدي) ──
-  /** مرجع الرسم العقاري أو مطلب التحفيظ للقطعة الغابوية المعنية */
-  parcelRef?: string;
-  /** مساحة القطعة المتنازع عليها (هكتار) */
-  parcelArea?: string;
-  /** القيمة التقديرية للضرر/القطعة (درهم) */
-  estimatedValue?: string;
-  /** إحداثيات نقطة مرجعية على الخريطة (إن وُجدت) */
-  geoLat?: string;
-  geoLng?: string;
-  /** رسم Polygon للقطعة بصيغة GeoJSON (نص) — اختياري */
-  geoPolygon?: string;
-
-  // ── الوثائق المرفقة ──────────────────────────────────────────────
-  documents?: { name: string; url: string; type?: string; addedAt?: string }[];
 }
 
 // ─── أدوات المزامنة (منع التكرار + كشف الجديد) ──────────────────────────────
@@ -163,47 +122,6 @@ function syncAge(iso?: string): { label: string; cls: string } | null {
   return { label, cls };
 }
 
-/** يحوّل تاريخاً بصيغة dd/mm/yyyy أو ISO إلى timestamp (NaN إن تعذّر) */
-function parseFlexDate(d?: string): number {
-  if (!d) return NaN;
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(d)) {
-    const [dd, mm, yy] = d.split('/');
-    return new Date(`${yy}-${mm}-${dd}`).getTime();
-  }
-  return new Date(d).getTime();
-}
-
-/** يبرز كل تكرارات نص البحث داخل قيمة نصية بإطار <mark> (مطابقة حرفية غير حساسة لحالة الأحرف) */
-function highlightMatch(text: string, query: string): React.ReactNode {
-  if (!text) return text;
-  const q = query.trim();
-  if (!q) return text;
-  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
-  if (parts.length === 1) return text;
-  return parts.map((part, i) =>
-    part.toLowerCase() === q.toLowerCase()
-      ? <mark key={i} className="bg-amber-200 text-stone-900 rounded px-0.5">{part}</mark>
-      : <React.Fragment key={i}>{part}</React.Fragment>
-  );
-}
-
-/** يحدّد الأقسام التي يظهر فيها نص البحث داخل الملف (للبحث العميق) */
-function findMatchLocations(c: Case, query: string): string[] {
-  const q = normalizeAr(query.trim());
-  if (!q) return [];
-  const found: string[] = [];
-  const has = (s?: string) => !!s && normalizeAr(s).includes(q);
-  if (has(c.mahakimId) || has(c.id) || has(c.nationalId)) found.push('بيانات الملف');
-  if (has(c.subject) || has(c.type) || has(c.court) || has(c.judge) || has(c.section)) found.push('الموضوع/المحكمة');
-  if (has(c.defendant) || (c.parties || []).some(p => has(p.name) || has(p.role))) found.push('الأطراف');
-  if ((c.procedures || []).some(p => has(p.action) || has(p.decision))) found.push('الإجراءات');
-  if (has(c.pvNumber) || has(c.offenseType) || has(c.pvStatus)) found.push('المخالفة');
-  if (has(c.executionStatus) || has(c.executionObstacle) || has(c.notificationMethod)) found.push('التنفيذ');
-  if (has(c.assignedTo) || has(c.parcelRef)) found.push('المتابعة/الموقع');
-  return found;
-}
-
 const recentCases: Case[] = [
   {
     id: 'CTX-2024-001', mahakimId: '2024/1101/221', date: '2024-03-15',
@@ -251,8 +169,6 @@ function fuzzyMatchCase(c: Case, raw: string): boolean {
     c.id, c.mahakimId || '', c.nationalId || '', c.court, c.subject,
     c.type, c.status, c.defendant || '', c.judge || '', c.section || '',
     c.pvNumber || '', c.offenseType || '', c.pvStatus || '',
-    c.executionStatus || '', c.executionObstacle || '', c.notificationMethod || '',
-    c.assignedTo || '', c.parcelRef || '',
     ...(c.parties?.map(p => `${p.role} ${p.name}`) || []),
     ...(c.procedures?.map(p => `${p.action} ${p.decision}`) || []),
   ].join(' '));
@@ -266,19 +182,12 @@ function fuzzyMatchCase(c: Case, raw: string): boolean {
 
 // ─── XLSX Export ──────────────────────────────────────────────────────────────
 
-const sortProcsDesc = (procs?: { date: string }[]) =>
-  [...(procs || [])].sort((a, b) => {
-    const p = (d: string) => {
-      if (d.match(/\d{2}\/\d{2}\/\d{4}/)) { const [dd, mm, yy] = d.split('/'); return new Date(`${yy}-${mm}-${dd}`).getTime(); }
-      return new Date(d).getTime() || 0;
-    };
-    return p(b.date) - p(a.date);
-  });
-
-/** يبني صفوف "بطاقة الملف" الكاملة (معلومات، أطراف، إجراءات، عقوبات، تنفيذ، آجال، ربط مكاني، وثائق، جودة) */
-function buildCaseSheetRows(c: Case): (string | number)[][] {
+/** Single case → ONE sheet with all data laid out vertically */
+export function exportSingleCaseXLSX(c: Case) {
+  const wb = XLSX.utils.book_new();
   const rows: (string | number)[][] = [];
 
+  const sep = () => rows.push(['']);
   const section = (title: string) => {
     rows.push(['']);
     rows.push([`▌ ${title}`]);
@@ -293,7 +202,6 @@ function buildCaseSheetRows(c: Case): (string | number)[][] {
   rows.push(['القاضي المقرر', c.judge || '', 'تاريخ التسجيل', c.date]);
   rows.push(['موضوع النزاع', c.subject, 'الخصم الرئيسي', c.defendant || '']);
   rows.push(['الوضعية', c.status, 'الجلسة القادمة', c.nextSession || '']);
-  rows.push(['المكلَّف بالملف', c.assignedTo || '', 'يحتاج تدقيق', needsManualReview(c) ? 'نعم' : 'لا']);
   if (c.lastSyncedAt) {
     rows.push(['آخر مزامنة من البوابة', new Date(c.lastSyncedAt).toLocaleString('fr-MA'), 'عدد المزامنات', c.syncCount || 1]);
   }
@@ -313,7 +221,14 @@ function buildCaseSheetRows(c: Case): (string | number)[][] {
   if (c.procedures && c.procedures.length > 0) {
     section('الإجراءات والجلسات');
     rows.push(['تاريخ الإجراء', 'نوع الإجراء', 'القرار / الملاحظة', 'رقم الحكم / الخبرة']);
-    sortProcsDesc(c.procedures).forEach(proc => rows.push([proc.date, (proc as any).action, (proc as any).decision, (proc as any).number || '']));
+    const sorted = [...c.procedures].sort((a, b) => {
+      const p = (d: string) => {
+        if (d.match(/\d{2}\/\d{2}\/\d{4}/)) { const [dd, mm, yy] = d.split('/'); return new Date(`${yy}-${mm}-${dd}`).getTime(); }
+        return new Date(d).getTime() || 0;
+      };
+      return p(b.date) - p(a.date);
+    });
+    sorted.forEach(proc => rows.push([proc.date, proc.action, proc.decision, (proc as any).number || '']));
   }
 
   // ── PV ──
@@ -334,85 +249,10 @@ function buildCaseSheetRows(c: Case): (string | number)[][] {
     rows.push(['المبالغ المستخلصة (د.م)', c.executionAmountRecovered ? Number(c.executionAmountRecovered) : '', 'عائق التنفيذ', c.executionObstacle || '']);
   }
 
-  // ── Deadlines ──
-  const deadlines = computeDeadlines(c);
-  if (deadlines.length > 0) {
-    section('الآجال القانونية');
-    rows.push(['الأجل', 'تاريخ الانطلاق', 'تاريخ الاستحقاق', 'الأيام المتبقية', 'الأساس القانوني']);
-    deadlines.forEach(d => rows.push([d.label, d.fromDate, d.dueDate, d.daysLeft, d.basis]));
-  }
-
-  // ── الربط المكاني ──
-  if (c.parcelRef || c.parcelArea || c.estimatedValue || c.geoLat) {
-    section('الربط المكاني — القطعة الغابوية');
-    rows.push(['مرجع الرسم العقاري / مطلب التحفيظ', c.parcelRef || '', 'المساحة (هكتار)', c.parcelArea || '']);
-    rows.push(['القيمة التقديرية (د.م)', c.estimatedValue ? Number(c.estimatedValue) : '', 'الموقع (خ.ع / خ.ط)', c.geoLat && c.geoLng ? `${c.geoLat}, ${c.geoLng}` : '']);
-  }
-
-  // ── الوثائق ──
-  if (c.documents && c.documents.length > 0) {
-    section('الوثائق المرفقة');
-    rows.push(['اسم الوثيقة', 'النوع', 'الرابط', 'تاريخ الإضافة']);
-    c.documents.forEach(d => rows.push([d.name, d.type || '', d.url, d.addedAt || '']));
-  }
-
-  // ── ملاحظات الجودة ──
-  const flags = getQualityFlags(c);
-  if (flags.length > 0) {
-    section('ملاحظات التدقيق');
-    flags.forEach(f => rows.push([`⚠ ${f}`, '', '', '']));
-  }
-
-  return rows;
-}
-
-/** Single case → ONE sheet with all data laid out vertically */
-export function exportSingleCaseXLSX(c: Case) {
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(buildCaseSheetRows(c));
+  const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = [{ wch: 28 }, { wch: 38 }, { wch: 28 }, { wch: 38 }];
   XLSX.utils.book_append_sheet(wb, ws, 'بطاقة الملف الكاملة');
   XLSX.writeFile(wb, `ملف_${(c.mahakimId || c.id).replace(/\//g, '-')}.xlsx`);
-}
-
-/** يحوّل عنوان الملف إلى اسم ورقة Excel صالح (≤31 حرفاً، بدون رموز ممنوعة) ويضمن عدم التكرار */
-function sanitizeSheetName(name: string, used: Set<string>): string {
-  let s = (name || 'ملف').replace(/[\\/?*[\]:]/g, '-').trim();
-  if (!s) s = 'ملف';
-  if (s.length > 31) s = s.slice(0, 31);
-  let final = s;
-  let i = 2;
-  while (used.has(final)) {
-    const suffix = ` (${i})`;
-    final = s.slice(0, 31 - suffix.length) + suffix;
-    i++;
-  }
-  used.add(final);
-  return final;
-}
-
-/** كل الملفات → مصنّف واحد، كل ملف في ورقة (sheet) منفصلة باسمه — للتحميل الجماعي */
-export function exportAllCasesWorkbookXLSX(cases: Case[]) {
-  const wb = XLSX.utils.book_new();
-  const used = new Set<string>();
-
-  // ورقة فهرس أولاً
-  const indexRows: (string | number)[][] = [
-    ['الفهرس — قائمة الملفات', '', '', ''],
-    ['رقم محاكم', 'المحكمة', 'الموضوع', 'الوضعية'],
-  ];
-  cases.forEach(c => indexRows.push([c.mahakimId || c.id, c.court, c.subject, c.status]));
-  const wsIndex = XLSX.utils.aoa_to_sheet(indexRows);
-  wsIndex['!cols'] = [{ wch: 18 }, { wch: 30 }, { wch: 35 }, { wch: 25 }];
-  XLSX.utils.book_append_sheet(wb, wsIndex, sanitizeSheetName('فهرس', used));
-
-  for (const c of cases) {
-    const ws = XLSX.utils.aoa_to_sheet(buildCaseSheetRows(c));
-    ws['!cols'] = [{ wch: 28 }, { wch: 38 }, { wch: 28 }, { wch: 38 }];
-    XLSX.utils.book_append_sheet(wb, ws, sanitizeSheetName(c.mahakimId || c.id, used));
-  }
-
-  XLSX.writeFile(wb, `كل_الملفات_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.xlsx`);
 }
 
 /** All cases → ONE wide flat sheet, one row per case */
@@ -424,413 +264,50 @@ export function exportAllCasesXLSX(cases: Case[]) {
     'المحكمة', 'درجة المحكمة', 'الشعبة', 'القاضي المقرر',
     'تاريخ التسجيل', 'نوع الدعوى', 'موضوع النزاع',
     'الوضعية', 'الجلسة القادمة', 'الخصم',
-    'الأطراف (ملخص)', 'المكلَّف بالملف',
+    'الأطراف (ملخص)',
     'عدد الإجراءات', 'آخر تاريخ إجراء', 'القرار الأخير',
     'رقم المحضر', 'تاريخ المحضر', 'نوع الجنحة', 'مآل المحضر',
     'الغرامة (د.م)', 'التعويضات (د.م)', 'الإرجاع',
     'صلح', 'حالة التنفيذ', 'طريقة التبليغ', 'تاريخ التبليغ',
     'تاريخ التنفيذ', 'المبالغ المستخلصة (د.م)', 'عائق التنفيذ',
-    'أقرب أجل', 'تاريخ استحقاقه', 'أيام متبقية',
-    'يحتاج تدقيق', 'آخر مزامنة من البوابة', 'عدد المزامنات',
+    'آخر مزامنة من البوابة', 'عدد المزامنات',
   ];
 
   const data = cases.map(c => {
-    const lastProc = sortProcsDesc(c.procedures)[0];
+    const sortedProcs = [...(c.procedures || [])].sort((a, b) => {
+      const p = (d: string) => {
+        if (d.match(/\d{2}\/\d{2}\/\d{4}/)) { const [dd, mm, yy] = d.split('/'); return new Date(`${yy}-${mm}-${dd}`).getTime(); }
+        return new Date(d).getTime() || 0;
+      };
+      return p(b.date) - p(a.date);
+    });
+    const lastProc = sortedProcs[0];
     const partiesSummary = (c.parties || []).map(p => `${p.role}: ${p.name}`).join(' | ') || c.defendant || '';
-    const nd = nearestDeadline(c);
 
     return [
       c.id, c.mahakimId || '', c.nationalId || '',
       c.court, c.courtLevel || '', c.section || '', c.judge || '',
       c.date, c.type, c.subject,
       c.status, c.nextSession || '', c.defendant || '',
-      partiesSummary, c.assignedTo || '',
+      partiesSummary,
       (c.procedures || []).length, lastProc?.date || '', lastProc?.decision || '',
       c.pvNumber || '', c.pvDate || '', c.offenseType || '', c.pvStatus || '',
       c.fine ? Number(c.fine) : '', c.compensation ? Number(c.compensation) : '', c.restitution || '',
       c.reconciliation ? 'نعم' : '', c.executionStatus || '', c.notificationMethod || '', c.notificationDate || '',
       c.executionDate || '', c.executionAmountRecovered ? Number(c.executionAmountRecovered) : '', c.executionObstacle || '',
-      nd?.label || '', nd?.dueDate || '', nd ? nd.daysLeft : '',
-      needsManualReview(c) ? 'نعم' : 'لا',
       c.lastSyncedAt ? new Date(c.lastSyncedAt).toLocaleString('fr-MA') : '', c.syncCount || '',
     ];
   });
 
   const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
   ws['!cols'] = headers.map((h, i) => ({
-    wch: [18, 18, 20, 28, 14, 16, 22, 14, 12, 30, 22, 14, 20, 40, 16, 8, 14, 30, 14, 14, 25, 18, 12, 12, 20, 6, 18, 20, 14, 14, 18, 35, 22, 14, 10, 12, 18, 8][i] || 18
+    wch: [18, 18, 20, 28, 14, 16, 22, 14, 12, 30, 22, 14, 20, 40, 8, 14, 30, 14, 14, 25, 18, 12, 12, 20, 6, 18, 20, 14, 14, 18, 35][i] || 18
   }));
   XLSX.utils.book_append_sheet(wb, ws, 'قاعدة بيانات القضايا');
   XLSX.writeFile(wb, `قاعدة_بيانات_القضايا_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.xlsx`);
 }
 
-/** تقرير دوري (شهري/فصلي) جاهز للإرسال للمديرية الجهوية — توزيع حسب المحكمة والنوع + مقارنة بفترة سابقة */
-export function exportPeriodicReportXLSX(cases: Case[], from: string, to: string, label: string) {
-  const wb = XLSX.utils.book_new();
-  const inRange = (c: Case) => c.date >= from && c.date <= to;
-  const current = cases.filter(inRange);
-
-  // فترة سابقة بنفس الطول للمقارنة
-  const f = new Date(from), t = new Date(to);
-  const spanDays = Math.max(1, Math.round((t.getTime() - f.getTime()) / 86400000));
-  const prevTo = new Date(f); prevTo.setDate(prevTo.getDate() - 1);
-  const prevFrom = new Date(prevTo); prevFrom.setDate(prevFrom.getDate() - spanDays);
-  const prevToStr = prevTo.toISOString().split('T')[0];
-  const prevFromStr = prevFrom.toISOString().split('T')[0];
-  const previous = cases.filter(c => c.date >= prevFromStr && c.date <= prevToStr);
-
-  const judgedCount = (arr: Case[]) => arr.filter(c => /حكم|قرار|صدر/.test(c.status)).length;
-  const executedCount = (arr: Case[]) => arr.filter(c => c.executionStatus?.includes('منفذ')).length;
-  const recovered = (arr: Case[]) => arr.reduce((s, c) => s + (parseFloat(c.executionAmountRecovered || '0') || 0), 0);
-  const sanctioned = (arr: Case[]) => arr.reduce((s, c) => s + (parseFloat(c.fine || '0') || 0) + (parseFloat(c.compensation || '0') || 0), 0);
-  const winRate = (arr: Case[]) => {
-    const judged = arr.filter(c => /حكم|قرار|صدر/.test(c.status));
-    if (judged.length === 0) return 0;
-    const favorable = judged.filter(c =>
-      !/رفض|عدم قبول|عدم الاختصاص|بطلان/.test(c.status) || /لفائدة|الوكالة|قبول/.test(c.status)
-    ).length;
-    return (favorable / judged.length) * 100;
-  };
-
-  const rows: (string | number)[][] = [];
-  rows.push([`تقرير دوري — ${label}`, '', '', '']);
-  rows.push(['الفترة', `${from} → ${to}`, 'تاريخ الإصدار', new Date().toLocaleDateString('fr-MA')]);
-  rows.push(['']);
-  rows.push(['▌ المؤشرات العامة', '', '', '']);
-  rows.push(['المؤشر', 'الفترة الحالية', 'الفترة السابقة', 'التغيّر']);
-  const metric = (name: string, cur: number, prev: number, suffix = '') => {
-    const diff = cur - prev;
-    const arrow = diff > 0 ? '▲' : diff < 0 ? '▼' : '—';
-    rows.push([name, `${cur}${suffix}`, `${prev}${suffix}`, `${arrow} ${Math.abs(diff)}${suffix}`]);
-  };
-  metric('عدد الملفات المسجَّلة', current.length, previous.length);
-  metric('عدد الأحكام/القرارات الصادرة', judgedCount(current), judgedCount(previous));
-  metric('عدد الملفات المنفَّذة', executedCount(current), executedCount(previous));
-  metric('نسبة الربح (تقديرية %)', Math.round(winRate(current)), Math.round(winRate(previous)), '%');
-  metric('المبالغ المستخلصة (د.م)', Math.round(recovered(current)), Math.round(recovered(previous)));
-  metric('المبالغ المحكوم بها (د.م)', Math.round(sanctioned(current)), Math.round(sanctioned(previous)));
-
-  rows.push(['']);
-  rows.push(['▌ التوزيع حسب المحكمة', '', '', '']);
-  rows.push(['المحكمة', 'عدد الملفات', 'أحكام صادرة', 'منفَّذة']);
-  const byCourt = new Map<string, Case[]>();
-  current.forEach(c => { const k = c.court || 'غير محدد'; if (!byCourt.has(k)) byCourt.set(k, []); byCourt.get(k)!.push(c); });
-  for (const [court, arr] of byCourt) rows.push([court, arr.length, judgedCount(arr), executedCount(arr)]);
-
-  rows.push(['']);
-  rows.push(['▌ التوزيع حسب نوع الدعوى', '', '', '']);
-  rows.push(['النوع', 'عدد الملفات', 'أحكام صادرة', 'منفَّذة']);
-  const byType = new Map<string, Case[]>();
-  current.forEach(c => { const k = c.type || 'غير محدد'; if (!byType.has(k)) byType.set(k, []); byType.get(k)!.push(c); });
-  for (const [type, arr] of byType) rows.push([type, arr.length, judgedCount(arr), executedCount(arr)]);
-
-  rows.push(['']);
-  rows.push(['▌ ملفات تحتاج تدقيقاً (للمتابعة)', '', '', '']);
-  rows.push(['رقم محاكم', 'الموضوع', 'ملاحظة', '']);
-  current.filter(needsManualReview).forEach(c => {
-    rows.push([c.mahakimId || c.id, c.subject, getQualityFlags(c)[0] || '', '']);
-  });
-
-  const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{ wch: 32 }, { wch: 22 }, { wch: 22 }, { wch: 22 }];
-  XLSX.utils.book_append_sheet(wb, ws, 'التقرير الدوري');
-  XLSX.writeFile(wb, `تقرير_دوري_${label.replace(/\s+/g, '_')}.xlsx`);
-}
-
-
-// ─── PDF Export — بطاقة تقنية محترفة ───────────────────────────────────────────
-
-function esc(s: any): string {
-  return String(s ?? '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m] as string));
-}
-
-const SEVERITY_BG: Record<DeadlineItem['severity'], string> = {
-  expired: '#fee2e2', critical: '#fee2e2', warning: '#fef3c7', ok: '#d1fae5',
-};
-const SEVERITY_FG: Record<DeadlineItem['severity'], string> = {
-  expired: '#b91c1c', critical: '#c2410c', warning: '#92400e', ok: '#047857',
-};
-const SEVERITY_TXT: Record<DeadlineItem['severity'], string> = {
-  expired: 'منتهٍ', critical: 'حرج', warning: 'قريب', ok: 'عادي',
-};
-
-/** يبني HTML لبطاقة تقنية كاملة عن ملف — تُستخدم مع html2pdf لتوليد PDF منظَّم */
-function buildCaseCardHTML(c: Case): string {
-  const procs = sortProcsDesc(c.procedures);
-  const deadlines = computeDeadlines(c);
-  const flags = getQualityFlags(c);
-  const decoded = decodeNationalId(c);
-
-  const row = (l: string, v: any) => `
-    <div style="flex:1 1 50%; padding:6px 10px; box-sizing:border-box;">
-      <div style="font-size:10px; color:#78716c; font-weight:700;">${esc(l)}</div>
-      <div style="font-size:13px; color:#1c1917; font-weight:700;">${esc(v || '—')}</div>
-    </div>`;
-
-  const section = (title: string, body: string) => `
-    <div style="margin-top:16px; page-break-inside:avoid;">
-      <div style="font-size:14px; font-weight:800; color:#065f46; border-bottom:2px solid #d1fae5; padding-bottom:6px; margin-bottom:8px;">${esc(title)}</div>
-      ${body}
-    </div>`;
-
-  let html = `
-  <div dir="rtl" style="font-family: 'Tahoma','Segoe UI',Arial,sans-serif; width:760px; padding:24px; color:#1c1917; background:#ffffff;">
-    <div style="display:flex; justify-content:space-between; align-items:flex-start; border-bottom:3px solid #047857; padding-bottom:12px; margin-bottom:12px;">
-      <div>
-        <div style="font-size:18px; font-weight:900; color:#064e3b;">بطاقة تقنية للملف</div>
-        <div style="font-size:11px; color:#78716c; margin-top:2px;">الوكالة الوطنية للمياه والغابات — قسم المنازعات</div>
-      </div>
-      <div style="text-align:left;">
-        <div style="font-size:16px; font-weight:900; font-family:monospace; color:#047857;">${esc(c.mahakimId || c.id)}</div>
-        <div style="font-size:10px; color:#a8a29e;">${esc(new Date().toLocaleDateString('fr-MA'))}</div>
-      </div>
-    </div>
-
-    <div style="display:flex; flex-wrap:wrap; border:1px solid #e7e5e4; border-radius:10px; overflow:hidden;">
-      ${row('المرجع الداخلي', c.id)}
-      ${row('الرقم الوطني للملف', c.nationalId)}
-      ${row('المحكمة', c.court)}
-      ${row('درجة المحكمة / الشعبة', [c.courtLevel, c.section].filter(Boolean).join(' — '))}
-      ${row('نوع الدعوى', c.type)}
-      ${row('تاريخ التسجيل', c.date)}
-      ${row('القاضي / المستشار المقرر', c.judge)}
-      ${row('المكلَّف بالملف', c.assignedTo)}
-      ${row('الوضعية الحالية', c.status)}
-      ${row('الجلسة القادمة', c.nextSession)}
-      <div style="flex:1 1 100%; padding:6px 10px; box-sizing:border-box;">
-        <div style="font-size:10px; color:#78716c; font-weight:700;">موضوع النزاع</div>
-        <div style="font-size:13px; color:#1c1917; font-weight:700;">${esc(c.subject)}</div>
-      </div>
-    </div>`;
-
-  // ── Parties ──
-  if (c.parties && c.parties.length) {
-    html += section('الأطراف', `
-      <table style="width:100%; border-collapse:collapse; font-size:12px;">
-        <thead><tr style="background:#f5f5f4;">
-          <th style="border:1px solid #e7e5e4; padding:6px; text-align:right;">الصفة</th>
-          <th style="border:1px solid #e7e5e4; padding:6px; text-align:right;">الاسم / الهيئة</th>
-        </tr></thead>
-        <tbody>
-          ${c.parties.map(p => `<tr><td style="border:1px solid #e7e5e4; padding:6px;">${esc(p.role)}</td><td style="border:1px solid #e7e5e4; padding:6px; font-weight:700;">${esc(p.name)}</td></tr>`).join('')}
-        </tbody>
-      </table>`);
-  }
-
-  // ── Procedures ──
-  if (procs.length) {
-    html += section('الإجراءات والجلسات (الأحدث أولاً)', `
-      <table style="width:100%; border-collapse:collapse; font-size:11px;">
-        <thead><tr style="background:#f5f5f4;">
-          <th style="border:1px solid #e7e5e4; padding:6px; width:80px;">التاريخ</th>
-          <th style="border:1px solid #e7e5e4; padding:6px;">الإجراء</th>
-          <th style="border:1px solid #e7e5e4; padding:6px;">القرار / الملاحظة</th>
-        </tr></thead>
-        <tbody>
-          ${procs.map((p: any) => `<tr><td style="border:1px solid #e7e5e4; padding:6px; font-family:monospace;">${esc(p.date)}</td><td style="border:1px solid #e7e5e4; padding:6px; font-weight:700;">${esc(p.action)}${p.number ? ` (${esc(p.number)})` : ''}</td><td style="border:1px solid #e7e5e4; padding:6px; color:#047857;">${esc(p.decision)}</td></tr>`).join('')}
-        </tbody>
-      </table>`);
-  }
-
-  // ── PV & sanctions ──
-  if (c.pvNumber || c.offenseType || c.fine) {
-    html += section('محضر المخالفة والعقوبات', `
-      <div style="display:flex; flex-wrap:wrap; border:1px solid #fed7aa; border-radius:10px; overflow:hidden; background:#fffbeb;">
-        ${row('رقم المحضر', c.pvNumber)}
-        ${row('تاريخ المحضر', c.pvDate)}
-        ${row('نوع الجنحة', c.offenseType)}
-        ${row('مآل المحضر', c.pvStatus)}
-        ${row('الغرامة (د.م)', c.fine ? Number(c.fine).toLocaleString() : '')}
-        ${row('التعويضات (د.م)', c.compensation ? Number(c.compensation).toLocaleString() : '')}
-        ${row('الإرجاع', c.restitution)}
-        ${row('عقوبات أخرى', c.otherSanctions)}
-        ${row('صلح', c.reconciliation ? 'نعم' : 'لا')}
-      </div>`);
-  }
-
-  // ── Execution ──
-  if (c.executionStatus || c.notificationMethod) {
-    html += section('التنفيذ والتبليغ', `
-      <div style="display:flex; flex-wrap:wrap; border:1px solid #a7f3d0; border-radius:10px; overflow:hidden; background:#ecfdf5;">
-        ${row('حالة التنفيذ', c.executionStatus)}
-        ${row('طريقة التبليغ', c.notificationMethod)}
-        ${row('تاريخ التبليغ', c.notificationDate)}
-        ${row('تاريخ التنفيذ', c.executionDate)}
-        ${row('المبالغ المستخلصة (د.م)', c.executionAmountRecovered ? Number(c.executionAmountRecovered).toLocaleString() : '')}
-        <div style="flex:1 1 100%; padding:6px 10px; box-sizing:border-box;">
-          <div style="font-size:10px; color:#78716c; font-weight:700;">عائق التنفيذ</div>
-          <div style="font-size:12px; color:#1c1917;">${esc(c.executionObstacle || '—')}</div>
-        </div>
-      </div>`);
-  }
-
-  // ── Deadlines ──
-  if (deadlines.length) {
-    html += section('الآجال القانونية', `
-      <div style="display:flex; flex-wrap:wrap; gap:8px;">
-        ${deadlines.map(d => `
-          <div style="flex:1 1 220px; border-radius:10px; padding:8px 10px; background:${SEVERITY_BG[d.severity]}; color:${SEVERITY_FG[d.severity]};">
-            <div style="font-size:11px; font-weight:800;">${esc(d.label)} — ${SEVERITY_TXT[d.severity]}</div>
-            <div style="font-size:13px; font-weight:900; font-family:monospace;">${esc(d.dueDate)} (${d.daysLeft >= 0 ? `بعد ${d.daysLeft} يوم` : `منذ ${Math.abs(d.daysLeft)} يوم`})</div>
-            <div style="font-size:9px; margin-top:2px;">${esc(d.basis)}</div>
-          </div>`).join('')}
-      </div>`);
-  }
-
-  // ── Geo / parcel ──
-  if (c.parcelRef || c.parcelArea || c.estimatedValue || c.geoLat) {
-    html += section('الربط المكاني — القطعة الغابوية', `
-      <div style="display:flex; flex-wrap:wrap; border:1px solid #e7e5e4; border-radius:10px; overflow:hidden;">
-        ${row('مرجع الرسم العقاري / مطلب التحفيظ', c.parcelRef)}
-        ${row('المساحة (هكتار)', c.parcelArea)}
-        ${row('القيمة التقديرية (د.م)', c.estimatedValue ? Number(c.estimatedValue).toLocaleString() : '')}
-        ${row('الموقع (خ.ع° , خ.ط°)', c.geoLat && c.geoLng ? `${c.geoLat}, ${c.geoLng}` : '')}
-      </div>`);
-  }
-
-  // ── Documents ──
-  if (c.documents && c.documents.length) {
-    html += section('الوثائق المرفقة', `
-      <ul style="font-size:12px; margin:0; padding-right:18px;">
-        ${c.documents.map(d => `<li style="margin-bottom:4px;"><strong>${esc(d.name)}</strong>${d.type ? ` — ${esc(d.type)}` : ''} <span style="color:#a8a29e; font-family:monospace; font-size:10px;">${esc(d.url)}</span></li>`).join('')}
-      </ul>`);
-  }
-
-  // ── National ID check ──
-  if (decoded) {
-    html += section('التحقق من الرقم الوطني', `
-      <div style="font-size:11px; color:${decoded.matches === false ? '#b91c1c' : '#047857'};">
-        رمز المحكمة: ${esc(decoded.courtCode)} — السنة: ${esc(decoded.year)} — الرمز: ${esc(decoded.symbol)} — الرقم: ${esc(decoded.number)}
-        ${decoded.matches === false ? `<br/>⚠ لا يطابق رقم محاكم المسجَّل (المتوقع ${esc(decoded.rebuiltMahakimId)})` : decoded.matches === true ? ' — ✓ متطابق مع رقم محاكم' : ''}
-      </div>`);
-  }
-
-  // ── Quality flags ──
-  if (flags.length) {
-    html += section('ملاحظات التدقيق', `
-      <div style="background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:8px 12px;">
-        ${flags.map(f => `<div style="font-size:11px; color:#b91c1c; font-weight:700;">⚠ ${esc(f)}</div>`).join('')}
-      </div>`);
-  }
-
-  html += `
-    <div style="margin-top:18px; padding-top:8px; border-top:1px solid #e7e5e4; font-size:9px; color:#a8a29e; text-align:center;">
-      تم إنشاء هذه البطاقة آلياً من نظام إدارة الوكالة الوطنية للمياه والغابات — قسم المنازعات
-    </div>
-  </div>`;
-
-  return html;
-}
-
-// ── تحميل html2pdf.js من CDN عند الحاجة فقط ─────────────────────────────
-// لماذا CDN وليس import('html2pdf.js')؟ لأن import الديناميكي يبقى اسم وحدة
-// (module specifier) ثابتاً يحاول Rollup حلّه أثناء build، فإن لم تكن
-// المكتبة مثبَّتة في node_modules (npm install) يفشل البناء بالكامل —
-// "Rollup failed to resolve import html2pdf.js" — حتى لو لم يُستخدم
-// الاستيراد فعلياً إلا عند الضغط على زر PDF. التحميل من CDN في وقت التشغيل
-// (runtime) لا يحتاج أي حزمة npm إضافية ولا يؤثر على build.
-let html2pdfLoadPromise: Promise<any> | null = null;
-function loadHtml2Pdf(): Promise<any> {
-  const w = window as any;
-  if (w.html2pdf) return Promise.resolve(w.html2pdf);
-  if (html2pdfLoadPromise) return html2pdfLoadPromise;
-  html2pdfLoadPromise = new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
-    script.async = true;
-    script.onload = () => {
-      if (w.html2pdf) resolve(w.html2pdf);
-      else reject(new Error('تعذّر تحميل مكتبة PDF (html2pdf غير معرَّفة بعد التحميل)'));
-    };
-    script.onerror = () => {
-      html2pdfLoadPromise = null; // اسمح بإعادة المحاولة لاحقاً
-      reject(new Error('تعذّر تحميل مكتبة PDF من الشبكة (html2pdf.js) — تحقّق من الاتصال'));
-    };
-    document.head.appendChild(script);
-  });
-  return html2pdfLoadPromise;
-}
-
-/**
- * يحوّل HTML إلى PDF عبر html2pdf.js (يُحمَّل من CDN عند أول استخدام).
- *
- * ملاحظة هامة: لا نستعمل `position: fixed; left: -9999px` لإخفاء الحاوية
- * أثناء التصوير — html2canvas يحاول قياس حدود المستند الكاملة، وإزاحة
- * -9999px تجعله يحاول رسم صورة (canvas) بعرض يتجاوز 10000px، وهو ما يستهلك
- * مئات الميغابايتات ويُسقط (crash) المتصفح خصوصاً على الهاتف. بدلاً من ذلك،
- * نعرض البطاقة داخل غطاء (overlay) أبيض ظاهر فعلياً في أعلى الشاشة (يخبر
- * المستخدم أن PDF قيد الإنشاء) — وهذا أيضاً أكثر احترافية من عمل مخفي تماماً.
- */
-async function htmlToPDF(html: string, filename: string, multiPage = false) {
-  const html2pdf = await loadHtml2Pdf();
-
-  const overlay = document.createElement('div');
-  overlay.style.cssText = `
-    position: fixed; inset: 0; z-index: 9999; background: rgba(241,245,249,0.97);
-    overflow: auto; padding: 16px; display: flex; flex-direction: column; align-items: center;
-  `;
-  const note = document.createElement('div');
-  note.textContent = '⏳ جارٍ إنشاء ملف PDF — يُرجى الانتظار...';
-  note.style.cssText = `
-    font-family: system-ui, sans-serif; font-weight: 800; font-size: 14px;
-    color: #065f46; background: #d1fae5; border: 1px solid #6ee7b7;
-    border-radius: 10px; padding: 8px 16px; margin-bottom: 12px;
-  `;
-  overlay.appendChild(note);
-
-  const container = document.createElement('div');
-  container.innerHTML = html;
-  container.style.width = '210mm'; // عرض صفحة A4 — يحدّ من حجم الصورة المُنشأة
-  container.style.maxWidth = '100%';
-  container.style.background = '#ffffff';
-  container.style.boxShadow = '0 0 0 1px #e7e5e4';
-  overlay.appendChild(container);
-  document.body.appendChild(overlay);
-
-  try {
-    await html2pdf()
-      .set({
-        margin: 8,
-        filename,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 1.5, useCORS: true, backgroundColor: '#ffffff' },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        pagebreak: multiPage ? { mode: ['css', 'legacy'] } : undefined,
-      })
-      .from(container)
-      .save();
-  } catch (err) {
-    alert('⚠️ تعذّر إنشاء ملف PDF: ' + (err instanceof Error ? err.message : String(err)));
-    throw err;
-  } finally {
-    document.body.removeChild(overlay);
-  }
-}
-
-/** تصدير بطاقة تقنية PDF لملف واحد */
-export async function exportCasePDF(c: Case) {
-  await htmlToPDF(buildCaseCardHTML(c), `بطاقة_${(c.mahakimId || c.id).replace(/\//g, '-')}.pdf`);
-}
-
-/** تصدير PDF واحد يضم كل الملفات (كل ملف في صفحة/صفحات منفصلة بعنوان واضح) */
-export async function exportAllCasesPDF(cases: Case[]) {
-  const cover = `
-    <div dir="rtl" style="font-family:'Tahoma','Segoe UI',Arial,sans-serif; width:760px; padding:40px; text-align:center;">
-      <div style="font-size:22px; font-weight:900; color:#064e3b; margin-bottom:8px;">تقرير شامل لملفات المنازعات</div>
-      <div style="font-size:12px; color:#78716c; margin-bottom:24px;">الوكالة الوطنية للمياه والغابات — تم الإنشاء في ${esc(new Date().toLocaleString('fr-MA'))}</div>
-      <div style="font-size:13px; color:#1c1917; font-weight:700;">عدد الملفات: ${cases.length}</div>
-    </div>
-    <div style="page-break-after: always;"></div>`;
-
-  const pages = cases.map((c, i) => `
-    ${buildCaseCardHTML(c)}
-    ${i < cases.length - 1 ? '<div style="page-break-after: always;"></div>' : ''}
-  `).join('');
-
-  await htmlToPDF(cover + pages, `تقرير_شامل_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.pdf`, true);
-}
-
-
+// ─── Smart Parser ─────────────────────────────────────────────────────────────
 
 function performParsing(text: string) {
   const clean = text.replace(/[\r]/g, '').replace(/\n{3,}/g, '\n\n').trim();
@@ -1102,15 +579,18 @@ function performParsing(text: string) {
 
 // ─── CaseDetail ───────────────────────────────────────────────────────────────
 
-function CaseDetail({ caseData, onBack, onDelete, onEdit, allCases, onSelectCase }: {
+function CaseDetail({ caseData, onBack, onDelete, onEdit }: {
   caseData: Case; onBack: () => void; onDelete: (id: string) => void; onEdit: () => void;
-  allCases: Case[]; onSelectCase: (c: Case) => void;
 }) {
-  const deadlines = useMemo(() => computeDeadlines(caseData), [caseData]);
-  const qualityFlags = useMemo(() => getQualityFlags(caseData), [caseData]);
-  const reviewFlag = needsManualReview(caseData);
-  const idCheck = useMemo(() => decodeNationalId(caseData), [caseData]);
-  const related = useMemo(() => relatedCasesBySameDefendant(caseData, allCases), [caseData, allCases]);
+  const prescDate = useMemo(() => {
+    if (!caseData.pvDate) return null;
+    try {
+      const d = new Date(caseData.pvDate);
+      if (isNaN(d.getTime())) return null;
+      d.setMonth(d.getMonth() + 6);
+      return d.toISOString().split('T')[0];
+    } catch { return null; }
+  }, [caseData.pvDate]);
 
   return (
     <div className="space-y-6 animate-in fade-in pb-12">
@@ -1121,25 +601,9 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit, allCases, onSelectCase
             <ChevronLeft className="size-4" /> رجوع للقائمة
           </button>
           <div className="border-r-2 border-stone-200 pr-4">
-            <h2 className="text-lg font-bold flex items-center gap-2 flex-wrap">
+            <h2 className="text-lg font-bold flex items-center gap-2">
               <Scale className="size-5 text-emerald-600" />
               ملف: <span className="font-mono text-emerald-700">{caseData.mahakimId || caseData.id}</span>
-              {reviewFlag && (
-                <span title={qualityFlags.join(' • ') || 'علِّم يدوياً كـ«يحتاج تدقيق»'}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-200 cursor-help">
-                  <ShieldAlert className="size-3" /> يحتاج تدقيق
-                </span>
-              )}
-              {deadlines.some(d => d.severity === 'expired' || d.severity === 'critical') && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-red-700 border border-red-200">
-                  <CalendarClock className="size-3" /> آجال حرجة
-                </span>
-              )}
-              {caseData.assignedTo && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                  <UserCog className="size-3" /> {caseData.assignedTo}
-                </span>
-              )}
             </h2>
             {caseData.mahakimId && <p className="text-xs text-stone-400 font-mono mt-0.5">مرجع: {caseData.id}</p>}
             {(() => {
@@ -1156,15 +620,7 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit, allCases, onSelectCase
         <div className="flex gap-2 flex-wrap">
           <button onClick={() => exportSingleCaseXLSX(caseData)}
             className="flex items-center gap-2 px-3 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg font-bold text-sm border border-emerald-200">
-            <FileSpreadsheet className="size-4" /> Excel
-          </button>
-          <button onClick={() => exportCasePDF(caseData)}
-            className="flex items-center gap-2 px-3 py-2 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-lg font-bold text-sm border border-rose-200">
-            <FileDown className="size-4" /> بطاقة PDF
-          </button>
-          <button onClick={() => downloadTextFile(buildICS([caseData]), `جلسات_${(caseData.mahakimId || caseData.id).replace(/\//g, '-')}.ics`, 'text/calendar')}
-            className="flex items-center gap-2 px-3 py-2 bg-purple-50 text-purple-700 hover:bg-purple-100 rounded-lg font-bold text-sm border border-purple-200">
-            <CalendarClock className="size-4" /> iCal
+            <FileSpreadsheet className="size-4" /> تحميل Excel
           </button>
           <button onClick={() => window.print()}
             className="flex items-center gap-2 px-3 py-2 bg-stone-50 text-stone-700 hover:bg-stone-100 rounded-lg font-bold text-sm border border-stone-200">
@@ -1180,41 +636,6 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit, allCases, onSelectCase
           </button>
         </div>
       </div>
-
-      {/* ── الآجال القانونية: عدّادات تنازلية مبنية على دقة المسطرة المغربية ── */}
-      {deadlines.length > 0 && (
-        <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm">
-          <h3 className="font-bold text-base border-b border-stone-100 pb-3 mb-4 flex items-center gap-2">
-            <CalendarClock className="size-5 text-emerald-600" /> الآجال القانونية
-          </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {deadlines.map(d => {
-              const cls = d.severity === 'expired' ? 'bg-red-50 border-red-200 text-red-700'
-                : d.severity === 'critical' ? 'bg-orange-50 border-orange-200 text-orange-700'
-                : d.severity === 'warning' ? 'bg-amber-50 border-amber-200 text-amber-700'
-                : 'bg-emerald-50 border-emerald-200 text-emerald-700';
-              const tag = d.severity === 'expired' ? 'منتهٍ' : d.severity === 'critical' ? 'حرج' : d.severity === 'warning' ? 'قريب' : 'عادي';
-              return (
-                <div key={d.key} className={`rounded-xl border p-3 ${cls}`}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-bold text-xs">{d.label}</span>
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-white/70">{tag}</span>
-                  </div>
-                  <p className="text-2xl font-black font-mono leading-none">
-                    {d.daysLeft >= 0 ? d.daysLeft : Math.abs(d.daysLeft)}
-                    <span className="text-xs font-bold mr-1"> {d.daysLeft >= 0 ? 'يوم متبقي' : 'يوم تجاوز'}</span>
-                  </p>
-                  <p className="text-[10px] mt-1 opacity-80">يستحق في {d.dueDate} • أساسه: {d.basis}</p>
-                </div>
-              );
-            })}
-          </div>
-          <p className="text-[10px] text-stone-400 mt-3 leading-relaxed">
-            * تقديرات آلية وفق القواعد العامة للمسطرة (الأجل الكامل délai franc + استبعاد عطل نهاية الأسبوع). يرجى التحقق من المهم منها مع المستشار القانوني، خصوصاً آجال أداء مصاريف الخبرة والعطل الرسمية.
-          </p>
-        </div>
-      )}
-
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
@@ -1265,7 +686,6 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit, allCases, onSelectCase
               { l: 'النوع', v: caseData.type },
               caseData.judge ? { l: 'القاضي المقرر', v: caseData.judge } : null,
               caseData.section ? { l: 'الشعبة', v: caseData.section } : null,
-              caseData.assignedTo ? { l: 'المكلَّف بالملف', v: caseData.assignedTo } : null,
               caseData.nationalId ? { l: 'الرقم الوطني', v: caseData.nationalId, m: true } : null,
             ].filter(Boolean).map((item: any, idx) => (
               <div key={idx}>
@@ -1273,22 +693,6 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit, allCases, onSelectCase
                 <p className={`font-bold text-sm text-stone-800 ${item.m ? 'font-mono' : ''}`}>{item.v}</p>
               </div>
             ))}
-            {idCheck && idCheck.matches !== null && (
-              <div className={`text-[11px] font-bold p-2 rounded-lg flex items-center gap-1.5 ${idCheck.matches ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
-                {idCheck.matches ? <CheckCircle2 className="size-3.5 shrink-0" /> : <AlertTriangle className="size-3.5 shrink-0" />}
-                {idCheck.matches
-                  ? 'الرقم الوطني متطابق مع رقم محاكم'
-                  : `تنبيه: الرقم الوطني يفكَّك إلى ${idCheck.rebuiltMahakimId} ولا يطابق رقم محاكم المسجَّل (${caseData.mahakimId || '—'})`}
-              </div>
-            )}
-            {qualityFlags.length > 0 && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 space-y-1">
-                <p className="text-[11px] font-bold text-amber-800 flex items-center gap-1"><ShieldAlert className="size-3.5" /> ملاحظات تدقيق</p>
-                <ul className="text-[10px] text-amber-700 list-disc pr-4 space-y-0.5">
-                  {qualityFlags.map((f, i) => <li key={i}>{f}</li>)}
-                </ul>
-              </div>
-            )}
           </div>
 
           <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm space-y-3">
@@ -1318,6 +722,7 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit, allCases, onSelectCase
                   <label className="text-xs text-stone-500">رقم المحضر</label>
                   <p className="font-bold font-mono text-sm">{caseData.pvNumber}</p>
                   {caseData.pvDate && <p className="text-xs text-stone-400 font-mono">{caseData.pvDate}</p>}
+                  {prescDate && <p className="text-xs font-bold text-orange-600 flex items-center gap-1 mt-1"><AlertCircle className="size-3" /> التقادم (6 أشهر): {prescDate}</p>}
                 </div>
               )}
               {caseData.offenseType && <div><label className="text-xs text-stone-500">نوع الجنحة</label><p className="font-bold text-sm">{caseData.offenseType}</p></div>}
@@ -1341,76 +746,6 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit, allCases, onSelectCase
               {caseData.executionObstacle && <div className="pt-2 border-t border-emerald-200"><label className="text-xs text-orange-600 flex items-center gap-1 mb-1"><AlertCircle className="size-3" /> عائق</label><p className="text-sm font-bold text-orange-800 bg-orange-50 p-3 rounded-xl border border-orange-100">{caseData.executionObstacle}</p></div>}
             </div>
           )}
-
-          {(caseData.parcelRef || caseData.estimatedValue || (caseData.geoLat && caseData.geoLng) || caseData.geoPolygon) && (
-            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm space-y-3">
-              <h3 className="font-bold border-b border-stone-100 pb-3 flex items-center gap-2 text-sm">
-                <MapPin className="size-4 text-stone-400" /> الموقع الجغرافي والقطعة الغابوية
-              </h3>
-              {caseData.parcelRef && <div><label className="text-xs text-stone-500">مرجع القطعة / الملك الغابوي</label><p className="font-bold font-mono text-sm">{caseData.parcelRef}</p></div>}
-              {caseData.parcelArea && <div><label className="text-xs text-stone-500">المساحة المتضررة</label><p className="font-bold text-sm">{caseData.parcelArea} هكتار</p></div>}
-              {caseData.estimatedValue && <div><label className="text-xs text-stone-500">القيمة التقديرية للضرر</label><p className="font-black font-mono text-emerald-700 text-lg">{Number(caseData.estimatedValue).toLocaleString()} <span className="text-xs">د.م</span></p></div>}
-              {caseData.geoLat && caseData.geoLng && (
-                <a href={`https://www.google.com/maps?q=${caseData.geoLat},${caseData.geoLng}`} target="_blank" rel="noreferrer"
-                  className="flex items-center gap-2 text-sm font-bold text-blue-700 hover:underline">
-                  <ExternalLink className="size-3.5" /> عرض الموقع على الخريطة ({caseData.geoLat}, {caseData.geoLng})
-                </a>
-              )}
-              {caseData.geoPolygon && <p className="text-[10px] text-stone-400">✓ حدود القطعة (مضلَّع جغرافي) مسجَّلة في الملف</p>}
-            </div>
-          )}
-
-          {caseData.documents && caseData.documents.length > 0 && (
-            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm space-y-2">
-              <h3 className="font-bold border-b border-stone-100 pb-3 flex items-center gap-2 text-sm">
-                <FolderOpen className="size-4 text-stone-400" /> الوثائق المرفقة ({caseData.documents.length})
-              </h3>
-              {caseData.documents.map((d, i) => (
-                <a key={i} href={d.url} target="_blank" rel="noreferrer"
-                  className="flex items-center justify-between gap-2 bg-stone-50 hover:bg-stone-100 px-3 py-2 rounded-xl border border-stone-100 text-sm transition-colors">
-                  <span className="font-bold text-stone-700 truncate flex items-center gap-2"><FileText className="size-3.5 text-stone-400 shrink-0" /> {d.name}</span>
-                  {d.type && <span className="text-[10px] font-bold text-stone-400 shrink-0">{d.type}</span>}
-                </a>
-              ))}
-            </div>
-          )}
-
-          {related.length > 0 && (
-            <div className="bg-white p-5 rounded-2xl border border-purple-100 shadow-sm space-y-2">
-              <h3 className="font-bold border-b border-purple-100 pb-3 flex items-center gap-2 text-sm text-purple-800">
-                <Users className="size-4 text-purple-500" /> تتبع العود — ملفات أخرى لنفس الخصم ({related.length})
-              </h3>
-              {related.map(rc => (
-                <button key={rc.id} onClick={() => onSelectCase(rc)}
-                  className="w-full text-right bg-purple-50 hover:bg-purple-100 px-3 py-2 rounded-xl border border-purple-100 transition-colors">
-                  <p className="font-mono font-bold text-purple-800 text-xs">{rc.mahakimId || rc.id}</p>
-                  <p className="text-[11px] text-stone-600 truncate mt-0.5">{rc.subject || rc.type} — {rc.date}</p>
-                  <p className="text-[10px] text-stone-500 mt-0.5">{rc.status}</p>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {caseData.auditLog && caseData.auditLog.length > 0 && (
-            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm space-y-2">
-              <h3 className="font-bold border-b border-stone-100 pb-3 flex items-center gap-2 text-sm">
-                <ListChecks className="size-4 text-stone-400" /> سجل التتبع
-              </h3>
-              <div className="space-y-1.5 max-h-48 overflow-y-auto">
-                {[...caseData.auditLog].reverse().map((entry, i) => (
-                  <div key={i} className="flex items-start justify-between gap-2 text-[11px] border-b border-stone-50 pb-1.5 last:border-0">
-                    <div>
-                      <p className="font-bold text-stone-700">{entry.action}</p>
-                      <p className="text-stone-400">{entry.user}</p>
-                    </div>
-                    <p className="font-mono text-stone-400 whitespace-nowrap shrink-0">
-                      {new Date(entry.date).toLocaleString('fr-MA', { dateStyle: 'short', timeStyle: 'short' })}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>
@@ -1428,14 +763,6 @@ export function Contentieux() {
   const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [cases, setCases] = useState<Case[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [currentUser, setCurrentUserState] = useState(() => getCurrentUser());
-
-  const handleSetCurrentUser = () => {
-    const name = window.prompt('أدخل اسمك (لاستخدامه في "ملفاتي" وسجل التتبع):', currentUser);
-    if (name === null) return;
-    setCurrentUser(name);
-    setCurrentUserState(name.trim());
-  };
 
   useEffect(() => {
     loadCases().then(({ data }) => { setCases(data.length > 0 ? data : recentCases); setIsLoading(false); });
@@ -1459,31 +786,11 @@ export function Contentieux() {
   const [typeFilter, setTypeFilter] = useState('all');
   const [courtFilter, setCourtFilter] = useState('all');
   const [yearFilter, setYearFilter] = useState('all');
-  const [executionStatusFilter, setExecutionStatusFilter] = useState('all');
-  const [judgeFilter, setJudgeFilter] = useState('all');
-  const [sectionFilter, setSectionFilter] = useState('all');
-  const [assignedFilter, setAssignedFilter] = useState('all');
-  const [reviewFilter, setReviewFilter] = useState<'all' | 'review'>('all');
-  const [deadlineFilter, setDeadlineFilter] = useState<'all' | 'soon'>('all');
-  const [repeatFilter, setRepeatFilter] = useState<'all' | 'repeat'>('all');
-  const [sessionWeekFilter, setSessionWeekFilter] = useState<'all' | 'week'>('all');
-  const [densityLevel, setDensityLevel] = useState<'compact' | 'normal' | 'large'>('normal');
-  const [showBulkMenu, setShowBulkMenu] = useState(false);
-  const [showReportModal, setShowReportModal] = useState(false);
-  const [reportFrom, setReportFrom] = useState('');
-  const [reportTo, setReportTo] = useState('');
-  const [reportLabel, setReportLabel] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const uniqueTypes = useMemo(() => Array.from(new Set(cases.map(c => c.type).filter(Boolean))), [cases]);
   const uniqueCourts = useMemo(() => Array.from(new Set(cases.map(c => c.court).filter(Boolean))), [cases]);
   const uniqueYears = useMemo(() => Array.from(new Set(cases.map(c => c.date?.substring(0, 4)).filter(Boolean))).sort((a, b) => Number(b) - Number(a)), [cases]);
-  const uniqueExecStatuses = useMemo(() => Array.from(new Set(cases.map(c => c.executionStatus).filter(Boolean))) as string[], [cases]);
-  const uniqueJudges = useMemo(() => Array.from(new Set(cases.map(c => c.judge).filter(Boolean))) as string[], [cases]);
-  const uniqueSections = useMemo(() => Array.from(new Set(cases.map(c => c.section).filter(Boolean))) as string[], [cases]);
-  const uniqueAssignees = useMemo(() => Array.from(new Set(cases.map(c => c.assignedTo).filter(Boolean))) as string[], [cases]);
-
-  // فهرس "العود" للوصول السريع لعدد المتكررين دون إعادة حساب لكل ملف
-  const repeatOffenderIndex = useMemo(() => buildRepeatOffenderIndex(cases), [cases]);
 
   const processedCases = useMemo(() => {
     let r = [...cases];
@@ -1492,82 +799,16 @@ export function Contentieux() {
     if (typeFilter !== 'all') r = r.filter(c => c.type === typeFilter);
     if (courtFilter !== 'all') r = r.filter(c => c.court === courtFilter);
     if (yearFilter !== 'all') r = r.filter(c => c.date?.startsWith(yearFilter));
-    if (executionStatusFilter === '__executed__') r = r.filter(c => c.executionStatus?.includes('منفذ'));
-    else if (executionStatusFilter === '__not_started__') r = r.filter(c => !c.executionStatus);
-    else if (executionStatusFilter !== 'all') r = r.filter(c => c.executionStatus === executionStatusFilter);
-    if (judgeFilter !== 'all') r = r.filter(c => c.judge === judgeFilter);
-    if (sectionFilter !== 'all') r = r.filter(c => c.section === sectionFilter);
-    if (assignedFilter !== 'all') r = r.filter(c => c.assignedTo === assignedFilter);
-    if (reviewFilter === 'review') r = r.filter(c => needsManualReview(c));
-    if (deadlineFilter === 'soon') r = r.filter(c => { const nd = nearestDeadline(c); return !!nd && nd.daysLeft <= 10; });
-    if (repeatFilter === 'repeat') r = r.filter(c => relatedCasesBySameDefendant(c, cases).length > 0);
-    if (sessionWeekFilter === 'week') r = r.filter(c => {
-      const t = parseFlexDate(c.nextSession);
-      if (isNaN(t)) return false;
-      const now = Date.now();
-      return t >= now - 86400000 && t <= now + 7 * 86400000;
-    });
     if (searchQuery.trim()) r = r.filter(c => fuzzyMatchCase(c, searchQuery));
     if (sortConfig) {
-      if (sortConfig.key === '__deadline') {
-        // الأجل الأقرب أولاً؛ الملفات بلا آجال تُدفع إلى الأسفل دائماً
-        const score = (c: Case) => { const nd = nearestDeadline(c); return nd ? nd.daysLeft : Infinity; };
-        r.sort((a, b) => sortConfig.dir === 'asc' ? score(a) - score(b) : score(b) - score(a));
-      } else {
-        r.sort((a, b) => {
-          const av: any = sortConfig.key === 'ref' ? (a.mahakimId || a.id) : (a as any)[sortConfig.key] ?? '';
-          const bv: any = sortConfig.key === 'ref' ? (b.mahakimId || b.id) : (b as any)[sortConfig.key] ?? '';
-          return av < bv ? (sortConfig.dir === 'asc' ? -1 : 1) : av > bv ? (sortConfig.dir === 'asc' ? 1 : -1) : 0;
-        });
-      }
+      r.sort((a, b) => {
+        const av: any = sortConfig.key === 'ref' ? (a.mahakimId || a.id) : (a as any)[sortConfig.key] ?? '';
+        const bv: any = sortConfig.key === 'ref' ? (b.mahakimId || b.id) : (b as any)[sortConfig.key] ?? '';
+        return av < bv ? (sortConfig.dir === 'asc' ? -1 : 1) : av > bv ? (sortConfig.dir === 'asc' ? 1 : -1) : 0;
+      });
     }
     return r;
-  }, [cases, searchQuery, sortConfig, statusFilter, typeFilter, courtFilter, yearFilter,
-      executionStatusFilter, judgeFilter, sectionFilter, assignedFilter, reviewFilter, deadlineFilter,
-      repeatFilter, sessionWeekFilter]);
-
-  /** يمسح كل الفلاتر دفعة واحدة (تُستخدم عند النقر على بطاقات الإحصائيات) */
-  const resetFilters = () => {
-    setStatusFilter('all'); setTypeFilter('all'); setCourtFilter('all'); setYearFilter('all');
-    setExecutionStatusFilter('all'); setJudgeFilter('all'); setSectionFilter('all');
-    setAssignedFilter('all'); setReviewFilter('all'); setDeadlineFilter('all');
-    setRepeatFilter('all'); setSessionWeekFilter('all'); setSearchQuery('');
-  };
-
-  const tableRef = useRef<HTMLDivElement>(null);
-  const bulkMenuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!showBulkMenu) return;
-    const onClickOutside = (e: MouseEvent) => {
-      if (bulkMenuRef.current && !bulkMenuRef.current.contains(e.target as Node)) setShowBulkMenu(false);
-    };
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, [showBulkMenu]);
-  const scrollToTable = () => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-  // أحجام الجدول حسب مستوى التكبير المختار
-  const densityCls = densityLevel === 'compact'
-    ? { cell: 'px-2 py-1.5', text: 'text-[11px]', wrap: 'text-xs' }
-    : densityLevel === 'large'
-    ? { cell: 'px-4 py-5', text: 'text-base', wrap: 'text-base' }
-    : { cell: 'px-3 py-3.5', text: 'text-sm', wrap: 'text-sm' };
-
-  // ── بطاقات النظرة السريعة (الإحصائيات) ──────────────────────────────
-  const criticalDeadlinesCount = useMemo(() => getCriticalDeadlinesCount(cases, 7), [cases]);
-  const needsReviewCount = useMemo(() => cases.filter(c => needsManualReview(c)).length, [cases]);
-  const repeatOffendersCount = useMemo(
-    () => Array.from(repeatOffenderIndex.values()).filter(arr => arr.length > 1).length,
-    [repeatOffenderIndex]
-  );
-  const sessionsThisWeekCount = useMemo(() => {
-    const now = Date.now();
-    return cases.filter(c => {
-      const t = parseFlexDate(c.nextSession);
-      return !isNaN(t) && t >= now - 86400000 && t <= now + 7 * 86400000;
-    }).length;
-  }, [cases]);
-
+  }, [cases, searchQuery, sortConfig, statusFilter, typeFilter, courtFilter, yearFilter]);
 
   const handleSort = (k: string) => setSortConfig(p => ({ key: k, dir: p?.key === k && p.dir === 'asc' ? 'desc' : 'asc' }));
 
@@ -1579,8 +820,7 @@ export function Contentieux() {
       : undefined;
 
     if (existing) {
-      const { merged: mergedRaw, newProcs, newParties } = mergeCaseUpdate(existing, saved);
-      const merged = appendAuditEntry(mergedRaw, 'تحديث تلقائي من بوابة محاكم (دمج بيانات)');
+      const { merged, newProcs, newParties } = mergeCaseUpdate(existing, saved);
       await saveCase(merged);
       setCases(prev => prev.map(c => (c.id === merged.id ? merged : c)));
       if (selectedCase?.id === merged.id) setSelectedCase(merged);
@@ -1596,12 +836,10 @@ export function Contentieux() {
       return;
     }
 
-    // ملف جديد أو تعديل يدوي على ملف موجود
-    const isEdit = cases.some(c => c.id === saved.id);
-    const withAudit = appendAuditEntry(saved, isEdit ? 'تعديل بيانات الملف' : 'إنشاء الملف');
-    await saveCase(withAudit);
-    setCases(prev => { const e = prev.find(c => c.id === withAudit.id); return e ? prev.map(c => c.id === withAudit.id ? withAudit : c) : [withAudit, ...prev]; });
-    if (selectedCase?.id === withAudit.id) setSelectedCase(withAudit);
+    // ملف جديد فعلاً
+    await saveCase(saved);
+    setCases(prev => { const e = prev.find(c => c.id === saved.id); return e ? prev.map(c => c.id === saved.id ? saved : c) : [saved, ...prev]; });
+    if (selectedCase?.id === saved.id) setSelectedCase(saved);
     setIsWizardOpen(false); setWizardData(null);
   };
 
@@ -1619,22 +857,8 @@ export function Contentieux() {
     setSelectedIds(new Set());
   };
 
-  /** يترجم نقرات بطاقات/مبيانات الإحصائيات إلى فلاتر على القائمة الرئيسية */
-  const handleStatsNavigate = (action: StatsNavigateAction) => {
-    resetFilters();
-    switch (action.type) {
-      case 'search': setSearchQuery(action.query); break;
-      case 'execStatus': setExecutionStatusFilter(action.value); break;
-      case 'deadlineSoon': setDeadlineFilter('soon'); break;
-      case 'needsReview': setReviewFilter('review'); break;
-      case 'repeatOffenders': setRepeatFilter('repeat'); break;
-    }
-    setIsStatsOpen(false);
-    setTimeout(scrollToTable, 150);
-  };
-
   const SortTh = ({ l, k }: { l: string; k: string }) => (
-    <th className={`${densityCls.cell} font-bold cursor-pointer hover:bg-stone-100 transition-colors select-none whitespace-nowrap`} onClick={() => handleSort(k)}>
+    <th className="px-4 py-4 font-bold cursor-pointer hover:bg-stone-100 transition-colors select-none whitespace-nowrap" onClick={() => handleSort(k)}>
       <span className="flex items-center gap-1">{l} {sortConfig?.key === k && <span className="text-emerald-600">{sortConfig.dir === 'asc' ? '↑' : '↓'}</span>}</span>
     </th>
   );
@@ -1663,11 +887,6 @@ export function Contentieux() {
               </button>
             ))}
           </div>
-          <button onClick={handleSetCurrentUser} title="تحديد اسمك لتفعيل «ملفاتي» وسجل التتبع"
-            className="flex items-center gap-2 px-4 py-2.5 bg-white border border-stone-200 text-stone-700 hover:bg-stone-50 rounded-xl text-sm font-bold shadow-sm transition-all">
-            <UserCog className="size-4 text-stone-400" />
-            {currentUser ? currentUser : 'تحديد اسمي'}
-          </button>
           <button onClick={() => setIsStatsOpen(true)} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-sm hover:-translate-y-0.5 transition-all">
             <PieChartIcon className="size-4" /> الإحصائيات
           </button>
@@ -1677,33 +896,25 @@ export function Contentieux() {
         </div>
       </div>
 
-      {isStatsOpen && <ContentieuxStats cases={cases} onClose={() => setIsStatsOpen(false)} onNavigate={handleStatsNavigate} />}
+      {isStatsOpen && <ContentieuxStats cases={cases} onClose={() => setIsStatsOpen(false)} />}
 
-      {/* ── تبويب "القضايا المحلية" ── يبقى في DOM دائماً (hidden فقط) كي لا
-          يتأثر بالتبديل، تناسقاً مع تبويب "بوابة محاكم" أدناه ── */}
-      <div className={activeTab === 'local' ? '' : 'hidden'}>
-        {selectedCase ? (
+      {activeTab === 'local' ? (
+        selectedCase ? (
           <CaseDetail caseData={selectedCase} onBack={() => setSelectedCase(null)} onDelete={handleDeleteCase}
-            onEdit={() => { setWizardData(selectedCase); setIsWizardOpen(true); }}
-            allCases={cases} onSelectCase={setSelectedCase} />
+            onEdit={() => { setWizardData(selectedCase); setIsWizardOpen(true); }} />
         ) : (
           <div className="space-y-5">
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {[
-                { label: 'إجمالي القضايا', value: cases.length, icon: Scale, c: 'emerald', onClick: () => { resetFilters(); scrollToTable(); } },
-                { label: 'قيد الرائجة', value: cases.filter(c => !c.status.includes('حكم') && !c.status.includes('قرار')).length, icon: Search, c: 'blue', onClick: () => { resetFilters(); setStatusFilter('active'); scrollToTable(); } },
-                { label: 'أحكام صادرة', value: cases.filter(c => c.status.includes('حكم') || c.status.includes('قرار')).length, icon: Gavel, c: 'orange', onClick: () => { resetFilters(); setStatusFilter('judged'); scrollToTable(); } },
-                { label: 'أحكام منفذة', value: cases.filter(c => c.executionStatus?.includes('منفذ')).length, icon: CheckCircle2, c: 'emerald', onClick: () => { resetFilters(); setExecutionStatusFilter('__executed__'); scrollToTable(); } },
-                { label: 'آجال حرجة (≤7 أيام)', value: criticalDeadlinesCount, icon: CalendarClock, c: 'red', onClick: () => { resetFilters(); setDeadlineFilter('soon'); scrollToTable(); } },
-                { label: 'يحتاج تدقيق', value: needsReviewCount, icon: ShieldAlert, c: 'amber', onClick: () => { resetFilters(); setReviewFilter('review'); scrollToTable(); } },
-                { label: 'ملفات عود (خصوم متكررون)', value: repeatOffendersCount, icon: Users, c: 'purple', onClick: () => { resetFilters(); setRepeatFilter('repeat'); scrollToTable(); } },
-                { label: 'جلسات هذا الأسبوع', value: sessionsThisWeekCount, icon: CalendarDays, c: 'blue', onClick: () => { resetFilters(); setSessionWeekFilter('week'); scrollToTable(); } },
+                { label: 'إجمالي القضايا', value: cases.length, icon: Scale, c: 'emerald' },
+                { label: 'قيد الرائجة', value: cases.filter(c => !c.status.includes('حكم') && !c.status.includes('قرار')).length, icon: Search, c: 'blue' },
+                { label: 'أحكام صادرة', value: cases.filter(c => c.status.includes('حكم') || c.status.includes('قرار')).length, icon: Gavel, c: 'orange' },
+                { label: 'أحكام منفذة', value: cases.filter(c => c.executionStatus?.includes('منفذ')).length, icon: CheckCircle2, c: 'emerald' },
               ].map((s, i) => (
-                <button key={i} onClick={s.onClick}
-                  className="w-full bg-white p-5 rounded-2xl border border-stone-200 shadow-sm flex items-center justify-between text-right hover:shadow-md hover:-translate-y-0.5 hover:border-emerald-200 transition-all">
+                <div key={i} className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm flex items-center justify-between">
                   <div><p className="text-xs font-bold text-stone-500 mb-1">{s.label}</p><h3 className={`text-2xl font-black text-${s.c}-700`}>{s.value}</h3></div>
                   <div className={`p-3 bg-${s.c}-50 text-${s.c}-600 rounded-xl`}><s.icon className="size-6" /></div>
-                </button>
+                </div>
               ))}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -1719,7 +930,7 @@ export function Contentieux() {
               ))}
             </div>
 
-            <div className="bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden" ref={tableRef}>
+            <div className="bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
               <div className="p-4 border-b border-stone-200 bg-stone-50 space-y-3">
                 <div className="flex flex-col md:flex-row gap-3">
                   <div className="relative flex-1">
@@ -1730,21 +941,10 @@ export function Contentieux() {
                     {searchQuery && <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600"><X className="size-4" /></button>}
                   </div>
                   <div className="flex gap-2 flex-wrap shrink-0">
-                    {/* تكبير/تصغير عرض الجدول */}
-                    <div className="flex items-center bg-white border border-stone-200 rounded-xl overflow-hidden text-stone-500">
-                      <button onClick={() => setDensityLevel('compact')} title="عرض مضغوط (تفاصيل أكثر في الشاشة)"
-                        className={`px-2.5 py-2.5 transition-colors ${densityLevel === 'compact' ? 'bg-emerald-50 text-emerald-700' : 'hover:bg-stone-50'}`}>
-                        <Minimize2 className="size-4" />
-                      </button>
-                      <button onClick={() => setDensityLevel('normal')} title="عرض عادي"
-                        className={`px-2.5 py-2.5 text-[10px] font-bold border-x border-stone-200 transition-colors ${densityLevel === 'normal' ? 'bg-emerald-50 text-emerald-700' : 'hover:bg-stone-50'}`}>
-                        100%
-                      </button>
-                      <button onClick={() => setDensityLevel('large')} title="عرض موسّع (نص أكبر لتفاصيل أوضح)"
-                        className={`px-2.5 py-2.5 transition-colors ${densityLevel === 'large' ? 'bg-emerald-50 text-emerald-700' : 'hover:bg-stone-50'}`}>
-                        <Maximize2 className="size-4" />
-                      </button>
-                    </div>
+                    <button onClick={() => setShowAdvanced(!showAdvanced)}
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-bold border transition-colors ${showAdvanced ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-50'}`}>
+                      <Filter className="size-4" /> فلاتر
+                    </button>
                     <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
                       className="bg-white border border-stone-200 text-stone-700 rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20">
                       <option value="all">جميع الوضعيات</option>
@@ -1758,101 +958,33 @@ export function Contentieux() {
                         <button onClick={handleDeleteSelected} title="حذف" className="p-1 hover:bg-red-200 rounded text-red-600"><Trash2 className="size-4" /></button>
                       </div>
                     )}
-                    {/* تحميل الكل: قائمة بصيغ متعددة */}
-                    <div className="relative" ref={bulkMenuRef}>
-                      <button onClick={() => setShowBulkMenu(v => !v)}
-                        className="flex items-center gap-2 px-3 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-sm">
-                        <DownloadCloud className="size-4" /> تحميل الكل
-                        <ChevronDown className={`size-3.5 transition-transform ${showBulkMenu ? 'rotate-180' : ''}`} />
-                      </button>
-                      {showBulkMenu && (
-                        <div className="absolute left-0 top-full mt-1 z-30 w-64 bg-white border border-stone-200 rounded-xl shadow-lg overflow-hidden text-sm">
-                          <button onClick={() => { exportAllCasesXLSX(processedCases); setShowBulkMenu(false); }}
-                            className="w-full text-right px-4 py-2.5 hover:bg-stone-50 flex items-center gap-2 border-b border-stone-100">
-                            <FileSpreadsheet className="size-4 text-emerald-600" /> Excel — جدول مُلخَّص واحد
-                          </button>
-                          <button onClick={() => { exportAllCasesWorkbookXLSX(processedCases); setShowBulkMenu(false); }}
-                            className="w-full text-right px-4 py-2.5 hover:bg-stone-50 flex items-center gap-2 border-b border-stone-100">
-                            <Database className="size-4 text-emerald-600" /> Excel — بطاقة لكل ملف (ورقة مستقلة)
-                          </button>
-                          <button onClick={() => { exportAllCasesPDF(processedCases); setShowBulkMenu(false); }}
-                            className="w-full text-right px-4 py-2.5 hover:bg-stone-50 flex items-center gap-2 border-b border-stone-100">
-                            <FileDown className="size-4 text-rose-600" /> PDF — بطاقة تقنية لكل ملف
-                          </button>
-                          <button onClick={() => { downloadTextFile(buildICS(processedCases), `جلسات_وآجال_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.ics`, 'text/calendar'); setShowBulkMenu(false); }}
-                            className="w-full text-right px-4 py-2.5 hover:bg-stone-50 flex items-center gap-2">
-                            <CalendarClock className="size-4 text-purple-600" /> تقويم iCal — الجلسات والآجال
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <button onClick={() => setShowReportModal(true)}
-                      className="flex items-center gap-2 px-3 py-2.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-xl text-sm font-bold border border-blue-200">
-                      <ListChecks className="size-4" /> تقرير دوري
+                    <button onClick={() => exportAllCasesXLSX(processedCases)}
+                      className="flex items-center gap-2 px-3 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-sm">
+                      <Database className="size-4" /> Excel الكل
                     </button>
                     <button onClick={() => window.print()} className="flex items-center gap-2 px-3 py-2.5 bg-white border border-stone-200 text-stone-700 rounded-xl text-sm hover:bg-stone-50">
                       <Printer className="size-4" />
                     </button>
                   </div>
                 </div>
-
-                {/* ── شريط الفلاتر: ظاهر دائماً ── */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 pt-3 border-t border-stone-200">
-                  {[
-                    { label: 'نوع الملف', val: typeFilter, set: setTypeFilter, opts: uniqueTypes },
-                    { label: 'المحكمة', val: courtFilter, set: setCourtFilter, opts: uniqueCourts },
-                    { label: 'سنة التسجيل', val: yearFilter, set: setYearFilter, opts: uniqueYears },
-                    { label: 'الشعبة', val: sectionFilter, set: setSectionFilter, opts: uniqueSections },
-                    { label: 'القاضي المقرر', val: judgeFilter, set: setJudgeFilter, opts: uniqueJudges },
-                    { label: 'المكلَّف بالملف', val: assignedFilter, set: setAssignedFilter, opts: uniqueAssignees },
-                  ].map((f, i) => (
-                    <div key={i}>
-                      <label className="block text-xs font-bold text-stone-500 mb-1">{f.label}</label>
-                      <select value={f.val} onChange={e => f.set(e.target.value)}
-                        className="w-full bg-white border border-stone-200 text-stone-700 rounded-xl px-3 py-2 text-sm outline-none">
-                        <option value="all">الكل</option>
-                        {f.opts.map(o => <option key={String(o)} value={String(o)}>{String(o)}</option>)}
-                      </select>
-                    </div>
-                  ))}
-                  <div>
-                    <label className="block text-xs font-bold text-stone-500 mb-1">حالة التنفيذ</label>
-                    <select value={executionStatusFilter} onChange={e => setExecutionStatusFilter(e.target.value)}
-                      className="w-full bg-white border border-stone-200 text-stone-700 rounded-xl px-3 py-2 text-sm outline-none">
-                      <option value="all">الكل</option>
-                      <option value="__executed__">منفذة (كلياً/جزئياً)</option>
-                      {uniqueExecStatuses.map(o => <option key={o} value={o}>{o}</option>)}
-                    </select>
+                {showAdvanced && (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-3 border-t border-stone-200 animate-in slide-in-from-top-2">
+                    {[
+                      { label: 'نوع الملف', val: typeFilter, set: setTypeFilter, opts: uniqueTypes },
+                      { label: 'المحكمة', val: courtFilter, set: setCourtFilter, opts: uniqueCourts },
+                      { label: 'سنة التسجيل', val: yearFilter, set: setYearFilter, opts: uniqueYears },
+                    ].map((f, i) => (
+                      <div key={i}>
+                        <label className="block text-xs font-bold text-stone-500 mb-1">{f.label}</label>
+                        <select value={f.val} onChange={e => f.set(e.target.value)}
+                          className="w-full bg-white border border-stone-200 text-stone-700 rounded-xl px-3 py-2 text-sm outline-none">
+                          <option value="all">الكل</option>
+                          {f.opts.map(o => <option key={String(o)} value={String(o)}>{String(o)}</option>)}
+                        </select>
+                      </div>
+                    ))}
                   </div>
-                  <div className="col-span-2 sm:col-span-3 md:col-span-4 lg:col-span-7 flex flex-wrap items-center gap-2 pt-1">
-                    <button onClick={() => setReviewFilter(p => p === 'review' ? 'all' : 'review')}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${reviewFilter === 'review' ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'}`}>
-                      <ShieldAlert className="size-3.5" /> يحتاج تدقيق فقط
-                    </button>
-                    <button onClick={() => setDeadlineFilter(p => p === 'soon' ? 'all' : 'soon')}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${deadlineFilter === 'soon' ? 'bg-red-100 text-red-700 border-red-300' : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'}`}>
-                      <CalendarClock className="size-3.5" /> آجال قريبة (≤10 أيام)
-                    </button>
-                    <button onClick={() => setRepeatFilter(p => p === 'repeat' ? 'all' : 'repeat')}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${repeatFilter === 'repeat' ? 'bg-purple-100 text-purple-700 border-purple-300' : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'}`}>
-                      <Users className="size-3.5" /> ملفات عود فقط
-                    </button>
-                    <button onClick={() => setSessionWeekFilter(p => p === 'week' ? 'all' : 'week')}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${sessionWeekFilter === 'week' ? 'bg-blue-100 text-blue-700 border-blue-300' : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'}`}>
-                      <CalendarDays className="size-3.5" /> جلسات هذا الأسبوع
-                    </button>
-                    {currentUser && (
-                      <button onClick={() => setAssignedFilter(p => p === currentUser ? 'all' : currentUser)}
-                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${assignedFilter === currentUser ? 'bg-emerald-100 text-emerald-700 border-emerald-300' : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'}`}>
-                        <UserCog className="size-3.5" /> ملفاتي
-                      </button>
-                    )}
-                    <button onClick={resetFilters}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border border-stone-200 bg-white text-stone-500 hover:bg-stone-50 hover:text-red-600 transition-colors mr-auto">
-                      <X className="size-3.5" /> إعادة ضبط كل الفلاتر
-                    </button>
-                  </div>
-                </div>
+                )}
               </div>
 
               {isLoading ? (
@@ -1862,8 +994,7 @@ export function Contentieux() {
                   <table className="w-full text-sm text-right">
                     <thead className="bg-stone-50 text-stone-500 border-b border-stone-200">
                       <tr>
-                        <th className={`${densityCls.cell} font-bold w-10 text-center`}>#</th>
-                        <th className={`${densityCls.cell} w-10`}>
+                        <th className="px-3 py-3.5 w-10">
                           <input type="checkbox" className="rounded border-stone-300 text-emerald-600 w-4 h-4"
                             checked={processedCases.length > 0 && selectedIds.size === processedCases.length}
                             onChange={e => setSelectedIds(e.target.checked ? new Set(processedCases.map(c => c.id)) : new Set())} />
@@ -1875,32 +1006,23 @@ export function Contentieux() {
                         <SortTh l="الخصم / المدعى عليه" k="defendant" />
                         <SortTh l="الوضعية" k="status" />
                         <SortTh l="آخر إجراء / حكم" k="nextSession" />
-                        <SortTh l="الأجل الأقرب" k="__deadline" />
-                        <th className={`${densityCls.cell} font-bold`}>أدوات</th>
+                        <th className="px-3 py-3.5 font-bold">أدوات</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-stone-100">
-                      {processedCases.map((c, idx) => {
-                        const matchLocs = searchQuery.trim() ? findMatchLocations(c, searchQuery) : [];
-                        const nd = nearestDeadline(c);
-                        const review = needsManualReview(c);
-                        return (
+                      {processedCases.map(c => (
                         <tr key={c.id} onClick={() => setSelectedCase(c)}
                           className={`hover:bg-emerald-50/50 transition-colors cursor-pointer group ${selectedIds.has(c.id) ? 'bg-emerald-50/30' : ''}`}>
-                          <td className={`${densityCls.cell} text-center font-mono text-stone-400 ${densityCls.text}`}>{idx + 1}</td>
-                          <td className={densityCls.cell} onClick={e => e.stopPropagation()}>
+                          <td className="px-3 py-3.5" onClick={e => e.stopPropagation()}>
                             <input type="checkbox" className="rounded border-stone-300 text-emerald-600 w-4 h-4 cursor-pointer"
                               checked={selectedIds.has(c.id)}
                               onChange={() => setSelectedIds(prev => { const s = new Set(prev); s.has(c.id) ? s.delete(c.id) : s.add(c.id); return s; })} />
                           </td>
                           {/* رقم الملف في المحكمة + آخر مزامنة */}
-                          <td className={densityCls.cell}>
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              {c.mahakimId
-                                ? <span className={`font-mono font-black text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg ${densityCls.text}`}>{highlightMatch(c.mahakimId, searchQuery)}</span>
-                                : <span className="font-mono text-stone-400 text-xs italic">غير مسجل</span>}
-                              {review && <ShieldAlert className="size-3.5 text-amber-500 shrink-0" title="يحتاج تدقيق" />}
-                            </div>
+                          <td className="px-3 py-3.5">
+                            {c.mahakimId
+                              ? <span className="font-mono font-black text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg text-xs">{c.mahakimId}</span>
+                              : <span className="font-mono text-stone-400 text-xs italic">غير مسجل</span>}
                             {(() => {
                               const sa = syncAge(c.lastSyncedAt);
                               if (!sa) return null;
@@ -1912,36 +1034,29 @@ export function Contentieux() {
                             })()}
                           </td>
                           {/* المحكمة + الشعبة */}
-                          <td className={`${densityCls.cell} max-w-[180px]`}>
-                            <p className={`font-bold text-stone-800 leading-snug truncate ${densityCls.text}`}>{highlightMatch(c.court, searchQuery)}</p>
+                          <td className="px-3 py-3.5 max-w-[180px]">
+                            <p className="font-bold text-stone-800 text-xs leading-snug truncate">{c.court}</p>
                             {c.section && <p className="text-[10px] text-emerald-600 font-bold mt-0.5">{c.section}</p>}
                           </td>
                           {/* تاريخ التسجيل */}
-                          <td className={`${densityCls.cell} font-mono text-stone-500 whitespace-nowrap ${densityCls.text}`}>{c.date}</td>
+                          <td className="px-3 py-3.5 font-mono text-xs text-stone-500 whitespace-nowrap">{c.date}</td>
                           {/* الموضوع + النوع */}
-                          <td className={`${densityCls.cell} max-w-[200px]`}>
-                            <p className={`font-bold text-stone-800 leading-snug truncate ${densityCls.wrap}`}>
-                              {c.subject && c.subject !== 'غير محدد' ? highlightMatch(c.subject, searchQuery) : '—'}
+                          <td className="px-3 py-3.5 max-w-[200px]">
+                            <p className="font-bold text-stone-800 text-sm leading-snug truncate">
+                              {c.subject && c.subject !== 'غير محدد' ? c.subject : '—'}
                             </p>
                             <p className="text-[10px] text-stone-400 mt-0.5 font-medium">{c.type || ''}</p>
-                            {matchLocs.length > 0 && (
-                              <p className="mt-1 flex flex-wrap gap-1">
-                                {matchLocs.map(loc => (
-                                  <span key={loc} className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">وُجد في: {loc}</span>
-                                ))}
-                              </p>
-                            )}
                           </td>
                           {/* الخصم / المدعى عليه */}
-                          <td className={`${densityCls.cell} max-w-[160px]`}>
-                            <p className={`font-bold text-stone-700 truncate ${densityCls.text}`}>
-                              {highlightMatch(c.defendant || c.parties?.find(p => p.role.includes('عليه') || p.role.includes('متهم') || p.role.includes('مطلوب'))?.name || '—', searchQuery)}
+                          <td className="px-3 py-3.5 max-w-[160px]">
+                            <p className="text-xs font-bold text-stone-700 truncate">
+                              {c.defendant || c.parties?.find(p => p.role.includes('عليه') || p.role.includes('متهم') || p.role.includes('مطلوب'))?.name || '—'}
                             </p>
                           </td>
                           {/* الوضعية */}
-                          <td className={densityCls.cell}>{badge(c.status)}</td>
+                          <td className="px-3 py-3.5">{badge(c.status)}</td>
                           {/* آخر إجراء / حكم */}
-                          <td className={`${densityCls.cell} max-w-[180px]`}>
+                          <td className="px-3 py-3.5 max-w-[180px]">
                             {(() => {
                               const lastProc = [...(c.procedures || [])].sort((a, b) => {
                                 const p = (d: string) => { if (d.match(/\d{2}\/\d{2}\/\d{4}/)) { const [dd, mm, yy] = d.split('/'); return new Date(`${yy}-${mm}-${dd}`).getTime(); } return new Date(d).getTime() || 0; };
@@ -1950,7 +1065,7 @@ export function Contentieux() {
                               if (!lastProc && !c.nextSession) return <span className="text-stone-300 text-xs">—</span>;
                               return (
                                 <div>
-                                  <p className={`font-mono font-bold text-emerald-700 whitespace-nowrap ${densityCls.text}`}>
+                                  <p className="font-mono font-bold text-emerald-700 text-xs whitespace-nowrap">
                                     {lastProc?.date || c.nextSession || ''}
                                   </p>
                                   {lastProc?.action && (
@@ -1963,36 +1078,19 @@ export function Contentieux() {
                               );
                             })()}
                           </td>
-                          {/* الأجل الأقرب */}
-                          <td className={densityCls.cell}>
-                            {nd ? (
-                              <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold whitespace-nowrap ${
-                                nd.severity === 'expired' ? 'bg-red-100 text-red-700'
-                                : nd.severity === 'critical' ? 'bg-orange-100 text-orange-700'
-                                : nd.severity === 'warning' ? 'bg-amber-100 text-amber-700'
-                                : 'bg-emerald-100 text-emerald-700'
-                              }`}>
-                                <CalendarClock className="size-3" />
-                                {nd.daysLeft >= 0 ? `${nd.daysLeft}ي` : `تجاوز ${Math.abs(nd.daysLeft)}ي`}
-                              </span>
-                            ) : <span className="text-stone-300 text-xs">—</span>}
-                          </td>
                           {/* أدوات */}
-                          <td className={densityCls.cell} onClick={e => e.stopPropagation()}>
+                          <td className="px-3 py-3.5" onClick={e => e.stopPropagation()}>
                             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                               <button onClick={() => setSelectedCase(c)} title="فتح الملف" className="p-1.5 bg-white text-stone-500 hover:text-emerald-700 hover:bg-emerald-50 border border-stone-200 rounded-lg"><Eye className="size-3.5" /></button>
                               <button onClick={() => exportSingleCaseXLSX(c)} title="Excel" className="p-1.5 bg-white text-stone-500 hover:text-emerald-700 hover:bg-emerald-50 border border-stone-200 rounded-lg"><FileSpreadsheet className="size-3.5" /></button>
-                              <button onClick={() => exportCasePDF(c)} title="بطاقة PDF" className="p-1.5 bg-white text-stone-500 hover:text-rose-700 hover:bg-rose-50 border border-stone-200 rounded-lg"><FileDown className="size-3.5" /></button>
-                              <button onClick={() => downloadTextFile(buildICS([c]), `جلسات_${(c.mahakimId || c.id).replace(/\//g, '-')}.ics`, 'text/calendar')} title="تقويم iCal" className="p-1.5 bg-white text-stone-500 hover:text-purple-700 hover:bg-purple-50 border border-stone-200 rounded-lg"><CalendarClock className="size-3.5" /></button>
                               <button onClick={() => { setWizardData(c); setIsWizardOpen(true); }} title="تعديل" className="p-1.5 bg-white text-stone-500 hover:text-blue-700 hover:bg-blue-50 border border-stone-200 rounded-lg"><Activity className="size-3.5" /></button>
                               <button onClick={() => { if (window.confirm('حذف الملف؟')) handleDeleteCase(c.id); }} title="حذف" className="p-1.5 bg-white text-stone-500 hover:text-red-600 hover:bg-red-50 border border-stone-200 rounded-lg"><Trash2 className="size-3.5" /></button>
                             </div>
                           </td>
                         </tr>
-                        );
-                      })}
+                      ))}
                       {processedCases.length === 0 && (
-                        <tr><td colSpan={11} className="px-6 py-14 text-center">
+                        <tr><td colSpan={9} className="px-6 py-14 text-center">
                           <Search className="size-10 text-stone-200 mx-auto mb-3" />
                           <p className="text-stone-400 font-medium">لا توجد نتائج مطابقة</p>
                           {searchQuery && <p className="text-xs text-stone-400 mt-1">جرب كلمات أخرى</p>}
@@ -2008,109 +1106,22 @@ export function Contentieux() {
               </div>
             </div>
           </div>
-        )}
-      </div>
-
-      {/* ── تبويب "بوابة محاكم" — يبقى مُحمَّلاً دائماً (hidden فقط عند
-          التبديل)، لأن إعادة تركيب الإطار/الإضافة عند كل تبديل بين
-          التبويبين كانت تُفسد حالة الإضافة والبحث المدمج ── */}
-      <div className={activeTab === 'mahakim' ? 'flex-1 flex flex-col min-h-[700px]' : 'hidden'}>
-        <MahakimIntegration onSave={handleSaveCase} />
-      </div>
+        )
+      ) : (
+        <div className="flex-1 flex flex-col min-h-[700px]">
+          <MahakimIntegration onSave={handleSaveCase} />
+        </div>
+      )}
 
       {isWizardOpen && (
         <CaseWizard initialData={wizardData || undefined} onSave={handleSaveCase}
           onCancel={() => { setIsWizardOpen(false); setWizardData(null); }} />
-      )}
-
-      {showReportModal && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowReportModal(false)}>
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between">
-              <h3 className="font-bold text-lg flex items-center gap-2"><ListChecks className="size-5 text-blue-600" /> تقرير دوري للقيادة</h3>
-              <button onClick={() => setShowReportModal(false)} className="text-stone-400 hover:text-stone-600"><X className="size-5" /></button>
-            </div>
-            <p className="text-xs text-stone-500 leading-relaxed">
-              اختر الفترة المطلوبة، وسيتم إنشاء ملف Excel يتضمن المؤشرات العامة (عدد الملفات، نسبة الأحكام، نسبة التنفيذ، المبالغ المستخلصة) مع مقارنة بالفترة السابقة، وتوزيع الملفات حسب المحكمة والنوع، ولائحة الملفات التي تحتاج تدقيقاً.
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {[
-                { k: 'month', l: 'هذا الشهر' },
-                { k: 'lastMonth', l: 'الشهر الماضي' },
-                { k: 'quarter', l: 'هذا الفصل' },
-                { k: 'year', l: 'هذه السنة' },
-              ].map(p => (
-                <button key={p.k} type="button" onClick={() => {
-                  const now = new Date();
-                  let from: Date, to: Date, label: string;
-                  if (p.k === 'month') {
-                    from = new Date(now.getFullYear(), now.getMonth(), 1);
-                    to = now;
-                    label = `تقرير شهر ${now.toLocaleDateString('fr-MA', { month: 'long', year: 'numeric' })}`;
-                  } else if (p.k === 'lastMonth') {
-                    from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-                    to = new Date(now.getFullYear(), now.getMonth(), 0);
-                    label = `تقرير شهر ${from.toLocaleDateString('fr-MA', { month: 'long', year: 'numeric' })}`;
-                  } else if (p.k === 'quarter') {
-                    const q = Math.floor(now.getMonth() / 3);
-                    from = new Date(now.getFullYear(), q * 3, 1);
-                    to = now;
-                    label = `تقرير الفصل ${q + 1} — ${now.getFullYear()}`;
-                  } else {
-                    from = new Date(now.getFullYear(), 0, 1);
-                    to = now;
-                    label = `تقرير سنة ${now.getFullYear()}`;
-                  }
-                  setReportFrom(from.toISOString().split('T')[0]);
-                  setReportTo(to.toISOString().split('T')[0]);
-                  setReportLabel(label);
-                }} className="px-3 py-1.5 rounded-full text-xs font-bold border border-stone-200 bg-white text-stone-600 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-200 transition-colors">
-                  {p.l}
-                </button>
-              ))}
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-bold text-stone-500 mb-1">من تاريخ</label>
-                <input type="date" value={reportFrom} onChange={e => setReportFrom(e.target.value)}
-                  className="w-full bg-white border border-stone-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-stone-500 mb-1">إلى تاريخ</label>
-                <input type="date" value={reportTo} onChange={e => setReportTo(e.target.value)}
-                  className="w-full bg-white border border-stone-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20" />
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-stone-500 mb-1">عنوان التقرير</label>
-              <input type="text" value={reportLabel} onChange={e => setReportLabel(e.target.value)}
-                placeholder="مثال: تقرير شهر يونيو 2026"
-                className="w-full bg-white border border-stone-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20" />
-            </div>
-            <button
-              disabled={!reportFrom || !reportTo}
-              onClick={() => {
-                exportPeriodicReportXLSX(cases, reportFrom, reportTo, reportLabel || 'تقرير دوري');
-                setShowReportModal(false);
-              }}
-              className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-bold text-sm shadow-sm flex items-center justify-center gap-2">
-              <FileSpreadsheet className="size-4" /> إنشاء التقرير (Excel)
-            </button>
-          </div>
-        </div>
       )}
     </div>
   );
 }
 
 // ─── Stable iframe (never re-renders) ─────────────────────────────────────────
-// تُحجب التذييل السفلي (شعارات وزارة العدل/الروابط العامة) عبر "تقطيع" الإطار:
-// يُجعل ارتفاع الـ iframe أكبر من حاويته بـ PORTAL_CROP_PX، وبما أن الحاوية
-// الأم (.overflow-hidden في اللوحة اليمنى) تقصّ ما يفيض — يختفي الجزء السفلي
-// تماماً دون أي تظليل أو تدرّج رمادي يغطي شريط البحث/النتائج المفيدة.
-// ملاحظة: الإضافة (mahakim-stayawake.js) تحاول أيضاً حجب التذييل من داخل
-// الصفحة نفسها بإضافة CSS — هذا التقطيع هو شبكة أمان احتياطية تعمل دائماً.
-const PORTAL_CROP_PX = 200;
 
 const PortalIframe = React.memo(
   React.forwardRef<HTMLIFrameElement>((_, ref) => (
@@ -2118,8 +1129,7 @@ const PortalIframe = React.memo(
       ref={ref}
       src="https://www.mahakim.ma/#/suivi/dossier-suivi"
       title="Mahakim.ma"
-      className="w-full border-0 absolute top-0 left-0 right-0 pt-9 bg-white"
-      style={{ height: `calc(100% + ${PORTAL_CROP_PX}px)` }}
+      className="w-full h-full border-0 absolute inset-0 pt-9 bg-white"
       sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
     />
   )),
@@ -2128,151 +1138,11 @@ const PortalIframe = React.memo(
 
 // ─── MahakimIntegration ───────────────────────────────────────────────────────
 
-// قائمة السنوات للاختيار السريع: من 2026 تنازلياً إلى 2000 (الأحدث أولاً)
-const PORTAL_YEARS: number[] = Array.from({ length: 2026 - 2000 + 1 }, (_, i) => 2026 - i);
-
-// ── محاضر الضابطة القضائية (rapport-police-judiciaire) — قوائم مقتصرة على
-// ما يهمّ قسم المنازعات الغابوية فقط من بين قوائم بوابة محاكم الأطول ──
-
-// نوع الضابطة القضائية: في بوابة محاكم هي قائمة من 5 خيارات (الأمن الوطني،
-// الدرك الملكي، الموظفون المكلفون بمهمة، باقي محرري المحاضر، الضباط
-// السامون) — هنا نقتصر على الخيارين المتعلقين بأعوان المياه والغابات.
-const PV_AGENT_TYPES: string[] = ['الموظفون المكلفون بمهمة', 'باقي محرري المحاضر'];
-
-// المصلحة/الجهة المعنية: قائمة بوابة محاكم طويلة جداً (كل المصالح العمومية)؛
-// هذه قائمة مقتصرة على مصالح المياه والغابات بالجهة (تطوان/طنجة/الحسيمة).
-// ⚠️ نصوص تقريبية بناءً على لقطات الشاشة — افتح القائمة المنسدلة الثانية
-// لحقل "الضابطة القضائية" في البوابة وتحقّق من الصياغة الدقيقة، وعدّل هذه
-// المصفوفة عند الحاجة (المطابقة في الإضافة هي "يحتوي على" فتتسامح مع فروق
-// طفيفة، لكن يُفضَّل أن تكون النصوص هنا قريبة جداً من الأصل).
-const PV_AGENCIES: string[] = [
-  'رئيس مركز حماية الغابات بالمضيق - الفنيدق',
-  'رئيس مركز حماية الغابات لتطوان الشرقية',
-  'رئيس مركز حماية الغابات لتطوان الغربية',
-  'المديرية الإقليمية للمياه والغابات بتطوان',
-  'دائرة تنمية المجال الغابوي بتطوان',
-  'دائرة تنمية المجال الغابوي بشفشاون',
-  'دائرة تنمية المجال الغابوي بوزان',
-  'دائرة تنمية المجال الغابوي بطنجة',
-  'دائرة تنمية المجال الغابوي بالعرائش',
-  'دائرة تنمية المجال الغابوي بالقصر الكبير',
-  'دائرة تنمية المجال الغابوي بالحسيمة',
-  'دائرة تنمية المجال الغابوي بتارجيست',
-];
-
-/** بطاقة محضر ضابطة قضائية مستخرَجة من بوابة محاكم — استخراج "أفضل محاولة" عام */
-export interface PVRecord {
-  /** رقم المحضر بالمحكمة (صيغة محاكم: سنة/رمز/رقم) */
-  pvCourtRef: string;
-  pvType: string;
-  pvSubject: string;
-  pvAction: string;
-  /** رقم الملف الجنحي المرتبط (إن وُجد) — يُستخدم للبحث في شريط "تتبع الملفات" */
-  linkedFileNumber: string;
-  court: string;
-  date: string;
-  parties: { role: string; name: string }[];
-  procedures: { date: string; action: string; decision: string }[];
-  /** النص الكامل المستخرج — للعرض/المراجعة اليدوية دائماً */
-  raw: string;
-}
-
-/**
- * استخراج "أفضل محاولة" من نص محضر الضابطة القضائية المستخرَج (بطاقة المحضر +
- * الأطراف + بطاقة الملف + الملفات الزجرية). على عكس performParsing (المُحكَم
- * لتنسيق "تتبع الملفات")، لا تتوفر عيّنات نص حقيقية لهذه الصفحة، فالاستخراج
- * هنا عام ومرن (مطابقة تسميات + أنماط أرقام الملفات)، والنص الكامل يبقى متاحاً
- * دائماً للمراجعة اليدوية.
- */
-function performParsingPV(text: string): PVRecord {
-  const clean = text.replace(/[\r]/g, '').replace(/\n{3,}/g, '\n\n').trim();
-  const tokens = clean.split(/[\t\n]+/).map(s => s.trim()).filter(Boolean);
-
-  const LABELS: Record<string, string> = {
-    'رقم المحضر بالمحكمة': 'pvCourtRef',
-    'الإجراء': 'pvAction',
-    'نوع المحضر': 'pvType',
-    'موضوع المحضر': 'pvSubject',
-    'رقم الملف الجنحي': 'linkedFileNumber',
-    'المحكمة': 'court',
-    'تاريخ التسجيل': 'date',
-    'تاريخ المحضر': 'date',
-  };
-  const labelKeys = Object.keys(LABELS);
-  const map: Record<string, string> = {};
-  for (let i = 0; i < tokens.length; i++) {
-    const lk = labelKeys.find(l => tokens[i] === l);
-    if (lk) {
-      const j = i + 1;
-      if (j < tokens.length && !labelKeys.includes(tokens[j]) && tokens[j].length >= 1 && tokens[j].length < 250) {
-        const key = LABELS[lk];
-        if (!map[key]) map[key] = tokens[j];
-        i = j;
-      }
-    }
-  }
-
-  // كل المراجع بصيغة "سنة/رمز/رقم" الموجودة في النص. أول مرجع غالباً هو رقم
-  // المحضر نفسه؛ أي مرجع آخر مختلف غالباً هو "رقم الملف الجنحي" المرتبط.
-  const refRe = /\d{4}\s*\/\s*\d{2,5}\s*\/\s*\d{1,5}/g;
-  const allRefs = Array.from(new Set((clean.match(refRe) || []).map(s => s.replace(/\s+/g, ''))));
-  if (!map.pvCourtRef && allRefs[0]) map.pvCourtRef = allRefs[0];
-  if (!map.linkedFileNumber) {
-    const other = allRefs.find(r => r !== map.pvCourtRef);
-    if (other) map.linkedFileNumber = other;
-  }
-  if (map.linkedFileNumber === '-' || map.linkedFileNumber === '–' || map.linkedFileNumber === '—') {
-    map.linkedFileNumber = '';
-  }
-
-  // ── الأطراف (من قسم "════ الأطراف ════") ──
-  const parties: { role: string; name: string }[] = [];
-  const partSec = clean.match(/════════ الأطراف ════════([\s\S]*?)(════════|$)/);
-  if (partSec) {
-    const roleWords = ['مدعي', 'مدعى عليه', 'متهم', 'مشتكي', 'مشتكى به', 'ضحية', 'مسؤول مدني', 'نيابة عامة', 'مطلوب', 'طالب'];
-    for (const line of partSec[1].split('\n').map(l => l.trim()).filter(Boolean)) {
-      const parts = line.split('\t').map(s => s.trim()).filter(Boolean);
-      if (parts.length >= 2 && roleWords.some(r => parts[0].includes(r))) {
-        parties.push({ role: parts[0], name: parts[1] });
-      }
-    }
-  }
-
-  // ── الإجراءات (من قسم "بيانات محضر الضابطة القضائية" — لائحة الإجراءات تُعرض افتراضياً) ──
-  const procedures: { date: string; action: string; decision: string }[] = [];
-  const dateRe = /^(\d{2}\/\d{2}\/\d{4})/;
-  const procSec = clean.match(/════════ بيانات محضر الضابطة القضائية ════════([\s\S]*?)(════════|$)/);
-  const procSource = procSec ? procSec[1] : clean;
-  for (const line of procSource.split('\n').map(l => l.trim()).filter(Boolean)) {
-    const parts = line.split('\t').map(s => s.trim()).filter(Boolean);
-    const dm = parts.find(p => dateRe.test(p));
-    if (dm && parts.length >= 2) {
-      const rest = parts.filter(p => p !== dm);
-      procedures.push({ date: dm, action: rest[0] || '', decision: rest[1] || '' });
-    }
-  }
-
-  return {
-    pvCourtRef: map.pvCourtRef || '',
-    pvType: map.pvType || '',
-    pvSubject: map.pvSubject || '',
-    pvAction: map.pvAction || '',
-    linkedFileNumber: map.linkedFileNumber || '',
-    court: map.court || '',
-    date: map.date || '',
-    parties,
-    procedures,
-    raw: text,
-  };
-}
-
 function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   const [pasteData, setPasteData] = useState('');
   const [result, setResult] = useState<ReturnType<typeof performParsing> | null>(null);
   const [extractMode, setExtractMode] = useState<'portal' | 'parsed'>('portal');
-  const [showYearMenu, setShowYearMenu] = useState(false);
-  const yearMenuRef = useRef<HTMLDivElement>(null);
-  const [showManualPanel, setShowManualPanel] = useState(false);
+  const [focusHint, setFocusHint] = useState(false);
   const pasteCount = useRef(0);
   const pasteDataRef = useRef('');
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -2316,20 +1186,6 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   const [bridgeReady, setBridgeReady] = useState(false);
   const [extensionReady, setExtensionReady] = useState(false);
 
-  // ── شريط بحث محاضر الضابطة القضائية (مخالفات غابوية) ────────
-  const [showPVPanel, setShowPVPanel] = useState(false);
-  const [pvNumber, setPvNumber] = useState('');
-  const [pvYear, setPvYear] = useState('');
-  const [pvCourt, setPvCourt] = useState('تطوان');
-  const [pvAgentType, setPvAgentType] = useState(PV_AGENT_TYPES[0]);
-  const [pvAgency, setPvAgency] = useState(PV_AGENCIES[0]);
-  const [pvShowYearMenu, setPvShowYearMenu] = useState(false);
-  const pvYearMenuRef = useRef<HTMLDivElement>(null);
-  const [pvIsSearching, setPvIsSearching] = useState(false);
-  const [pvSearchStage, setPvSearchStage] = useState('');
-  const [pvResult, setPvResult] = useState<PVRecord | null>(null);
-  const [pvShowRaw, setPvShowRaw] = useState(false);
-
   // فحص هل تطبيق VB.NET شغّال كل 5 ثوان
   useEffect(() => {
     const check = async () => {
@@ -2369,13 +1225,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
       if (e.source !== window) return;
       const d = e.data;
       if (!d || typeof d !== 'object') return;
-      if (d.type === 'MAHAKIM_RESULT' && d.text && d.searchType === 'pv') {
-        // نتيجة بحث محاضر الضابطة القضائية — حالة مستقلة، لا تلمس
-        // pasteData/result/extractMode الخاصة بشريط "تتبع الملفات".
-        setPvResult(performParsingPV(d.text));
-        setPvIsSearching(false);
-        setPvSearchStage('');
-      } else if (d.type === 'MAHAKIM_RESULT' && d.text) {
+      if (d.type === 'MAHAKIM_RESULT' && d.text) {
         // بحث جديد عبر الإضافة → استبدل البيانات (ملف مختلف).
         // وإلا (تبويبة إضافية / لصق يدوي لاحق) → تراكم فوق نفس الملف.
         const isFresh = freshSearchRef.current;
@@ -2396,27 +1246,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
         setIsSearching(false);
         setSearchStage('');
       }
-      if (d.type === 'MAHAKIM_ERROR' && d.searchType === 'pv') {
-        setPvIsSearching(false);
-        setPvSearchStage('');
-        const PV_ERR_AR: Record<string, string> = {
-          no_results: 'لا توجد نتيجة لهذا المحضر بهذه المعايير',
-          pv_form_not_found: 'تعذّر فتح نموذج "محضر الضابطة القضائية" — حاول مجدداً',
-          pv_numero_field_not_found: 'تعذّر العثور على حقل رقم المحضر/السنة',
-          pv_no_response: 'لم تستجب البوابة — أعد المحاولة',
-          pv_submit_not_found: 'تعذّر العثور على زر البحث',
-          appeal_court_select_failed: 'تعذّر اختيار محكمة الاستئناف',
-          primary_court_select_failed: 'تعذّر اختيار المحكمة الابتدائية',
-          assembled_too_short: 'البيانات المستخرجة قصيرة جداً — حاول مجدداً',
-          timeout: 'انتهت المهلة — أعد المحاولة',
-          tab_closed: 'أُغلق تبويب البوابة قبل الاكتمال',
-          website_tab_closed: 'أُغلق تبويب الموقع قبل الاكتمال',
-          extension_unreachable: 'تعذّر الوصول للإضافة — أعد تحميل الصفحة',
-          point_outside_viewport: 'البوابة خارج مجال الرؤية — كبّر النافذة وأعد المحاولة',
-        };
-        const k = String(d.error || '');
-        alert('⚠️ فشل البحث عن المحضر: ' + (PV_ERR_AR[k] || k));
-      } else if (d.type === 'MAHAKIM_ERROR') {
+      if (d.type === 'MAHAKIM_ERROR') {
         freshSearchRef.current = false;
         setIsSearching(false);
         setSearchStage('');
@@ -2433,8 +1263,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
       }
       // مرحلة التقدم الحية من الإضافة (v6)
       if (d.type === 'MAHAKIM_PROGRESS') {
-        if (d.searchType === 'pv') setPvSearchStage(String(d.stage || ''));
-        else setSearchStage(String(d.stage || ''));
+        setSearchStage(String(d.stage || ''));
       }
       // الإضافة تطلب إظهار البوابة قبل بدء الأتمتة داخل الـ iframe (v6)
       if (d.type === 'MAHAKIM_SHOW_PORTAL') {
@@ -2482,77 +1311,6 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   };
   // ───────────────────────────────────────────────────────────
 
-  // ── بحث محاضر الضابطة القضائية (شأن المخالفات الغابوية) ─────
-  const handlePVSearch = () => {
-    if (!pvNumber.trim()) return;
-    setExtractMode('portal');
-    setPvIsSearching(true);
-    setPvSearchStage('');
-    setPvResult(null);
-    const isAppeal = pvCourt.startsWith('استئناف ');
-    const courtName = isAppeal ? pvCourt.replace('استئناف ', '').trim() : pvCourt;
-    const primaryCourts = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
-    const isPrimary = !isAppeal && primaryCourts.includes(pvCourt);
-
-    if (extensionReady) {
-      window.postMessage({
-        type: 'MAHAKIM_TO_EXTENSION',
-        payload: {
-          searchType: 'pv',
-          numero: pvNumber.trim(),
-          year: pvYear.trim(),
-          court: courtName,
-          isPrimary,
-          agentType: pvAgentType,
-          agency: pvAgency,
-        },
-      }, '*');
-      setTimeout(() => setPvIsSearching(false), 90000); // مهلة أمان
-      return;
-    }
-
-    // لا يوجد سقوط احتياطي عبر VB.NET لهذا النوع من البحث
-    setPvIsSearching(false);
-    alert('⚠️ البحث عن محاضر الضابطة القضائية يتطلب تفعيل إضافة Mahakim Bridge.');
-  };
-
-  // يستخدم "رقم الملف الجنحي" المستخرَج من المحضر لبدء بحث في الشريط الأول
-  const handleUseLinkedFile = () => {
-    if (!pvResult?.linkedFileNumber) return;
-    const parts = pvResult.linkedFileNumber.split('/').map(s => s.trim());
-    if (parts.length !== 3 || parts.some(p => !p)) {
-      alert('⚠️ صيغة رقم الملف غير معروفة: ' + pvResult.linkedFileNumber);
-      return;
-    }
-    const [y, mark, num] = parts;
-    // اعكس القيم في حقول الشريط الأول للعرض، ثم نفّذ البحث مباشرة بهذه القيم
-    setRemoteYear(y);
-    setRemoteMark(mark);
-    setRemoteNum(num);
-    setRemoteCourt(pvCourt);
-
-    setExtractMode('portal');
-    setIsSearching(true);
-    setSearchStage('');
-    const isAppeal = pvCourt.startsWith('استئناف ');
-    const courtName = isAppeal ? pvCourt.replace('استئناف ', '').trim() : pvCourt;
-    const primaryCourts = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
-    const isPrimary = !isAppeal && primaryCourts.includes(pvCourt);
-
-    if (extensionReady) {
-      freshSearchRef.current = true;
-      window.postMessage({
-        type: 'MAHAKIM_TO_EXTENSION',
-        payload: { searchType: 'dossier', numero: num, mark, year: y, court: courtName, isPrimary },
-      }, '*');
-      setTimeout(() => setIsSearching(false), 90000);
-    } else {
-      setIsSearching(false);
-      alert('⚠️ يتطلب تفعيل إضافة Mahakim Bridge للبحث التلقائي عن الملف.');
-    }
-  };
-  // ───────────────────────────────────────────────────────────
-
   // ── Auto-capture Ctrl+V anywhere on this component (outside textareas) ──
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
@@ -2572,29 +1330,14 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
     return () => document.removeEventListener('paste', onPaste);
   }, []);
 
-  // ── إغلاق قائمة السنوات عند النقر خارجها ──
-  useEffect(() => {
-    if (!showYearMenu) return;
-    const onClickOutside = (e: MouseEvent) => {
-      if (yearMenuRef.current && !yearMenuRef.current.contains(e.target as Node)) {
-        setShowYearMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, [showYearMenu]);
-
-  // ── إغلاق قائمة سنوات محاضر الضابطة القضائية عند النقر خارجها ──
-  useEffect(() => {
-    if (!pvShowYearMenu) return;
-    const onClickOutside = (e: MouseEvent) => {
-      if (pvYearMenuRef.current && !pvYearMenuRef.current.contains(e.target as Node)) {
-        setPvShowYearMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, [pvShowYearMenu]);
+  // ── Focus portal (help user go straight to Ctrl+A without extra click) ──
+  const handleFocusPortal = () => {
+    if (iframeRef.current) {
+      try { iframeRef.current.focus(); } catch {}
+    }
+    setFocusHint(true);
+    setTimeout(() => setFocusHint(false), 5000);
+  };
 
   const handleReadClipboard = async () => {
     try {
@@ -2651,41 +1394,30 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   };
 
 
-  const [expandedView, setExpandedView] = useState(false);
-
   return (
-    <div className={expandedView
-      ? 'fixed inset-0 z-50 bg-white flex flex-col'
-      : 'bg-white rounded-2xl border border-stone-200 shadow-sm flex flex-col min-h-[700px] overflow-hidden'} dir="rtl">
+    <div className="bg-white rounded-2xl border border-stone-200 shadow-sm flex flex-col min-h-[700px] overflow-hidden" dir="rtl">
       <div className="p-4 bg-emerald-900 flex justify-between items-center text-emerald-50 shrink-0 shadow-md">
         <div>
           <h2 className="font-bold text-lg flex items-center gap-2"><Landmark className="size-5 text-emerald-300" /> تكامل مع بوابة محاكم</h2>
           <p className="text-xs text-emerald-400 mt-0.5">انسخ الصفحة كاملة (Ctrl+A → Ctrl+C) ثم اضغط الزر — كرر لكل تبويبة</p>
         </div>
-        <div className="flex gap-2 items-center">
-          {result && (
-            <>
-              <button onClick={() => setExtractMode(extractMode === 'portal' ? 'parsed' : 'portal')}
-                className="flex items-center gap-2 px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-lg text-xs">
-                <Eye className="size-4" /> {extractMode === 'portal' ? 'عرض النتائج' : 'رجوع للبوابة'}
-              </button>
-              <button onClick={handleSave}
-                className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-white font-bold rounded-lg text-sm shadow">
-                <DownloadCloud className="size-4" /> حفظ في القاعدة
-              </button>
-            </>
-          )}
-          <button onClick={() => setExpandedView(v => !v)} title={expandedView ? 'تصغير' : 'توسيع لملء الصفحة'}
-            className="flex items-center gap-2 px-3 py-2 bg-emerald-800 hover:bg-emerald-700 text-emerald-100 font-bold rounded-lg text-xs shrink-0">
-            {expandedView ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-            {expandedView ? 'تصغير' : 'توسيع'}
-          </button>
-        </div>
+        {result && (
+          <div className="flex gap-2">
+            <button onClick={() => setExtractMode(extractMode === 'portal' ? 'parsed' : 'portal')}
+              className="flex items-center gap-2 px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-lg text-xs">
+              <Eye className="size-4" /> {extractMode === 'portal' ? 'عرض النتائج' : 'رجوع للبوابة'}
+            </button>
+            <button onClick={handleSave}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-white font-bold rounded-lg text-sm shadow">
+              <DownloadCloud className="size-4" /> حفظ في القاعدة
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
         {/* ── Left panel ── */}
-        <div className={`w-full md:w-[420px] ${expandedView ? 'max-h-[calc(100vh-72px)] md:max-h-[calc(100vh-72px)]' : 'max-h-[70vh] md:max-h-[85vh]'} border-b md:border-b-0 md:border-l border-stone-200 bg-stone-50 p-5 flex flex-col gap-4 overflow-y-auto shrink-0`}>
+        <div className="w-full md:w-[420px] border-b md:border-b-0 md:border-l border-stone-200 bg-stone-50 p-5 flex flex-col gap-4 overflow-y-auto shrink-0">
           {/* ── بوابة محاكم المدمجة ── */}
           {(bridgeReady || extensionReady) ? (
             <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 space-y-3">
@@ -2696,41 +1428,24 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
               <div className="grid grid-cols-3 gap-2">
                 <div className="flex flex-col gap-1">
                   <label className="text-[10px] text-stone-500 font-bold text-center">رقم</label>
-                  <input placeholder="رقم الملف" value={remoteNum}
+                  <input placeholder="221" value={remoteNum}
                     onChange={e => setRemoteNum(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
                     className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-[10px] text-stone-500 font-bold text-center">رمز</label>
-                  <input placeholder="رمز الملف" value={remoteMark}
+                  <input placeholder="1101" value={remoteMark}
                     onChange={e => setRemoteMark(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
                     className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
                 </div>
-                <div className="flex flex-col gap-1 relative" ref={yearMenuRef}>
+                <div className="flex flex-col gap-1">
                   <label className="text-[10px] text-stone-500 font-bold text-center">سنة</label>
-                  <div className="flex items-stretch gap-1">
-                    <input placeholder="السنة" value={remoteYear}
-                      onChange={e => setRemoteYear(e.target.value)}
-                      onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
-                      className="w-full min-w-0 border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
-                    <button type="button" onClick={() => setShowYearMenu(v => !v)} title="اختر السنة من القائمة"
-                      className="shrink-0 border border-stone-200 rounded-lg px-1.5 bg-white hover:bg-emerald-50 text-stone-500 hover:text-emerald-700 flex items-center justify-center transition-colors">
-                      <ChevronDown className={`size-3.5 transition-transform ${showYearMenu ? 'rotate-180' : ''}`} />
-                    </button>
-                  </div>
-                  {showYearMenu && (
-                    <div className="absolute top-full mt-1 right-0 left-0 z-30 bg-white border border-emerald-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                      {PORTAL_YEARS.map(y => (
-                        <button key={y} type="button"
-                          onClick={() => { setRemoteYear(String(y)); setShowYearMenu(false); }}
-                          className={`w-full text-center px-2 py-1.5 text-xs font-bold hover:bg-emerald-50 ${String(y) === remoteYear ? 'bg-emerald-100 text-emerald-800' : 'text-stone-700'}`}>
-                          {y}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                  <input placeholder="2024" value={remoteYear}
+                    onChange={e => setRemoteYear(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleRemoteSearch()}
+                    className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
                 </div>
               </div>
               <div className="flex flex-col gap-1">
@@ -2776,223 +1491,83 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
             </div>
           )}
 
-          {/* ── شريط التحليل: استخراج وتنظيم من نص الملف ── */}
-          <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden">
-            <button type="button" onClick={() => setShowManualPanel(v => !v)}
-              className="w-full flex items-center justify-between px-4 py-3 text-sm font-bold text-stone-700 hover:bg-stone-50 transition-colors">
-              <span className="flex items-center gap-2"><ClipboardPaste className="size-4 text-emerald-600" /> شريط التحليل — استخراج وتنظيم البيانات</span>
-              <ChevronDown className={`size-4 text-stone-400 transition-transform ${showManualPanel ? 'rotate-180' : ''}`} />
-            </button>
-            {showManualPanel && (
-              <div className="px-4 pb-4 space-y-2 border-t border-stone-100 pt-3">
-                <p className="text-[11px] text-stone-500 leading-relaxed">
-                  انسخ محتوى صفحة الملف من بوابة محاكم بالكامل (Ctrl+A ثم Ctrl+C) ثم اضغط الزر أدناه لاستخراجه من الحافظة، أو الصقه يدوياً في المربع ثم اضغط «تحليل النص». كرر العملية لكل تبويبة (الإجراءات، الأطراف...) فتُضاف كل لصقة إلى نفس الملف تلقائياً.
-                </p>
-                <button onClick={handleReadClipboard}
-                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-sm transition-all hover:shadow flex items-center justify-center gap-2">
-                  <ClipboardPaste className="size-4" />
-                  {pasteData.trim() ? `إضافة لصقة أخرى (${pasteCount.current + 1})` : 'استخراج من الحافظة'}
-                </button>
-                {pasteData.trim() && (
-                  <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 px-3 py-2 rounded-xl text-xs font-bold text-emerald-800">
-                    <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
-                    {pasteCount.current} لصقة محفوظة — كرر لكل تبويبة
-                  </div>
-                )}
-                <textarea
-                  value={pasteData}
-                  onChange={e => setPasteData(e.target.value)}
-                  placeholder="أو الصق المحتوى هنا يدوياً... (Ctrl+V)"
-                  className="w-full bg-stone-50 border border-stone-200 rounded-lg p-3 text-[10px] font-mono text-stone-600 outline-none resize-none h-24 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-                />
-                <div className="flex gap-2">
-                  <button onClick={handleManual} disabled={!pasteData.trim()}
-                    className="flex-1 py-2 bg-stone-800 disabled:opacity-40 hover:bg-stone-900 text-white rounded-lg font-bold text-xs">
-                    تحليل النص
-                  </button>
-                  {pasteData.trim() && (
-                    <button onClick={handleReset} className="px-3 py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold border border-red-200">
-                      مسح الكل
+          <div className="space-y-4 relative before:absolute before:right-[15px] before:top-2 before:bottom-6 before:w-px before:bg-emerald-200">
+            {[
+              { n: 1, title: 'ابحث عن الملف', desc: 'ابحث داخل البوابة بالرقم والمحكمة حتى تظهر بيانات الملف.', extra: null },
+              {
+                n: 2, title: 'انسخ محتوى الصفحة', desc: '', extra: (
+                  <div className="mt-2 space-y-2">
+                    <button onClick={handleFocusPortal}
+                      className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm shadow-sm flex items-center justify-center gap-2 transition-all">
+                      🎯 ركّز على البوابة (ثم Ctrl+A → Ctrl+C)
                     </button>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* ── محاضر الضابطة القضائية (مخالفات غابوية) ── */}
-          <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden">
-            <button type="button" onClick={() => setShowPVPanel(v => !v)}
-              className="w-full flex items-center justify-between px-4 py-3 text-sm font-bold text-stone-700 hover:bg-stone-50 transition-colors">
-              <span className="flex items-center gap-2"><ShieldAlert className="size-4 text-blue-600" /> 🚓 محاضر الضابطة القضائية (مخالفات غابوية)</span>
-              <ChevronDown className={`size-4 text-stone-400 transition-transform ${showPVPanel ? 'rotate-180' : ''}`} />
-            </button>
-            {showPVPanel && (
-              <div className="px-4 pb-4 space-y-3 border-t border-stone-100 pt-3">
-                <p className="text-[11px] text-stone-500 leading-relaxed">
-                  بحث مستقل عن "محضر الضابطة القضائية" — يستخدم هذا الشريط أو شريط "تتبع الملفات" أعلاه، وليس كليهما معاً في الوقت نفسه.
-                </p>
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="flex flex-col gap-1 col-span-2">
-                    <label className="text-[10px] text-stone-500 font-bold text-center">رقم المحضر</label>
-                    <input placeholder="رقم محضر الضابطة القضائية" value={pvNumber}
-                      onChange={e => setPvNumber(e.target.value)}
-                      onKeyDown={e => e.key === 'Enter' && handlePVSearch()}
-                      className="border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                  </div>
-                  <div className="flex flex-col gap-1 relative" ref={pvYearMenuRef}>
-                    <label className="text-[10px] text-stone-500 font-bold text-center">سنة</label>
-                    <div className="flex items-stretch gap-1">
-                      <input placeholder="السنة" value={pvYear}
-                        onChange={e => setPvYear(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handlePVSearch()}
-                        className="w-full min-w-0 border border-stone-200 rounded-lg px-2 py-2 text-sm text-center focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
-                      <button type="button" onClick={() => setPvShowYearMenu(v => !v)} title="اختر السنة من القائمة"
-                        className="shrink-0 border border-stone-200 rounded-lg px-1.5 bg-white hover:bg-blue-50 text-stone-500 hover:text-blue-700 flex items-center justify-center transition-colors">
-                        <ChevronDown className={`size-3.5 transition-transform ${pvShowYearMenu ? 'rotate-180' : ''}`} />
-                      </button>
-                    </div>
-                    {pvShowYearMenu && (
-                      <div className="absolute top-full mt-1 right-0 left-0 z-30 bg-white border border-blue-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                        {PORTAL_YEARS.map(y => (
-                          <button key={y} type="button"
-                            onClick={() => { setPvYear(String(y)); setPvShowYearMenu(false); }}
-                            className={`w-full text-center px-2 py-1.5 text-xs font-bold hover:bg-blue-50 ${String(y) === pvYear ? 'bg-blue-100 text-blue-800' : 'text-stone-700'}`}>
-                            {y}
-                          </button>
-                        ))}
+                    {focusHint && (
+                      <div className="bg-blue-50 border border-blue-200 p-3 rounded-xl text-xs font-bold text-blue-800 animate-in slide-in-from-top-2">
+                        ✓ البوابة جاهزة — الآن اضغط
+                        <kbd className="bg-white border border-blue-300 px-1.5 py-0.5 rounded font-mono mx-1">Ctrl+A</kbd>
+                        ثم
+                        <kbd className="bg-white border border-blue-300 px-1.5 py-0.5 rounded font-mono mx-1">Ctrl+C</kbd>
+                        ثم
+                        <kbd className="bg-white border border-blue-300 px-1.5 py-0.5 rounded font-mono mx-1">Ctrl+V</kbd>
+                        هنا أو في أي مكان على الصفحة
                       </div>
                     )}
+                    <p className="text-[10px] text-stone-500 leading-relaxed">انقر زر التركيز، ثم Ctrl+A لتحديد الكل في البوابة، ثم Ctrl+C للنسخ. كرر لكل تبويبة (الإجراءات، الأطراف...).</p>
                   </div>
-                </div>
-
-                <div className="bg-stone-50 border border-stone-200 rounded-xl p-3 space-y-2.5">
-                  <p className="text-[11px] font-bold text-stone-600">المحكمة والضابطة القضائية</p>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-stone-500 font-bold">المحكمة</label>
-                    <select value={pvCourt} onChange={e => setPvCourt(e.target.value)}
-                      className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-500 focus:outline-none">
-                      <optgroup label="محاكم استئناف">
-                        {['تطوان','طنجة','الحسيمة'].map(c => (
-                          <option key={'pv-ap-'+c} value={'استئناف '+c}>{'استئناف '+c}</option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="محاكم ابتدائية">
-                        {['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'].map(c => (
-                          <option key={'pv-'+c}>{c}</option>
-                        ))}
-                      </optgroup>
-                    </select>
-                  </div>
-
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-stone-500 font-bold">نوع الضابطة القضائية</label>
-                    <select value={pvAgentType} onChange={e => setPvAgentType(e.target.value)}
-                      className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-500 focus:outline-none">
-                      {PV_AGENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                    </select>
-                  </div>
-
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-stone-500 font-bold">المصلحة/الجهة المعنية</label>
-                    <select value={pvAgency} onChange={e => setPvAgency(e.target.value)}
-                      className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-500 focus:outline-none">
-                      {PV_AGENCIES.map(a => <option key={a} value={a}>{a}</option>)}
-                    </select>
-                  </div>
-                </div>
-
-                <button onClick={handlePVSearch}
-                  disabled={pvIsSearching || !pvNumber.trim()}
-                  className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl py-2.5 font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-sm">
-                  {pvIsSearching
-                    ? <><RefreshCw className="size-4 animate-spin" /> جاري البحث عن المحضر...</>
-                    : <><Search className="size-4" /> بحث عن المحضر</>}
-                </button>
-                {pvIsSearching && (
-                  <p className="text-[11px] text-blue-600 text-center animate-pulse">
-                    ⏳ {pvSearchStage
-                      ? <>المرحلة: <span className="font-bold">{pvSearchStage}</span></>
-                      : 'يتم البحث...'}
-                  </p>
-                )}
-                {!extensionReady && (
-                  <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-[11px] text-amber-800 font-medium">
-                    💡 يتطلب هذا البحث تفعيل إضافة <strong>Mahakim Bridge</strong> — لا يوجد سقوط احتياطي عبر VB.NET لهذا النوع.
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ── نتيجة محضر الضابطة القضائية ── */}
-            {pvResult && (
-              <div className="px-4 pb-4 space-y-2 border-t border-stone-100 pt-3 bg-blue-50/40">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-bold text-blue-900 flex items-center gap-2">
-                    <ShieldAlert className="size-4" /> بيانات المحضر
-                  </h4>
-                  {pvResult.pvCourtRef && (
-                    <span className="font-mono text-xs font-bold bg-white border border-blue-200 text-blue-800 px-2 py-1 rounded-lg">
-                      {pvResult.pvCourtRef}
-                    </span>
-                  )}
-                </div>
-                <div className="space-y-1 text-xs">
-                  {pvResult.pvType && <p><span className="text-stone-500">نوع المحضر: </span><span className="font-bold">{pvResult.pvType}</span></p>}
-                  {pvResult.pvSubject && <p><span className="text-stone-500">موضوع المحضر: </span><span className="font-bold">{pvResult.pvSubject}</span></p>}
-                  {pvResult.pvAction && <p><span className="text-stone-500">الإجراء: </span><span className="font-bold">{pvResult.pvAction}</span></p>}
-                  {pvResult.court && <p><span className="text-stone-500">المحكمة: </span><span className="font-bold">{pvResult.court}</span></p>}
-                  {pvResult.date && <p><span className="text-stone-500">التاريخ: </span><span className="font-bold font-mono">{pvResult.date}</span></p>}
-                </div>
-
-                {pvResult.parties.length > 0 && (
-                  <div className="space-y-1">
-                    <p className="text-xs font-bold text-stone-600">الأطراف</p>
-                    {pvResult.parties.map((p, i) => (
-                      <p key={i} className="text-[11px] text-stone-600">
-                        <span className="font-bold">{p.role}</span>: {p.name}
-                      </p>
-                    ))}
-                  </div>
-                )}
-
-                {pvResult.procedures.length > 0 && (
-                  <div className="space-y-1">
-                    <p className="text-xs font-bold text-stone-600">الإجراءات</p>
-                    {pvResult.procedures.map((p, i) => (
-                      <p key={i} className="text-[11px] text-stone-600">
-                        <span className="font-mono text-stone-400">{p.date}</span> — <span className="font-bold">{p.action}</span>{p.decision ? `: ${p.decision}` : ''}
-                      </p>
-                    ))}
-                  </div>
-                )}
-
-                {pvResult.linkedFileNumber ? (
-                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 space-y-2">
-                    <p className="text-xs text-emerald-800">
-                      <span className="text-stone-500">رقم الملف الجنحي: </span>
-                      <span className="font-mono font-bold">{pvResult.linkedFileNumber}</span>
-                    </p>
-                    <button onClick={handleUseLinkedFile}
-                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg py-2 text-xs font-bold flex items-center justify-center gap-2 transition-all">
-                      <ExternalLink className="size-3.5" /> بحث عن هذا الملف في الشريط الأول
+                )
+              },
+              {
+                n: 3, title: 'الصق تلقائياً', desc: '', extra: (
+                  <div className="mt-2 space-y-2">
+                    <div className="bg-emerald-50 border border-emerald-200 p-3 rounded-xl text-xs font-bold text-emerald-800">
+                      ⚡ الصق
+                      <kbd className="bg-white border border-emerald-300 px-1.5 py-0.5 rounded font-mono mx-1">Ctrl+V</kbd>
+                      في أي مكان على هذه الصفحة → يُعالَج تلقائياً
+                    </div>
+                    <button onClick={handleReadClipboard}
+                      className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm shadow-sm transition-all hover:shadow flex items-center justify-center gap-2">
+                      <ClipboardPaste className="size-5" />
+                      {pasteData.trim() ? `إضافة لصقة أخرى (${pasteCount.current + 1})` : 'استخراج من الحافظة'}
                     </button>
+                    {pasteData.trim() && (
+                      <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 px-3 py-2 rounded-xl text-xs font-bold text-emerald-800">
+                        <CheckCircle2 className="size-4 text-emerald-500 shrink-0" />
+                        {pasteCount.current} لصقة محفوظة — كرر لكل تبويبة
+                      </div>
+                    )}
+                    <div className="border-t border-stone-200 pt-3">
+                      <p className="text-[11px] text-stone-500 mb-1.5 font-bold">أو الصق يدوياً:</p>
+                      <textarea
+                        value={pasteData}
+                        onChange={e => setPasteData(e.target.value)}
+                        placeholder="الصق المحتوى هنا... أو اضغط Ctrl+V في أي مكان"
+                        className="w-full bg-white border border-stone-200 rounded-lg p-3 text-[10px] font-mono text-stone-600 outline-none resize-none h-24 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                      />
+                      <div className="flex gap-2 mt-2">
+                        <button onClick={handleManual} disabled={!pasteData.trim()}
+                          className="flex-1 py-2 bg-stone-800 disabled:opacity-40 hover:bg-stone-900 text-white rounded-lg font-bold text-xs">
+                          تحليل النص
+                        </button>
+                        {pasteData.trim() && (
+                          <button onClick={handleReset} className="px-3 py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold border border-red-200">
+                            مسح الكل
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                ) : (
-                  <p className="text-[11px] text-stone-400">لم يُعثر على "رقم الملف الجنحي" المرتبط في هذا المحضر.</p>
-                )}
-
-                <button type="button" onClick={() => setPvShowRaw(v => !v)}
-                  className="w-full text-[11px] font-bold text-stone-500 hover:text-stone-700 flex items-center justify-center gap-1 pt-1">
-                  {pvShowRaw ? 'إخفاء' : 'عرض'} النص الكامل المستخرج
-                  <ChevronDown className={`size-3 transition-transform ${pvShowRaw ? 'rotate-180' : ''}`} />
-                </button>
-                {pvShowRaw && (
-                  <textarea readOnly value={pvResult.raw}
-                    className="w-full bg-stone-50 border border-stone-200 rounded-lg p-3 text-[10px] font-mono text-stone-600 outline-none resize-none h-40" />
-                )}
+                )
+              },
+            ].map(step => (
+              <div key={step.n} className="relative pl-4">
+                <div className={`absolute right-0 top-0 size-8 rounded-full font-black border-2 border-white flex items-center justify-center shadow-sm text-sm ${step.n === 3 ? 'bg-emerald-600 text-white' : step.n === 2 ? 'bg-blue-500 text-white' : 'bg-emerald-100 text-emerald-700'}`}>{step.n}</div>
+                <div className="mr-12">
+                  <h4 className="font-bold text-sm text-stone-800 mb-1">{step.title}</h4>
+                  {step.desc && <p className="text-xs text-stone-500">{step.desc}</p>}
+                  {(step as any).extra}
+                </div>
               </div>
-            )}
+            ))}
           </div>
         </div>
 
@@ -3004,6 +1579,8 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
               <span className="text-xs font-bold text-stone-500 flex items-center gap-2"><Lock className="size-3 text-stone-400" /> بوابة محاكم الأصلية</span>
             </div>
             <PortalIframe ref={iframeRef} />
+            {/* Gradient mask covering blue footer */}
+            <div className="absolute bottom-0 left-0 right-0 h-[220px] bg-gradient-to-t from-stone-100 via-stone-100/70 to-transparent pointer-events-none z-10" />
           </div>
 
           {/* Results view */}
