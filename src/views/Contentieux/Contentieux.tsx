@@ -2677,7 +2677,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   return (
     <div className={expandedView
       ? 'fixed inset-0 z-50 bg-white flex flex-col'
-      : 'bg-white rounded-2xl border border-stone-200 shadow-sm flex flex-col min-h-[700px] overflow-hidden'} dir="rtl">
+      : 'bg-white rounded-2xl border border-stone-200 shadow-sm flex flex-col min-h-[700px]'} dir="rtl">
       <div className="p-4 bg-emerald-900 flex justify-between items-center text-emerald-50 shrink-0 shadow-md">
         <div>
           <h2 className="font-bold text-lg flex items-center gap-2"><Landmark className="size-5 text-emerald-300" /> تكامل مع بوابة محاكم</h2>
@@ -2704,7 +2704,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
         </div>
       </div>
 
-      <div className={`flex flex-col md:flex-row flex-1 ${expandedView ? 'overflow-y-auto md:overflow-hidden' : 'overflow-hidden'}`}>
+      <div className={`flex flex-col md:flex-row flex-1 ${expandedView ? 'overflow-y-auto md:overflow-hidden' : ''}`}>
         {/* ── Left panel ── */}
         <div className={`w-full md:w-[420px] ${expandedView ? 'md:max-h-[calc(100vh-72px)]' : 'md:max-h-[85vh]'} border-b md:border-b-0 md:border-l border-stone-200 bg-stone-50 p-5 flex flex-col gap-4 md:overflow-y-auto shrink-0`}>
           {/* ── بوابة محاكم المدمجة ── */}
