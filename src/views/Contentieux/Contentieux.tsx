@@ -751,29 +751,59 @@ function loadHtml2Pdf(): Promise<any> {
   return html2pdfLoadPromise;
 }
 
-/** يحوّل HTML إلى PDF عبر html2pdf.js (يُحمَّل من CDN عند أول استخدام) */
+/**
+ * يحوّل HTML إلى PDF عبر html2pdf.js (يُحمَّل من CDN عند أول استخدام).
+ *
+ * ملاحظة هامة: لا نستعمل `position: fixed; left: -9999px` لإخفاء الحاوية
+ * أثناء التصوير — html2canvas يحاول قياس حدود المستند الكاملة، وإزاحة
+ * -9999px تجعله يحاول رسم صورة (canvas) بعرض يتجاوز 10000px، وهو ما يستهلك
+ * مئات الميغابايتات ويُسقط (crash) المتصفح خصوصاً على الهاتف. بدلاً من ذلك،
+ * نعرض البطاقة داخل غطاء (overlay) أبيض ظاهر فعلياً في أعلى الشاشة (يخبر
+ * المستخدم أن PDF قيد الإنشاء) — وهذا أيضاً أكثر احترافية من عمل مخفي تماماً.
+ */
 async function htmlToPDF(html: string, filename: string, multiPage = false) {
   const html2pdf = await loadHtml2Pdf();
+
+  const overlay = document.createElement('div');
+  overlay.style.cssText = `
+    position: fixed; inset: 0; z-index: 9999; background: rgba(241,245,249,0.97);
+    overflow: auto; padding: 16px; display: flex; flex-direction: column; align-items: center;
+  `;
+  const note = document.createElement('div');
+  note.textContent = '⏳ جارٍ إنشاء ملف PDF — يُرجى الانتظار...';
+  note.style.cssText = `
+    font-family: system-ui, sans-serif; font-weight: 800; font-size: 14px;
+    color: #065f46; background: #d1fae5; border: 1px solid #6ee7b7;
+    border-radius: 10px; padding: 8px 16px; margin-bottom: 12px;
+  `;
+  overlay.appendChild(note);
+
   const container = document.createElement('div');
   container.innerHTML = html;
-  container.style.position = 'fixed';
-  container.style.left = '-9999px';
-  container.style.top = '0';
-  document.body.appendChild(container);
+  container.style.width = '210mm'; // عرض صفحة A4 — يحدّ من حجم الصورة المُنشأة
+  container.style.maxWidth = '100%';
+  container.style.background = '#ffffff';
+  container.style.boxShadow = '0 0 0 1px #e7e5e4';
+  overlay.appendChild(container);
+  document.body.appendChild(overlay);
+
   try {
     await html2pdf()
       .set({
         margin: 8,
         filename,
         image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
+        html2canvas: { scale: 1.5, useCORS: true, backgroundColor: '#ffffff' },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
         pagebreak: multiPage ? { mode: ['css', 'legacy'] } : undefined,
       })
       .from(container)
       .save();
+  } catch (err) {
+    alert('⚠️ تعذّر إنشاء ملف PDF: ' + (err instanceof Error ? err.message : String(err)));
+    throw err;
   } finally {
-    document.body.removeChild(container);
+    document.body.removeChild(overlay);
   }
 }
 
@@ -1649,8 +1679,10 @@ export function Contentieux() {
 
       {isStatsOpen && <ContentieuxStats cases={cases} onClose={() => setIsStatsOpen(false)} onNavigate={handleStatsNavigate} />}
 
-      {activeTab === 'local' ? (
-        selectedCase ? (
+      {/* ── تبويب "القضايا المحلية" ── يبقى في DOM دائماً (hidden فقط) كي لا
+          يتأثر بالتبديل، تناسقاً مع تبويب "بوابة محاكم" أدناه ── */}
+      <div className={activeTab === 'local' ? '' : 'hidden'}>
+        {selectedCase ? (
           <CaseDetail caseData={selectedCase} onBack={() => setSelectedCase(null)} onDelete={handleDeleteCase}
             onEdit={() => { setWizardData(selectedCase); setIsWizardOpen(true); }}
             allCases={cases} onSelectCase={setSelectedCase} />
@@ -1976,12 +2008,15 @@ export function Contentieux() {
               </div>
             </div>
           </div>
-        )
-      ) : (
-        <div className="flex-1 flex flex-col min-h-[700px]">
-          <MahakimIntegration onSave={handleSaveCase} />
-        </div>
-      )}
+        )}
+      </div>
+
+      {/* ── تبويب "بوابة محاكم" — يبقى مُحمَّلاً دائماً (hidden فقط عند
+          التبديل)، لأن إعادة تركيب الإطار/الإضافة عند كل تبديل بين
+          التبويبين كانت تُفسد حالة الإضافة والبحث المدمج ── */}
+      <div className={activeTab === 'mahakim' ? 'flex-1 flex flex-col min-h-[700px]' : 'hidden'}>
+        <MahakimIntegration onSave={handleSaveCase} />
+      </div>
 
       {isWizardOpen && (
         <CaseWizard initialData={wizardData || undefined} onSave={handleSaveCase}
@@ -2616,30 +2651,41 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
   };
 
 
+  const [expandedView, setExpandedView] = useState(false);
+
   return (
-    <div className="bg-white rounded-2xl border border-stone-200 shadow-sm flex flex-col min-h-[700px] overflow-hidden" dir="rtl">
+    <div className={expandedView
+      ? 'fixed inset-0 z-50 bg-white flex flex-col'
+      : 'bg-white rounded-2xl border border-stone-200 shadow-sm flex flex-col min-h-[700px] overflow-hidden'} dir="rtl">
       <div className="p-4 bg-emerald-900 flex justify-between items-center text-emerald-50 shrink-0 shadow-md">
         <div>
           <h2 className="font-bold text-lg flex items-center gap-2"><Landmark className="size-5 text-emerald-300" /> تكامل مع بوابة محاكم</h2>
           <p className="text-xs text-emerald-400 mt-0.5">انسخ الصفحة كاملة (Ctrl+A → Ctrl+C) ثم اضغط الزر — كرر لكل تبويبة</p>
         </div>
-        {result && (
-          <div className="flex gap-2">
-            <button onClick={() => setExtractMode(extractMode === 'portal' ? 'parsed' : 'portal')}
-              className="flex items-center gap-2 px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-lg text-xs">
-              <Eye className="size-4" /> {extractMode === 'portal' ? 'عرض النتائج' : 'رجوع للبوابة'}
-            </button>
-            <button onClick={handleSave}
-              className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-white font-bold rounded-lg text-sm shadow">
-              <DownloadCloud className="size-4" /> حفظ في القاعدة
-            </button>
-          </div>
-        )}
+        <div className="flex gap-2 items-center">
+          {result && (
+            <>
+              <button onClick={() => setExtractMode(extractMode === 'portal' ? 'parsed' : 'portal')}
+                className="flex items-center gap-2 px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-lg text-xs">
+                <Eye className="size-4" /> {extractMode === 'portal' ? 'عرض النتائج' : 'رجوع للبوابة'}
+              </button>
+              <button onClick={handleSave}
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-white font-bold rounded-lg text-sm shadow">
+                <DownloadCloud className="size-4" /> حفظ في القاعدة
+              </button>
+            </>
+          )}
+          <button onClick={() => setExpandedView(v => !v)} title={expandedView ? 'تصغير' : 'توسيع لملء الصفحة'}
+            className="flex items-center gap-2 px-3 py-2 bg-emerald-800 hover:bg-emerald-700 text-emerald-100 font-bold rounded-lg text-xs shrink-0">
+            {expandedView ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+            {expandedView ? 'تصغير' : 'توسيع'}
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
         {/* ── Left panel ── */}
-        <div className="w-full md:w-[420px] border-b md:border-b-0 md:border-l border-stone-200 bg-stone-50 p-5 flex flex-col gap-4 overflow-y-auto shrink-0">
+        <div className={`w-full md:w-[420px] ${expandedView ? 'max-h-[calc(100vh-72px)] md:max-h-[calc(100vh-72px)]' : 'max-h-[70vh] md:max-h-[85vh]'} border-b md:border-b-0 md:border-l border-stone-200 bg-stone-50 p-5 flex flex-col gap-4 overflow-y-auto shrink-0`}>
           {/* ── بوابة محاكم المدمجة ── */}
           {(bridgeReady || extensionReady) ? (
             <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 space-y-3">
@@ -2820,37 +2866,40 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] text-stone-500 font-bold">المحكمة</label>
-                  <select value={pvCourt} onChange={e => setPvCourt(e.target.value)}
-                    className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
-                    <optgroup label="محاكم استئناف">
-                      {['تطوان','طنجة','الحسيمة'].map(c => (
-                        <option key={'pv-ap-'+c} value={'استئناف '+c}>{'استئناف '+c}</option>
-                      ))}
-                    </optgroup>
-                    <optgroup label="محاكم ابتدائية">
-                      {['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'].map(c => (
-                        <option key={'pv-'+c}>{c}</option>
-                      ))}
-                    </optgroup>
-                  </select>
-                </div>
+                <div className="bg-stone-50 border border-stone-200 rounded-xl p-3 space-y-2.5">
+                  <p className="text-[11px] font-bold text-stone-600">المحكمة والضابطة القضائية</p>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-stone-500 font-bold">المحكمة</label>
+                    <select value={pvCourt} onChange={e => setPvCourt(e.target.value)}
+                      className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-500 focus:outline-none">
+                      <optgroup label="محاكم استئناف">
+                        {['تطوان','طنجة','الحسيمة'].map(c => (
+                          <option key={'pv-ap-'+c} value={'استئناف '+c}>{'استئناف '+c}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="محاكم ابتدائية">
+                        {['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'].map(c => (
+                          <option key={'pv-'+c}>{c}</option>
+                        ))}
+                      </optgroup>
+                    </select>
+                  </div>
 
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] text-stone-500 font-bold">الضابطة القضائية — نوعها</label>
-                  <select value={pvAgentType} onChange={e => setPvAgentType(e.target.value)}
-                    className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
-                    {PV_AGENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-stone-500 font-bold">نوع الضابطة القضائية</label>
+                    <select value={pvAgentType} onChange={e => setPvAgentType(e.target.value)}
+                      className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-500 focus:outline-none">
+                      {PV_AGENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
 
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] text-stone-500 font-bold">الضابطة القضائية — المصلحة/الجهة المعنية</label>
-                  <select value={pvAgency} onChange={e => setPvAgency(e.target.value)}
-                    className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none">
-                    {PV_AGENCIES.map(a => <option key={a} value={a}>{a}</option>)}
-                  </select>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-stone-500 font-bold">المصلحة/الجهة المعنية</label>
+                    <select value={pvAgency} onChange={e => setPvAgency(e.target.value)}
+                      className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-500 focus:outline-none">
+                      {PV_AGENCIES.map(a => <option key={a} value={a}>{a}</option>)}
+                    </select>
+                  </div>
                 </div>
 
                 <button onClick={handlePVSearch}
