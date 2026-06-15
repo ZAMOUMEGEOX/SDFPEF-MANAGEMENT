@@ -722,10 +722,38 @@ function buildCaseCardHTML(c: Case): string {
   return html;
 }
 
-/** يحوّل HTML إلى PDF عبر html2pdf.js (يُحمَّل ديناميكياً، التعريفات في src/types/html2pdf.d.ts) */
+// ── تحميل html2pdf.js من CDN عند الحاجة فقط ─────────────────────────────
+// لماذا CDN وليس import('html2pdf.js')؟ لأن import الديناميكي يبقى اسم وحدة
+// (module specifier) ثابتاً يحاول Rollup حلّه أثناء build، فإن لم تكن
+// المكتبة مثبَّتة في node_modules (npm install) يفشل البناء بالكامل —
+// "Rollup failed to resolve import html2pdf.js" — حتى لو لم يُستخدم
+// الاستيراد فعلياً إلا عند الضغط على زر PDF. التحميل من CDN في وقت التشغيل
+// (runtime) لا يحتاج أي حزمة npm إضافية ولا يؤثر على build.
+let html2pdfLoadPromise: Promise<any> | null = null;
+function loadHtml2Pdf(): Promise<any> {
+  const w = window as any;
+  if (w.html2pdf) return Promise.resolve(w.html2pdf);
+  if (html2pdfLoadPromise) return html2pdfLoadPromise;
+  html2pdfLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+    script.async = true;
+    script.onload = () => {
+      if (w.html2pdf) resolve(w.html2pdf);
+      else reject(new Error('تعذّر تحميل مكتبة PDF (html2pdf غير معرَّفة بعد التحميل)'));
+    };
+    script.onerror = () => {
+      html2pdfLoadPromise = null; // اسمح بإعادة المحاولة لاحقاً
+      reject(new Error('تعذّر تحميل مكتبة PDF من الشبكة (html2pdf.js) — تحقّق من الاتصال'));
+    };
+    document.head.appendChild(script);
+  });
+  return html2pdfLoadPromise;
+}
+
+/** يحوّل HTML إلى PDF عبر html2pdf.js (يُحمَّل من CDN عند أول استخدام) */
 async function htmlToPDF(html: string, filename: string, multiPage = false) {
-  const mod: any = await import('html2pdf.js');
-  const html2pdf = mod.default || mod;
+  const html2pdf = await loadHtml2Pdf();
   const container = document.createElement('div');
   container.innerHTML = html;
   container.style.position = 'fixed';
