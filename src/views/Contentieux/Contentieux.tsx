@@ -3327,8 +3327,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
       num = n; mark = m; year = y;
     }
 
-    if (!num) { alert('⚠️ لم يُستخرج رقم الملف الجنحي من المحضر.
-تحقق من تبويبة "الملفات الزجرية" في البوابة.'); return; }
+    if (!num) { alert('⚠️ لم يُستخرج رقم الملف الجنحي من المحضر. تحقق من تبويبة "الملفات الزجرية" في البوابة.'); return; }
 
     // ملء حقول شريط الملفات
     setRemoteNum(num); setRemoteMark(mark); setRemoteYear(year);
