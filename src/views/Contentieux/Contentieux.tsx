@@ -1431,6 +1431,9 @@ export function Contentieux() {
   const [wizardData, setWizardData] = useState<Case | null>(null);
   const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [cases, setCases] = useState<Case[]>([]);
+  const [pvRecords, setPvRecords] = useState<PVRecord[]>([]);
+  const [pvLocalTab, setPvLocalTab] = useState<'cases'|'pvs'>('cases');
+  const [selectedPV, setSelectedPV] = useState<PVRecord | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [currentUser, setCurrentUserState] = useState(() => getCurrentUser());
 
@@ -1443,6 +1446,7 @@ export function Contentieux() {
 
   useEffect(() => {
     loadCases().then(({ data }) => { setCases(data.length > 0 ? data : recentCases); setIsLoading(false); });
+    loadPVRecordsDB().then(data => setPvRecords(data));
   }, []);
 
   useEffect(() => {
@@ -1684,14 +1688,44 @@ export function Contentieux() {
 
       {isStatsOpen && <ContentieuxStats cases={cases} onClose={() => setIsStatsOpen(false)} onNavigate={handleStatsNavigate} />}
 
-      {/* ── تبويب "القضايا المحلية" ── يبقى في DOM دائماً (hidden فقط) كي لا
-          يتأثر بالتبديل، تناسقاً مع تبويب "بوابة محاكم" أدناه ── */}
+      {/* ── تبويب "القضايا المحلية" ── */}
       <div className={activeTab === 'local' ? '' : 'hidden'}>
-        {selectedCase ? (
+
+        {/* ── تبويبا القضايا / المحاضر ── */}
+        {!selectedCase && !selectedPV && (
+          <div className="flex gap-2 mb-4 bg-stone-100 p-1 rounded-xl border border-stone-200 w-fit">
+            <button onClick={() => setPvLocalTab('cases')}
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold text-sm transition-all ${pvLocalTab==='cases' ? 'bg-white text-stone-800 shadow-sm' : 'text-stone-500 hover:text-stone-700'}`}>
+              <Scale className="size-4"/> الملفات القضائية
+              <span className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">{cases.length}</span>
+            </button>
+            <button onClick={() => setPvLocalTab('pvs')}
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold text-sm transition-all ${pvLocalTab==='pvs' ? 'bg-blue-600 text-white shadow-sm' : 'text-stone-500 hover:text-stone-700'}`}>
+              <ShieldAlert className="size-4"/> محاضر الضابطة
+              {pvRecords.length > 0 && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${pvLocalTab==='pvs' ? 'bg-blue-500 text-white' : 'bg-blue-100 text-blue-700'}`}>{pvRecords.length}</span>}
+            </button>
+          </div>
+        )}
+
+        {/* ── عرض تفاصيل ملف ── */}
+        {selectedCase && (
           <CaseDetail caseData={selectedCase} onBack={() => setSelectedCase(null)} onDelete={handleDeleteCase}
             onEdit={() => { setWizardData(selectedCase); setIsWizardOpen(true); }}
             allCases={cases} onSelectCase={setSelectedCase} />
-        ) : (
+        )}
+
+        {/* ── عرض تفاصيل محضر ── */}
+        {!selectedCase && selectedPV && (
+          <PVDetail pv={selectedPV}
+            onBack={() => setSelectedPV(null)}
+            onDelete={async (id) => { await deletePVRecordDB(id); setPvRecords(p=>p.filter(r=>r.id!==id)); setSelectedPV(null); }}
+            relatedCase={cases.find(c => c.id === selectedPV.linkedCaseId || c.mahakimId === selectedPV.linkedFileNumber)}
+            onOpenRelatedCase={(c) => { setSelectedPV(null); setSelectedCase(c); setPvLocalTab('cases'); }}
+          />
+        )}
+
+        {/* ── قسم الملفات القضائية ── */}
+        {!selectedCase && !selectedPV && pvLocalTab === 'cases' && (
           <div className="space-y-5">
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {[
@@ -2030,13 +2064,32 @@ export function Contentieux() {
             </div>
           </div>
         )}
+
+        {/* ── قسم محاضر الضابطة القضائية ── */}
+        {!selectedCase && !selectedPV && pvLocalTab === 'pvs' && (
+          <PVList
+            pvRecords={pvRecords}
+            onSelect={setSelectedPV}
+            onDelete={async (id) => { await deletePVRecordDB(id); setPvRecords(p=>p.filter(r=>r.id!==id)); }}
+            onGoToMahakim={() => setActiveTab('mahakim')}
+            onOpenRelatedCase={(c) => { setSelectedCase(c); setPvLocalTab('cases'); }}
+            cases={cases}
+          />
+        )}
       </div>
 
-      {/* ── تبويب "بوابة محاكم" — يبقى مُحمَّلاً دائماً (hidden فقط عند
-          التبديل)، لأن إعادة تركيب الإطار/الإضافة عند كل تبديل بين
-          التبويبين كانت تُفسد حالة الإضافة والبحث المدمج ── */}
+      {/* ── تبويب "بوابة محاكم" — يبقى مُحمَّلاً دائماً ── */}
       <div className={activeTab === 'mahakim' ? 'flex-1 flex flex-col min-h-[700px]' : 'hidden'}>
-        <MahakimIntegration onSave={handleSaveCase} />
+        <MahakimIntegration
+          onSave={handleSaveCase}
+          onSavePV={(pv) => {
+            setPvRecords(prev => {
+              const exists = prev.find(p => p.id === pv.id);
+              return exists ? prev.map(p => p.id === pv.id ? pv : p) : [pv, ...prev];
+            });
+          }}
+          cases={cases}
+        />
       </div>
 
       {isWizardOpen && (
@@ -2187,6 +2240,29 @@ const PV_AGENCIES: string[] = [
 // ─── نوع محضر الضابطة القضائية ──────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── دالة تقسيم رقم الملف الزجري إلى (رقم / رمز / سنة) ────────────────────
+// الصيغة في تبويبة "الملفات الزجرية": رقم/رمز/سنة  مثل  8716/2107/2025
+//   رقم  = 8716  (يذهب لحقل "رقم" في شريط البحث)
+//   رمز  = 2107  (يذهب لحقل "رمز")
+//   سنة  = 2025  (يذهب لحقل "سنة")
+// صيغة محاكم المعكوسة: سنة/رمز/رقم مثل 2025/2107/8716 — تُكتشف تلقائياً
+function splitFileRef(raw: string): { num: string; mark: string; year: string } {
+  const empty = { num: '', mark: '', year: '' };
+  if (!raw) return empty;
+  const parts = raw.replace(/\s+/g,'').split('/').filter(Boolean);
+  if (parts.length !== 3) return empty;
+  const [a, b, c] = parts;
+  const isYear = (s: string) => /^\d{4}$/.test(s) && Number(s) >= 2000 && Number(s) <= 2099;
+  // صيغة رقم/رمز/سنة: الجزء الأخير = سنة
+  if (isYear(c))  return { num: a, mark: b, year: c };
+  // صيغة سنة/رمز/رقم: الجزء الأول = سنة
+  if (isYear(a))  return { num: c, mark: b, year: a };
+  // احتياط: الأوسط دائماً رمز، حاول الأول والأخير
+  return { num: a, mark: b, year: c };
+}
+
 export interface PVRecord {
   id: string;
   /** معرّف الملف المرتبط في contentieux_cases (يُملأ بعد الربط) */
@@ -2194,18 +2270,22 @@ export interface PVRecord {
 
   // ── بيانات المحضر ─────────────────────────────────────────────────────────
   pvInputNumber: string;    // الرقم الذي أدخله المستخدم
-  pvCourtRef: string;       // رقم المحضر بالمحكمة كما يظهر في البوابة
-  pvDate: string;
-  pvType: string;
-  pvSubject: string;
-  pvAgency: string;
-  pvAgentType: string;
-  pvOffense: string;
-  court: string;
+  pvCourtRef:   string;     // رقم المحضر بالمحكمة كما يظهر في البوابة
+  pvDate:       string;
+  pvType:       string;
+  pvSubject:    string;
+  pvAgency:     string;
+  pvAgentType:  string;
+  pvOffense:    string;
+  court:        string;
 
   // ── الملف الجنحي المرتبط ──────────────────────────────────────────────────
-  /** رقم الملف الزجري (9276/2107/2025) من تبويبة "الملفات الزجرية" */
+  /** رقم الملف الزجري الكامل: 8716/2107/2025 */
   linkedFileNumber: string;
+  /** الأجزاء الثلاثة المُقسَّمة لشريط البحث */
+  fileNum:  string;   // 8716
+  fileMark: string;   // 2107
+  fileYear: string;   // 2025
   linkedFile: {
     fileNumber: string; fileType: string; court: string;
     section: string; date: string; status: string;
@@ -2213,7 +2293,7 @@ export interface PVRecord {
   };
 
   // ── الأطراف والإجراءات ────────────────────────────────────────────────────
-  parties: { role: string; name: string }[];
+  parties:    { role: string; name: string }[];
   procedures: { date: string; action: string; decision: string }[];
 
   // ── المزامنة والنص الخام ──────────────────────────────────────────────────
@@ -2222,24 +2302,25 @@ export interface PVRecord {
   lastSyncedAt: string;
 }
 
+
 // ═══════════════════════════════════════════════════════════════════════════
-// ─── تحليل نص المحضر — v7.0 (الحل الجذري) ──────────────────────────────────
+// ─── تحليل نص المحضر — v7.1 ─────────────────────────────────────────────────
 //
-// المشكلة المُشخَّصة من الصور:
-//   • الإضافة ترسل النص للمسار الخاطئ (performParsing بدل performParsingPV)
-//   • رقم الملف الزجري (9276/2107/2025) يُوضع في "نوع القضية" بدل حقله
-//   • قسم "الملفات الزجرية" لا يُقرأ صحيحاً
+// الإصلاح الجذري لرقم الملف الزجري:
+//   • الصيغة الحقيقية في البوابة: رقم/رمز/سنة  مثل  8716/2107/2025
+//     (رقم=8716، رمز=2107، سنة=2025)
+//   • الصيغة الوحيدة لمحاكم:    سنة/رمز/رقم  مثل  2025/2107/8716
+//   • القاعدة: آخر جزء (أو أول جزء) بـ 4 أرقام ≥ 2000 = السنة
+//   • الجزء الأوسط = الرمز دائماً
+//   • الجزء المتبقي = الرقم
 //
-// الحل:
-//   1. تحليل مُهيَكَل إن وُجد __STRUCTURED_PV__ (إضافة v6.6+)
-//   2. قراءة أقسام ════════ كما تفعل performParsing الناجحة
-//   3. استخراج رقم الملف من قسم "الملفات الزجرية" بعدة طرق متوازية
-//   4. fallback: تحليل النص كامل بطريقة مقاومة
+// بعد الاستخراج تُملأ: fileNum, fileMark, fileYear
+// وهي ما يُرسَل مباشرة لشريط تتبع الملفات (حقول رقم/رمز/سنة)
 // ═══════════════════════════════════════════════════════════════════════════
 
 function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
-  const ts = Date.now();
-  const id = `PV-${pvInputNumber.replace(/\//g, '-')}-${ts.toString(36).slice(-4).toUpperCase()}`;
+  const ts  = Date.now();
+  const id  = `PV-${pvInputNumber.replace(/\//g, '-')}-${ts.toString(36).slice(-4).toUpperCase()}`;
   const now = new Date().toISOString();
 
   // ── المسار 1: قراءة __STRUCTURED_PV__ من إضافة v6.6+ ─────────────────────
@@ -2249,39 +2330,41 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
   if (structMatch) {
     try {
       const s = JSON.parse(structMatch[1]);
-      // رقم الملف الزجري من allRefs إذا كان linkedFileNumber فارغاً
       let linked = s.linkedFileNumber || s.linkedFile?.fileNumber || '';
       if (!linked && Array.isArray(s.allRefs)) {
-        const pvRef = s.pvCourtRef || s.pvNumber || '';
-        linked = s.allRefs.find((r: string) => r !== pvRef) || '';
+        const pvRef = (s.pvCourtRef || s.pvNumber || '').replace(/\s+/g,'');
+        linked = s.allRefs.find((r: string) => r.replace(/\s+/g,'') !== pvRef) || '';
       }
+      const { num: fNum, mark: fMark, year: fYear } = splitFileRef(linked);
       return {
-        id, linkedCaseId: undefined,
-        pvInputNumber,
-        pvCourtRef:   s.pvCourtRef  || s.pvNumber || '',
-        pvDate:       s.pvDate      || '',
-        pvType:       s.pvType      || '',
-        pvSubject:    s.pvSubject   || '',
-        pvAgency:     s.pvAgency    || '',
-        pvAgentType:  s.pvAgentType || '',
-        pvOffense:    s.pvOffense   || '',
-        court:        s.linkedFile?.court || '',
+        id, linkedCaseId: undefined, pvInputNumber,
+        pvCourtRef:  s.pvCourtRef  || s.pvNumber || '',
+        pvDate:      s.pvDate      || '',
+        pvType:      s.pvType      || '',
+        pvSubject:   s.pvSubject   || '',
+        pvAgency:    s.pvAgency    || '',
+        pvAgentType: s.pvAgentType || '',
+        pvOffense:   s.pvOffense   || '',
+        court:       s.linkedFile?.court || '',
         linkedFileNumber: linked,
-        linkedFile: s.linkedFile || { fileNumber: linked, fileType: '', court: '', section: '', date: '', status: '', judge: '', nextSession: '' },
-        parties:    Array.isArray(s.parties)   ? s.parties   : [],
-        procedures: Array.isArray(s.procedures)? s.procedures: [],
+        fileNum: fNum, fileMark: fMark, fileYear: fYear,
+        linkedFile: s.linkedFile || {
+          fileNumber: linked, fileType: '', court: '',
+          section: '', date: '', status: '', judge: '', nextSession: '',
+        },
+        parties:    Array.isArray(s.parties)    ? s.parties    : [],
+        procedures: Array.isArray(s.procedures) ? s.procedures : [],
         rawText: text, createdAt: now, lastSyncedAt: now,
       };
     } catch (_) { /* انتقل للمسار 2 */ }
   }
 
-  // ── المسار 2: قراءة أقسام ════════ (نفس أسلوب performParsing الناجح) ──────
+  // ── المسار 2: قراءة أقسام ════════ ──────────────────────────────────────────
   const clean = text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
 
-  // دالة استخراج قسم بعينه
   const getSection = (name: string): string => {
     const re = new RegExp(`════════[^═]*${name}[^═]*════════([\\s\\S]*?)(?:════════|$)`);
-    const m = clean.match(re);
+    const m  = clean.match(re);
     return m ? m[1].trim() : '';
   };
 
@@ -2291,16 +2374,14 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
   const secFileCard = getSection('بطاقة الملف');
   const secCriminal = getSection('الملفات الزجرية');
 
-  // ── دالة: استخراج قيمة حقل من نص القسم ────────────────────────────────────
+  // ── دالة استخراج قيمة حقل ────────────────────────────────────────────────
   const extractField = (body: string, labels: string[]): string => {
     if (!body) return '';
     const lines = body.split('\n').map(l => l.trim()).filter(Boolean);
     for (let i = 0; i < lines.length; i++) {
       for (const lbl of labels) {
         const ln = lines[i];
-        // صيغة "تسمية : قيمة" في نفس السطر
         if (ln === lbl || ln === lbl + ' :' || ln === lbl + ':') {
-          // القيمة في السطر التالي
           const next = lines[i + 1];
           if (next && next !== '-' && next !== '—' && !labels.includes(next)) return next;
         }
@@ -2308,7 +2389,6 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
           const val = ln.slice(lbl.length).replace(/^\s*:\s*/, '').trim();
           if (val && val !== '-') return val;
         }
-        // مطابقة جزئية (التسمية جزء من السطر)
         if (ln.includes(lbl + ':') || ln.includes(lbl + ' :')) {
           const val = ln.split(/:\s*/)[1]?.trim() || '';
           if (val && val !== '-') return val;
@@ -2318,73 +2398,74 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
     return '';
   };
 
-  // ── استخراج بيانات المحضر الأساسية ─────────────────────────────────────────
-  // نبحث في كامل النص وليس فقط القسم الأول (الإضافة قد تضعها في أي مكان)
-  const fullBody = secPVData || clean;
+  // ── بيانات المحضر الأساسية ───────────────────────────────────────────────
+  const fullBody  = secPVData || clean;
+  const pvCourtRef = extractField(fullBody, ['رقم محضر الضابطة القضائية','رقم المحضر بالمحكمة','رقم المحضر']);
+  const pvDate     = extractField(fullBody, ['تاريخ المحضر','تاريخ محضر الضابطة']);
+  const pvType     = extractField(fullBody, ['نوع المحضر','نوع محضر الضابطة']);
+  const pvSubject  = extractField(fullBody, ['موضوع المحضر','الموضوع']);
+  const pvAgency   = extractField(fullBody, ['الجهة المعنية','المصلحة المعنية','المصلحة','الجهة']);
+  const pvOffense  = extractField(fullBody, ['نوع المخالفة','المخالفة','نوع الجريمة']);
 
-  const pvCourtRef = extractField(fullBody, ['رقم محضر الضابطة القضائية', 'رقم المحضر بالمحكمة', 'رقم المحضر']);
-  const pvDate     = extractField(fullBody, ['تاريخ المحضر', 'تاريخ محضر الضابطة']);
-  const pvType     = extractField(fullBody, ['نوع المحضر', 'نوع محضر الضابطة']);
-  const pvSubject  = extractField(fullBody, ['موضوع المحضر', 'الموضوع']);
-  const pvAgency   = extractField(fullBody, ['الجهة المعنية', 'المصلحة المعنية', 'المصلحة', 'الجهة']);
-  const pvOffense  = extractField(fullBody, ['نوع المخالفة', 'المخالفة', 'نوع الجريمة']);
-
-  // ── استخراج بيانات بطاقة الملف ─────────────────────────────────────────────
+  // ── بيانات بطاقة الملف ────────────────────────────────────────────────────
   const cardFileNum  = extractField(secFileCard, ['رقم الملف']);
-  const cardFileType = extractField(secFileCard, ['نوع الملف', 'نوع الدعوى']);
+  const cardFileType = extractField(secFileCard, ['نوع الملف','نوع الدعوى']);
   const cardCourt    = extractField(secFileCard, ['المحكمة']);
-  const cardSection  = extractField(secFileCard, ['الشعبة', 'القسم']);
-  const cardDate     = extractField(secFileCard, ['تاريخ التسجيل', 'تاريخ الملف']);
-  const cardStatus   = extractField(secFileCard, ['وضعية الملف', 'الوضعية', 'الحالة']);
-  const cardJudge    = extractField(secFileCard, ['القاضي', 'المستشار', 'القاضي المقرر', 'المستشار / القاضي المقرر']);
-  const cardSession  = extractField(secFileCard, ['الجلسة القادمة', 'تاريخ الجلسة القادمة']);
+  const cardSection  = extractField(secFileCard, ['الشعبة','القسم']);
+  const cardDate     = extractField(secFileCard, ['تاريخ التسجيل','تاريخ الملف']);
+  const cardStatus   = extractField(secFileCard, ['وضعية الملف','الوضعية','الحالة']);
+  const cardJudge    = extractField(secFileCard, ['القاضي','المستشار','القاضي المقرر','المستشار / القاضي المقرر']);
+  const cardSession  = extractField(secFileCard, ['الجلسة القادمة','تاريخ الجلسة القادمة']);
 
-  // ── استخراج رقم الملف الزجري من تبويبة "الملفات الزجرية" ─────────────────
-  // هذا الأهم: 9276/2107/2025 في خانة "رقم الملف" بالتبويبة الرابعة
-  // نستخدم 4 طرق متوازية:
+  // ── استخراج رقم الملف الزجري — 5 طرق متوازية ────────────────────────────
+  // المصدر الأساسي: تبويبة "الملفات الزجرية" — خانة "رقم الملف"
+  // الصيغة:  8716/2107/2025  (رقم/رمز/سنة)
 
-  // طريقة 1: البحث في قسم "الملفات الزجرية" عن تسمية "رقم الملف"
+  // طريقة 1: تسمية "رقم الملف" في قسم "الملفات الزجرية"
   let linkedFileNumber = extractField(secCriminal, ['رقم الملف']);
 
-  // طريقة 2: أي رقم مرجعي في قسم "الملفات الزجرية"
+  // طريقة 2: أي رقم مرجعي بالصيغة X/Y/Z في قسم "الملفات الزجرية"
   if (!linkedFileNumber && secCriminal) {
-    const refs = secCriminal.match(/\d{1,6}\s*\/\s*\d{2,6}\s*\/\s*\d{2,6}/g) || [];
+    const refs = (secCriminal.match(/\d{1,6}\s*\/\s*\d{2,6}\s*\/\s*\d{2,6}/g) || []);
     if (refs.length > 0) linkedFileNumber = refs[0].replace(/\s+/g, '');
   }
 
-  // طريقة 3: من تسمية "رقم الملف الجنحي" في أي مكان
-  if (!linkedFileNumber) {
-    linkedFileNumber = extractField(clean, ['رقم الملف الجنحي', 'رقم الملف']);
-  }
-
-  // طريقة 4: من جدول الملفات الزجرية — نبحث عن صف يحتوي رقم ملف ثم تاريخ
+  // طريقة 3: جدول الملفات الزجرية — نقرأ أول صف بيانات (بعد رأس الجدول)
   if (!linkedFileNumber && secCriminal) {
-    // الجدول: | رقم الملف | تاريخ التسجيل |
-    // نبحث عن أي رقم بصيغة X/Y/Z حيث Z أو X = 4 أرقام (سنة)
-    const tableMatch = secCriminal.match(/(\d{1,6}\/\d{2,6}\/\d{4}|\d{4}\/\d{2,6}\/\d{1,6})/);
-    if (tableMatch) linkedFileNumber = tableMatch[1].replace(/\s+/g, '');
+    // الجدول: رقم الملف | تاريخ التسجيل | ...
+    // نبحث عن صف يبدأ بـ رقم/رمز/سنة أو سنة/رمز/رقم
+    const rowMatch = secCriminal.match(
+      /(\d{1,6}\/\d{2,6}\/\d{4}|\d{4}\/\d{2,6}\/\d{1,6})/
+    );
+    if (rowMatch) linkedFileNumber = rowMatch[1].replace(/\s+/g, '');
   }
 
-  // طريقة 5: من النص الكامل — أي رقم مرجعي مختلف عن رقم المحضر
+  // طريقة 4: من خانة "رقم الملف الجنحي" في أي قسم
+  if (!linkedFileNumber) {
+    linkedFileNumber = extractField(clean, ['رقم الملف الجنحي']);
+  }
+
+  // طريقة 5: من النص الكامل — أي رقم مختلف عن رقم المحضر
   if (!linkedFileNumber) {
     const allRefsRaw = clean.match(/\d{1,6}\s*\/\s*\d{2,6}\s*\/\s*\d{2,6}/g) || [];
-    const allRefs = allRefsRaw.map(r => r.replace(/\s+/g, ''));
-    const pvRef = pvCourtRef.replace(/\s+/g, '');
-    const other = allRefs.find(r => r !== pvRef && r !== pvInputNumber);
+    const allRefs    = [...new Set(allRefsRaw.map(r => r.replace(/\s+/g, '')))];
+    const pvRef      = (pvCourtRef || pvInputNumber).replace(/\s+/g,'');
+    const other      = allRefs.find(r => r !== pvRef);
     if (other) linkedFileNumber = other;
   }
 
-  // إزالة القيم غير الصالحة
-  if (['-', '–', '—', ''].includes((linkedFileNumber || '').trim())) linkedFileNumber = '';
-
-  // استخدم بيانات بطاقة الملف إذا كان رقم الملف غائباً
+  // تنظيف
+  if (['-','–','—',''].includes((linkedFileNumber||'').trim())) linkedFileNumber = '';
   if (!linkedFileNumber && cardFileNum) linkedFileNumber = cardFileNum;
 
-  // ── استخراج الأطراف ─────────────────────────────────────────────────────────
+  // ── تقسيم رقم الملف إلى (رقم / رمز / سنة) لشريط البحث ─────────────────
+  const { num: fileNum, mark: fileMark, year: fileYear } = splitFileRef(linkedFileNumber);
+
+  // ── الأطراف ───────────────────────────────────────────────────────────────
   const parties: { role: string; name: string }[] = [];
   if (secParties) {
-    const ROLE_WORDS = ['متهم', 'مشتكي', 'مشتكى به', 'ضحية', 'مسؤول مدني',
-      'مدعي', 'مدعى عليه', 'مطلوب', 'طالب', 'الجاني', 'المجني', 'نيابة عامة'];
+    const ROLES = ['متهم','مشتكي','مشتكى به','ضحية','مسؤول مدني',
+      'مدعي','مدعى عليه','مطلوب','طالب','الجاني','المجني','نيابة عامة'];
     const lines = secParties.split('\n').map(l => l.trim()).filter(Boolean);
 
     // محاولة 1: جدول بتابات
@@ -2392,138 +2473,125 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
     if (tabLines.length > 0) {
       for (const line of tabLines) {
         const parts = line.split('\t').map(s => s.trim()).filter(Boolean);
-        if (parts.length >= 2 && ROLE_WORDS.some(r => parts[0].includes(r))) {
+        if (parts.length >= 2 && ROLES.some(r => parts[0].includes(r)))
           parties.push({ role: parts[0], name: parts.slice(1).join(' ') });
-        }
       }
     }
-
     // محاولة 2: مسافات عريضة
-    if (parties.length === 0) {
+    if (!parties.length) {
       for (const line of lines) {
         const parts = line.split(/\s{3,}/).map(s => s.trim()).filter(Boolean);
-        if (parts.length >= 2 && ROLE_WORDS.some(r => parts[0].includes(r))) {
+        if (parts.length >= 2 && ROLES.some(r => parts[0].includes(r)))
           parties.push({ role: parts[0], name: parts.slice(1).join(' ') });
-        }
       }
     }
-
     // محاولة 3: سطر بعد سطر
-    if (parties.length === 0) {
+    if (!parties.length) {
       for (let i = 0; i < lines.length; i++) {
-        const roleFound = ROLE_WORDS.find(r => lines[i] === r || lines[i].startsWith(r + ' ') || lines[i].startsWith(r + ':'));
-        if (roleFound) {
-          const inline = lines[i].slice(roleFound.length).replace(/^\s*:\s*/, '').trim();
-          const name = inline || (lines[i + 1] && !ROLE_WORDS.some(r => (lines[i+1] || '').includes(r)) ? lines[i + 1] : '');
-          if (name) { parties.push({ role: roleFound, name }); if (!inline) i++; }
+        const role = ROLES.find(r => lines[i] === r || lines[i].startsWith(r + ' ') || lines[i].startsWith(r + ':'));
+        if (role) {
+          const inline = lines[i].slice(role.length).replace(/^\s*:\s*/,'').trim();
+          const name   = inline || (lines[i+1] && !ROLES.some(r=>(lines[i+1]||'').includes(r)) ? lines[i+1] : '');
+          if (name) { parties.push({ role, name }); if (!inline) i++; }
         }
       }
     }
-
-    // محاولة 4: "التسمية: القيمة"
-    if (parties.length === 0) {
+    // محاولة 4: صيغة "التسمية: القيمة"
+    if (!parties.length) {
       for (const line of lines) {
         const m = line.match(/^([^:]+)\s*:\s*(.+)$/);
-        if (m && ROLE_WORDS.some(r => m[1].trim().includes(r))) {
+        if (m && ROLES.some(r => m[1].trim().includes(r)))
           parties.push({ role: m[1].trim(), name: m[2].trim() });
-        }
       }
     }
   }
 
-  // ── استخراج الإجراءات ───────────────────────────────────────────────────────
+  // ── الإجراءات ─────────────────────────────────────────────────────────────
   const procedures: { date: string; action: string; decision: string }[] = [];
-  const procSource = secProcs || '';
-  if (procSource) {
+  if (secProcs) {
     const dateRe = /(\d{2}\/\d{2}\/\d{4})/;
-    const lines = procSource.split('\n').map(l => l.trim()).filter(Boolean);
-    const SKIP = new Set(['لائحة الإجراءات', 'تاريخ الإجراء', 'نوع الإجراء', 'القرار', 'ملاحظات']);
+    const SKIP   = new Set(['لائحة الإجراءات','تاريخ الإجراء','نوع الإجراء','القرار','ملاحظات']);
+    const lines  = secProcs.split('\n').map(l => l.trim()).filter(Boolean);
 
-    // محاولة 1: جدول بتابات
     const tabLines = lines.filter(l => l.includes('\t') && dateRe.test(l));
     if (tabLines.length > 0) {
       for (const line of tabLines) {
-        const parts = line.split('\t').map(s => s.trim()).filter(Boolean);
+        const parts   = line.split('\t').map(s => s.trim()).filter(Boolean);
         const dateIdx = parts.findIndex(p => dateRe.test(p));
         if (dateIdx >= 0) {
           const date = parts[dateIdx].match(dateRe)![1];
-          const rest = parts.filter((_, i) => i !== dateIdx);
-          procedures.push({ date, action: rest[0] || '', decision: rest[1] || '' });
+          const rest = parts.filter((_,i) => i !== dateIdx);
+          procedures.push({ date, action: rest[0]||'', decision: rest[1]||'' });
         }
       }
     }
-
-    // محاولة 2: سطر بعد سطر
-    if (procedures.length === 0) {
+    if (!procedures.length) {
       for (const line of lines) {
         if (SKIP.has(line)) continue;
         const dm = dateRe.exec(line);
         if (dm) {
-          const parts = line.split(/\s{2,}|\t+/).map(s => s.trim()).filter(Boolean);
-          const rest = parts.filter(p => !dateRe.test(p));
-          procedures.push({ date: dm[1], action: rest[0] || line.replace(dm[0], '').trim(), decision: rest[1] || '' });
+          const parts = line.split(/\s{2,}|\t+/).map(s=>s.trim()).filter(Boolean);
+          const rest  = parts.filter(p => !dateRe.test(p));
+          procedures.push({ date: dm[1], action: rest[0]||line.replace(dm[0],'').trim(), decision: rest[1]||'' });
         }
       }
     }
   }
 
-  // ── استخراج المحكمة ──────────────────────────────────────────────────────────
-  const court = cardCourt ||
-    extractField(clean, ['المحكمة']) ||
-    (clean.match(/(المحكمة\s+الابتدائية[^\n\t،،]+|محكمة\s+الاستئناف[^\n\t،]+)/u)?.[1] || '').trim();
-
-  // ── تجميع بيانات بطاقة الملف ────────────────────────────────────────────────
-  const linkedFile = {
-    fileNumber:  cardFileNum  || linkedFileNumber,
-    fileType:    cardFileType || '',
-    court:       cardCourt    || court,
-    section:     cardSection  || '',
-    date:        cardDate     || '',
-    status:      cardStatus   || '',
-    judge:       cardJudge    || '',
-    nextSession: cardSession  || '',
-  };
+  // ── المحكمة ───────────────────────────────────────────────────────────────
+  const court = cardCourt
+    || extractField(clean, ['المحكمة'])
+    || (clean.match(/(المحكمة\s+الابتدائية[^\n\t،]+|محكمة\s+الاستئناف[^\n\t،]+)/u)?.[1]||'').trim();
 
   return {
-    id, linkedCaseId: undefined,
-    pvInputNumber,
+    id, linkedCaseId: undefined, pvInputNumber,
     pvCourtRef: pvCourtRef || pvInputNumber,
     pvDate, pvType, pvSubject, pvAgency, pvAgentType: '', pvOffense,
     court,
     linkedFileNumber,
-    linkedFile,
+    fileNum, fileMark, fileYear,
+    linkedFile: {
+      fileNumber:  cardFileNum  || linkedFileNumber,
+      fileType:    cardFileType || '',
+      court:       cardCourt    || court,
+      section:     cardSection  || '',
+      date:        cardDate     || '',
+      status:      cardStatus   || '',
+      judge:       cardJudge    || '',
+      nextSession: cardSession  || '',
+    },
     parties, procedures,
-    rawText: text,
-    createdAt: now,
-    lastSyncedAt: now,
+    rawText: text, createdAt: now, lastSyncedAt: now,
   };
 }
 
-// ─── تحويل PVRecord إلى Case (للربط مع قاعدة الملفات) ─────────────────────
+// ─── تحويل PVRecord إلى Case ─────────────────────────────────────────────────
 function pvRecordToCase(pv: PVRecord): Case {
   const lf = pv.linkedFile;
   return {
     id: `CTX-PV-${Date.now().toString(36).toUpperCase()}`,
-    mahakimId: lf.fileNumber || pv.linkedFileNumber || undefined,
-    court: lf.court || pv.court || 'غير محددة',
-    type: lf.fileType || 'جنحية',
-    subject: pv.pvSubject || pv.pvOffense || 'مخالفة غابوية — مستخرج من محضر الضابطة',
-    date: lf.date || new Date().toISOString().split('T')[0],
-    judge: lf.judge || undefined,
-    section: lf.section || undefined,
-    status: lf.status || 'مستخرج من محضر الضابطة القضائية',
+    mahakimId:  lf.fileNumber || pv.linkedFileNumber || undefined,
+    court:      lf.court  || pv.court || 'غير محددة',
+    type:       lf.fileType || 'جنحية',
+    subject:    pv.pvSubject || pv.pvOffense || 'مخالفة غابوية — مستخرج من محضر الضابطة',
+    date:       lf.date   || new Date().toISOString().split('T')[0],
+    judge:      lf.judge  || undefined,
+    section:    lf.section || undefined,
+    status:     lf.status || 'مستخرج من محضر الضابطة القضائية',
     nextSession: lf.nextSession || undefined,
-    defendant: pv.parties.find(p =>
+    defendant:  pv.parties.find(p =>
       ['متهم','مشتكى به','مدعى عليه','الجاني'].some(r => p.role.includes(r))
     )?.name || 'غير محدد',
-    parties: pv.parties,
+    parties:    pv.parties,
     procedures: pv.procedures,
-    pvNumber: pv.pvCourtRef || pv.pvInputNumber,
-    pvDate: pv.pvDate,
+    pvNumber:   pv.pvCourtRef || pv.pvInputNumber,
+    pvDate:     pv.pvDate,
     offenseType: pv.pvOffense || pv.pvType,
-    pvStatus: 'مستخرج من محضر الضابطة',
+    pvStatus:   'مستخرج من محضر الضابطة',
     lastSyncedAt: new Date().toISOString(),
-    syncCount: 1,
+    syncCount:  1,
+    // حفظ معرّف المحضر في الملف للربط العكسي
+    auditLog: [{ date: new Date().toISOString(), user: 'النظام', action: `مُنشأ من محضر الضابطة: ${pv.pvCourtRef || pv.pvInputNumber}` }],
   };
 }
 
@@ -2544,14 +2612,420 @@ async function deletePVRecordDB(id: string): Promise<boolean> {
   return success;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ─── MahakimIntegration — v7.0 ──────────────────────────────────────────────
-// قسمان مستقلان:
-//   A) محاضر الضابطة القضائية: بحث → استخراج → حفظ في pv_records + ربط بملف
-//   B) تتبع الملفات القضائية: البحث الكلاسيكي + أداة التحليل
-// ═══════════════════════════════════════════════════════════════════════════
 
-function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
+// ════════════════════════════════════════════════════════════════════════════
+// ─── قسم محاضر الضابطة القضائية — مكوّنات العرض ─────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+
+/** قائمة محاضر الضابطة القضائية في قسم "القضايا المحلية" */
+function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCase, cases }: {
+  pvRecords: PVRecord[];
+  onSelect: (pv: PVRecord) => void;
+  onDelete: (id: string) => void;
+  onGoToMahakim: () => void;
+  onOpenRelatedCase: (c: Case) => void;
+  cases: Case[];
+}) {
+  const [pvSearch, setPvSearch] = useState('');
+
+  const filtered = useMemo(() => {
+    if (!pvSearch.trim()) return pvRecords;
+    const q = pvSearch.toLowerCase();
+    return pvRecords.filter(p =>
+      (p.pvCourtRef||'').toLowerCase().includes(q) ||
+      (p.pvInputNumber||'').toLowerCase().includes(q) ||
+      (p.linkedFileNumber||'').includes(q) ||
+      (p.pvSubject||'').includes(q) ||
+      (p.pvAgency||'').includes(q) ||
+      p.parties.some(pt => pt.name.includes(q))
+    );
+  }, [pvRecords, pvSearch]);
+
+  return (
+    <div className="space-y-4">
+      {/* رأس القسم */}
+      <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between bg-blue-50 border border-blue-200 rounded-2xl p-4">
+        <div>
+          <h3 className="font-bold text-blue-900 flex items-center gap-2 text-lg">
+            <ShieldAlert className="size-5 text-blue-600"/>
+            محاضر الضابطة القضائية
+          </h3>
+          <p className="text-xs text-blue-600 mt-0.5">مخالفات المياه والغابات — كل محضر مرتبط بملف قضائي</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={onGoToMahakim}
+            className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-sm transition-all">
+            <Search className="size-4"/> بحث عن محضر جديد
+          </button>
+        </div>
+      </div>
+
+      {pvRecords.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-stone-200 p-12 text-center space-y-3">
+          <ShieldAlert className="size-12 text-stone-200 mx-auto"/>
+          <p className="font-bold text-stone-500">لا توجد محاضر ضابطة مسجَّلة</p>
+          <p className="text-sm text-stone-400">ابحث عن محضر في بوابة محاكم لإضافته</p>
+          <button onClick={onGoToMahakim}
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-sm mt-2">
+            <Landmark className="size-4"/> الذهاب لبوابة محاكم
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {/* شريط البحث */}
+          <div className="relative">
+            <input value={pvSearch} onChange={e => setPvSearch(e.target.value)}
+              placeholder="بحث في المحاضر: رقم، موضوع، جهة، طرف..."
+              className="w-full bg-white border border-stone-200 rounded-xl pr-10 pl-4 py-2.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"/>
+            <Search className="size-4 text-stone-400 absolute right-3 top-1/2 -translate-y-1/2"/>
+            {pvSearch && <button onClick={() => setPvSearch('')} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600"><X className="size-4"/></button>}
+          </div>
+
+          {/* الجدول */}
+          <div className="bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
+            <table className="w-full text-sm text-right">
+              <thead className="bg-blue-50 text-blue-800 border-b border-blue-200">
+                <tr>
+                  <th className="px-4 py-3 font-bold">#</th>
+                  <th className="px-4 py-3 font-bold">رقم المحضر</th>
+                  <th className="px-4 py-3 font-bold">الموضوع / المخالفة</th>
+                  <th className="px-4 py-3 font-bold">الجهة</th>
+                  <th className="px-4 py-3 font-bold">الملف الجنحي</th>
+                  <th className="px-4 py-3 font-bold">الربط</th>
+                  <th className="px-4 py-3 font-bold">أدوات</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-stone-100">
+                {filtered.map((pv, idx) => {
+                  const relCase = cases.find(c => c.id === pv.linkedCaseId || c.mahakimId === pv.linkedFileNumber);
+                  return (
+                    <tr key={pv.id} onClick={() => onSelect(pv)}
+                      className="hover:bg-blue-50/50 cursor-pointer transition-colors group">
+                      <td className="px-4 py-3 text-stone-400 text-xs">{idx+1}</td>
+                      <td className="px-4 py-3">
+                        <span className="font-mono font-bold text-blue-700 bg-blue-50 px-2 py-1 rounded-lg text-xs">
+                          {pv.pvCourtRef || pv.pvInputNumber || '—'}
+                        </span>
+                        {pv.pvDate && <p className="text-[10px] text-stone-400 font-mono mt-0.5">{pv.pvDate}</p>}
+                      </td>
+                      <td className="px-4 py-3 max-w-[180px]">
+                        <p className="font-bold text-stone-800 truncate text-sm">{pv.pvSubject || pv.pvOffense || '—'}</p>
+                        {pv.pvType && <p className="text-[10px] text-stone-400">{pv.pvType}</p>}
+                      </td>
+                      <td className="px-4 py-3 max-w-[140px]">
+                        <p className="text-xs text-stone-600 truncate">{pv.pvAgency || '—'}</p>
+                      </td>
+                      <td className="px-4 py-3">
+                        {pv.linkedFileNumber ? (
+                          <span className="font-mono text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg">
+                            {pv.linkedFileNumber}
+                          </span>
+                        ) : (
+                          <span className="text-stone-300 text-xs">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {relCase ? (
+                          <button onClick={e => { e.stopPropagation(); onOpenRelatedCase(relCase); }}
+                            className="text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-1 rounded-lg flex items-center gap-1 transition-colors">
+                            <ExternalLink className="size-3"/> فتح الملف
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-amber-600 bg-amber-50 px-2 py-0.5 rounded font-bold">
+                            غير مرتبط
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                        <button onClick={() => { if(confirm('حذف هذا المحضر؟')) onDelete(pv.id); }}
+                          className="opacity-0 group-hover:opacity-100 p-1.5 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all">
+                          <Trash2 className="size-4"/>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {filtered.length === 0 && (
+                  <tr><td colSpan={7} className="px-6 py-10 text-center text-stone-400 text-sm">لا توجد نتائج مطابقة</td></tr>
+                )}
+              </tbody>
+            </table>
+            <div className="px-4 py-2 border-t border-stone-100 bg-stone-50 text-xs text-stone-500">
+              {filtered.length} محضر{filtered.length !== pvRecords.length ? ` (من أصل ${pvRecords.length})` : ''}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** تفاصيل محضر الضابطة القضائية */
+function PVDetail({ pv, onBack, onDelete, relatedCase, onOpenRelatedCase }: {
+  pv: PVRecord;
+  onBack: () => void;
+  onDelete: (id: string) => void;
+  relatedCase?: Case;
+  onOpenRelatedCase: (c: Case) => void;
+}) {
+  const [activeTab, setActiveTab] = useState<'pv'|'parties'|'procs'|'file'>('pv');
+
+  const copy = (t: string) => { navigator.clipboard.writeText(t).catch(()=>{}); };
+
+  return (
+    <div className="space-y-4 animate-in fade-in">
+      {/* رأس */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl shadow-sm border border-blue-200">
+        <div className="flex items-center gap-3 flex-wrap">
+          <button onClick={onBack}
+            className="flex items-center gap-2 px-4 py-2.5 bg-blue-700 hover:bg-blue-800 text-white font-bold rounded-xl text-sm">
+            <ChevronLeft className="size-4"/> رجوع للقائمة
+          </button>
+          <div className="border-r-2 border-stone-200 pr-4">
+            <h2 className="text-lg font-bold flex items-center gap-2">
+              <ShieldAlert className="size-5 text-blue-600"/>
+              محضر: <span className="font-mono text-blue-700">{pv.pvCourtRef || pv.pvInputNumber}</span>
+            </h2>
+            <p className="text-xs text-stone-400 mt-0.5">{pv.pvDate && `التاريخ: ${pv.pvDate}`} {pv.pvType && `— ${pv.pvType}`}</p>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          {relatedCase && (
+            <button onClick={() => onOpenRelatedCase(relatedCase)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold">
+              <Scale className="size-4"/> فتح الملف القضائي
+            </button>
+          )}
+          <button onClick={() => { if(confirm('حذف هذا المحضر؟')) onDelete(pv.id); }}
+            className="flex items-center gap-2 px-3 py-2.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-xl text-sm font-bold border border-red-200">
+            <Trash2 className="size-4"/> حذف
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* العمود الأيسر — المعلومات الرئيسية */}
+        <div className="lg:col-span-2 space-y-4">
+
+          {/* تبويبات */}
+          <div className="bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
+            <div className="flex border-b border-stone-200 bg-stone-50">
+              {([
+                {id:'pv',      label:'بيانات المحضر', icon:<ShieldAlert className="size-4"/>},
+                {id:'parties', label:`الأطراف (${pv.parties.length})`, icon:<User className="size-4"/>},
+                {id:'procs',   label:`الإجراءات (${pv.procedures.length})`, icon:<Activity className="size-4"/>},
+                {id:'file',    label:'الملف الجنحي', icon:<FileText className="size-4"/>},
+              ] as const).map(tab => (
+                <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                  className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-bold transition-colors border-b-2 ${activeTab===tab.id ? 'border-blue-600 text-blue-700 bg-white' : 'border-transparent text-stone-500 hover:text-stone-700'}`}>
+                  {tab.icon}{tab.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="p-5">
+              {/* بيانات المحضر */}
+              {activeTab==='pv' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {[
+                    {l:'رقم المحضر بالمحكمة', v:pv.pvCourtRef||pv.pvInputNumber, mono:true, hi:true, copy:true},
+                    {l:'تاريخ المحضر',         v:pv.pvDate,    mono:true},
+                    {l:'نوع المحضر',           v:pv.pvType},
+                    {l:'موضوع المحضر',         v:pv.pvSubject},
+                    {l:'نوع المخالفة',         v:pv.pvOffense},
+                    {l:'الجهة المعنية',        v:pv.pvAgency},
+                    {l:'المحكمة',              v:pv.court},
+                  ].filter(f=>f.v).map((f,i) => (
+                    <div key={i} className={`flex items-start justify-between gap-2 p-3 rounded-xl border ${f.hi ? 'border-blue-200 bg-blue-50' : 'border-stone-100 bg-stone-50'}`}>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-bold text-stone-500 mb-0.5">{f.l}</p>
+                        <p className={`font-bold text-stone-800 ${f.mono?'font-mono':'text-sm'} ${f.hi?'text-blue-900 text-base':''}`}>{f.v}</p>
+                      </div>
+                      {f.copy && (
+                        <button onClick={() => copy(f.v!)} className="shrink-0 p-1 text-stone-300 hover:text-blue-500">
+                          <Database className="size-3.5"/>
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* الأطراف */}
+              {activeTab==='parties' && (
+                pv.parties.length > 0 ? (
+                  <div className="bg-stone-50 border border-stone-200 rounded-xl overflow-hidden">
+                    <table className="w-full text-sm text-right">
+                      <thead className="bg-stone-100 text-stone-500 font-bold border-b border-stone-200">
+                        <tr><th className="px-4 py-3 w-1/3">الصفة</th><th className="px-4 py-3">الاسم</th></tr>
+                      </thead>
+                      <tbody className="divide-y divide-stone-100">
+                        {pv.parties.map((p,i) => (
+                          <tr key={i}>
+                            <td className="px-4 py-3"><span className="bg-white border border-stone-200 px-2 py-1 rounded-lg text-xs font-bold shadow-sm">{p.role}</span></td>
+                            <td className="px-4 py-3 font-bold text-stone-800">{p.name}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-center text-stone-400 py-8">لم يُستخرج أي طرف</p>
+                )
+              )}
+
+              {/* الإجراءات */}
+              {activeTab==='procs' && (
+                pv.procedures.length > 0 ? (
+                  <div className="space-y-3">
+                    {pv.procedures.map((p,i) => (
+                      <div key={i} className="bg-stone-50 border border-stone-100 rounded-xl p-4">
+                        <p className="font-mono text-xs text-stone-400 mb-1">{p.date}</p>
+                        <p className="font-bold text-stone-800 text-sm">{p.action}</p>
+                        {p.decision && <p className="text-xs text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg mt-2">{p.decision}</p>}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-center text-stone-400 py-8">لا توجد إجراءات مسجَّلة</p>
+                )
+              )}
+
+              {/* الملف الجنحي */}
+              {activeTab==='file' && (
+                <div className="space-y-3">
+                  {pv.linkedFileNumber ? (
+                    <>
+                      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 space-y-3">
+                        <p className="text-sm font-bold text-emerald-800 flex items-center gap-2">
+                          <Scale className="size-4 text-emerald-600"/>الملف الجنحي المرتبط
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {[
+                            {l:'رقم الملف الجنحي',  v:pv.linkedFileNumber, mono:true, hi:true},
+                            {l:'المحكمة',            v:pv.linkedFile?.court},
+                            {l:'نوع الملف',          v:pv.linkedFile?.fileType},
+                            {l:'الشعبة',             v:pv.linkedFile?.section},
+                            {l:'تاريخ التسجيل',      v:pv.linkedFile?.date, mono:true},
+                            {l:'الوضعية',            v:pv.linkedFile?.status},
+                            {l:'القاضي المقرر',      v:pv.linkedFile?.judge},
+                            {l:'الجلسة القادمة',     v:pv.linkedFile?.nextSession, mono:true},
+                          ].filter(f=>f.v).map((f,i) => (
+                            <div key={i} className={`flex items-start justify-between gap-2 p-2.5 rounded-lg border ${f.hi ? 'border-emerald-300 bg-emerald-100' : 'border-emerald-100 bg-white'}`}>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[9px] font-bold text-stone-400">{f.l}</p>
+                                <p className={`text-[11px] font-bold text-stone-800 ${f.mono?'font-mono':''} ${f.hi?'text-emerald-900 text-sm':''}`}>{f.v}</p>
+                              </div>
+                              <button onClick={() => copy(f.v!)} className="shrink-0 p-1 text-stone-300 hover:text-emerald-600">
+                                <Database className="size-3"/>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      {relatedCase ? (
+                        <button onClick={() => onOpenRelatedCase(relatedCase)}
+                          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-3 font-bold flex items-center justify-center gap-2 shadow-sm">
+                          <Scale className="size-4"/> فتح الملف القضائي: {relatedCase.mahakimId || relatedCase.id}
+                        </button>
+                      ) : (
+                        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800 text-center">
+                          <p className="font-bold">لم يُربط هذا المحضر بعد بملف في القاعدة</p>
+                          <p className="text-xs mt-1">ابحث عن الملف في بوابة محاكم واحفظه ليتم الربط تلقائياً</p>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="text-center py-8 space-y-2">
+                      <AlertTriangle className="size-10 text-amber-400 mx-auto"/>
+                      <p className="font-bold text-stone-500">لم يُستخرج رقم الملف الجنحي</p>
+                      <p className="text-sm text-stone-400">تحقق من تبويبة "الملفات الزجرية" في بوابة محاكم</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* العمود الأيمن — ملخص */}
+        <div className="space-y-4">
+          <div className="bg-white p-4 rounded-2xl border border-blue-200 shadow-sm space-y-3">
+            <h3 className="font-bold border-b border-stone-100 pb-2 text-sm flex items-center gap-2">
+              <ShieldAlert className="size-4 text-blue-500"/>ملخص المحضر
+            </h3>
+            <div className="bg-blue-50 border border-blue-200 rounded-xl px-3 py-2">
+              <p className="text-[9px] font-bold text-stone-400">رقم المحضر</p>
+              <p className="font-mono font-bold text-blue-900">{pv.pvCourtRef || pv.pvInputNumber || '—'}</p>
+            </div>
+            {pv.pvSubject && (
+              <div>
+                <p className="text-[10px] font-bold text-stone-400">الموضوع</p>
+                <p className="text-sm font-bold text-stone-800">{pv.pvSubject}</p>
+              </div>
+            )}
+            {pv.pvAgency && (
+              <div>
+                <p className="text-[10px] font-bold text-stone-400">الجهة المعنية</p>
+                <p className="text-xs text-stone-700">{pv.pvAgency}</p>
+              </div>
+            )}
+            {pv.parties.length > 0 && (
+              <div>
+                <p className="text-[10px] font-bold text-stone-400">الأطراف</p>
+                {pv.parties.slice(0,3).map((p,i) => (
+                  <p key={i} className="text-xs text-stone-700 mt-0.5">
+                    <span className="font-bold text-blue-600">{p.role}:</span> {p.name}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {pv.linkedFileNumber && (
+            <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-200 shadow-sm space-y-2">
+              <h3 className="font-bold border-b border-emerald-200 pb-2 text-sm flex items-center gap-2 text-emerald-800">
+                <Scale className="size-4 text-emerald-600"/>الملف الجنحي
+              </h3>
+              <div className="bg-white border border-emerald-200 rounded-xl px-3 py-2">
+                <p className="text-[9px] font-bold text-stone-400">رقم الملف</p>
+                <p className="font-mono font-bold text-emerald-900">{pv.linkedFileNumber}</p>
+              </div>
+              {pv.fileNum && (
+                <div className="grid grid-cols-3 gap-1 text-center">
+                  {[{l:'الرقم',v:pv.fileNum},{l:'الرمز',v:pv.fileMark},{l:'السنة',v:pv.fileYear}].map((x,i)=>(
+                    <div key={i} className="bg-white border border-emerald-100 rounded-lg p-1.5">
+                      <p className="text-[9px] text-stone-400 font-bold">{x.l}</p>
+                      <p className="font-mono font-bold text-xs text-emerald-800">{x.v}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {relatedCase && (
+                <button onClick={() => onOpenRelatedCase(relatedCase)}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-2 text-xs font-bold flex items-center justify-center gap-1.5">
+                  <ExternalLink className="size-3.5"/> فتح الملف المرتبط
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="bg-stone-50 p-3 rounded-xl border border-stone-100 text-[10px] text-stone-400 space-y-1">
+            <p>تاريخ الإضافة: {new Date(pv.createdAt).toLocaleDateString('fr-MA')}</p>
+            <p>آخر تحديث: {new Date(pv.lastSyncedAt).toLocaleDateString('fr-MA')}</p>
+            {pv.linkedCaseId && <p className="text-emerald-600 font-bold">✓ مرتبط بملف قضائي</p>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
+  onSave: (c: Case) => void;
+  onSavePV?: (pv: PVRecord) => void;
+  cases?: Case[];
+}) {
 
   // ── حالة عامة ─────────────────────────────────────────────────────────────
   const [bridgeReady, setBridgeReady]       = useState(false);
@@ -2801,6 +3275,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
         const exists = prev.find(p => p.id === pvResult.id);
         return exists ? prev.map(p => p.id === pvResult.id ? pvResult : p) : [pvResult, ...prev];
       });
+      onSavePV?.(pvResult);  // يُحدّث pvRecords في Contentieux() أيضاً
       setPvSaveStatus('saved');
       setTimeout(() => setPvSaveStatus('idle'), 2000);
     } else {
@@ -2823,6 +3298,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
       const exists = prev.find(p => p.id === updatedPV.id);
       return exists ? prev.map(p => p.id === updatedPV.id ? updatedPV : p) : [updatedPV, ...prev];
     });
+    onSavePV?.(updatedPV);  // يُحدّث pvRecords في Contentieux() أيضاً
     setPvResult(updatedPV);
     setPvSaveStatus('saved');
     setTimeout(() => setPvSaveStatus('idle'), 2000);
@@ -2835,37 +3311,39 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
    *   - رقم/رمز/سنة (صيغة الزجري): 9276/2107/2025
    *   - سنة/رمز/رقم (صيغة محاكم):   2025/2107/9276
    */
-  const handleSearchLinkedFile = () => {
-    const raw = pvResult?.linkedFileNumber || pvResult?.linkedFile?.fileNumber || '';
-    if (!raw) { alert('⚠️ لم يُستخرج رقم الملف الجنحي من المحضر.'); return; }
+  const handleSearchLinkedFile = (pvSrc?: PVRecord) => {
+    const pv = pvSrc || pvResult;
+    if (!pv) return;
 
-    const parts = raw.replace(/\s+/g,'').split('/').filter(Boolean);
-    if (parts.length !== 3) { alert('⚠️ صيغة رقم الملف غير معروفة: ' + raw); return; }
+    // استخدم الأجزاء المُقسَّمة مسبقاً (fileNum/fileMark/fileYear) من performParsingPV
+    // هي أصح مصدر: تأخذ 8716/2107/2025 وتعطي num=8716, mark=2107, year=2025
+    let num  = pv.fileNum  || '';
+    let mark = pv.fileMark || '';
+    let year = pv.fileYear || '';
 
-    let year = '', mark = '', num = '';
-    // الصيغة الزجرية: الجزء الأخير = سنة 4 أرقام
-    if (/^\d{4}$/.test(parts[2]) && Number(parts[2]) >= 2000) {
-      [num, mark, year] = parts;
-    } else if (/^\d{4}$/.test(parts[0]) && Number(parts[0]) >= 2000) {
-      [year, mark, num] = parts;
-    } else {
-      // احتياط: نجرّب الأول كسنة
-      [year, mark, num] = parts;
+    // إن لم تكن الأجزاء متوفرة (محاضر قديمة قبل v7.1) — قسّم يدوياً
+    if (!num && pv.linkedFileNumber) {
+      const { num: n, mark: m, year: y } = splitFileRef(pv.linkedFileNumber);
+      num = n; mark = m; year = y;
     }
+
+    if (!num) { alert('⚠️ لم يُستخرج رقم الملف الجنحي من المحضر.
+تحقق من تبويبة "الملفات الزجرية" في البوابة.'); return; }
 
     // ملء حقول شريط الملفات
     setRemoteNum(num); setRemoteMark(mark); setRemoteYear(year);
-    setRemoteCourt(pvResult?.linkedFile?.court || pvCourt);
+    const court = pv.linkedFile?.court || pv.court || pvCourt;
+    setRemoteCourt(court);
     setMainTab('files'); setShowFilesPanel(true);
 
     // إطلاق البحث التلقائي
-    if (!extensionReady) { alert('⚠️ يتطلب Mahakim Bridge.'); return; }
+    if (!extensionReady) { alert('⚠️ يتطلب Mahakim Bridge للبحث التلقائي.'); return; }
     setIsSearching(true); setSearchStage(''); setExtractMode('portal');
     freshSearchRef.current = true;
-    const courtName = remoteCourt.startsWith('استئناف ')
-      ? remoteCourt.replace('استئناف ','').trim() : remoteCourt;
+    const isAppeal = court.startsWith('استئناف ');
+    const courtName = isAppeal ? court.replace('استئناف ','').trim() : court;
     const PRIMARY = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
-    const isPrimary = !remoteCourt.startsWith('استئناف ') && PRIMARY.includes(remoteCourt);
+    const isPrimary = !isAppeal && PRIMARY.includes(court);
     window.postMessage({ type: 'MAHAKIM_TO_EXTENSION', payload: {
       searchType: 'dossier', numero: num, mark, year, court: courtName, isPrimary,
     }}, '*');
@@ -3303,7 +3781,22 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
                                       </div>
                                     ))}
                                   </div>
-                                  <button onClick={handleSearchLinkedFile}
+                                  {/* تفاصيل تقسيم رقم الملف */}
+                                  {(pvResult.fileNum || pvResult.fileMark || pvResult.fileYear) && (
+                                    <div className="grid grid-cols-3 gap-1.5 text-center">
+                                      {[
+                                        {l:'الرقم', v:pvResult.fileNum||'—'},
+                                        {l:'الرمز', v:pvResult.fileMark||'—'},
+                                        {l:'السنة', v:pvResult.fileYear||'—'},
+                                      ].map((x,i) => (
+                                        <div key={i} className="bg-white border border-emerald-200 rounded-lg py-1.5">
+                                          <p className="text-[9px] text-stone-400 font-bold">{x.l}</p>
+                                          <p className="font-mono font-bold text-xs text-emerald-800">{x.v}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  <button onClick={() => handleSearchLinkedFile()}
                                     className="w-full bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-2.5 text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all">
                                     <ExternalLink className="size-3.5"/>
                                     بحث تلقائي عن هذا الملف في البوابة ↑
@@ -3438,7 +3931,7 @@ function MahakimIntegration({ onSave }: { onSave: (c: Case) => void }) {
                           ))}
                         </div>
                         {selectedPV.linkedFileNumber && (
-                          <button onClick={()=>{setPvResult(selectedPV);handleSearchLinkedFile();}}
+                          <button onClick={()=>{setPvResult(selectedPV);handleSearchLinkedFile(selectedPV);}}
                             className="w-full bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-2 text-xs font-bold flex items-center justify-center gap-2">
                             <ExternalLink className="size-3.5"/>بحث عن الملف المرتبط
                           </button>
