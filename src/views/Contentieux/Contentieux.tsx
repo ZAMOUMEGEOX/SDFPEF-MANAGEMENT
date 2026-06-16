@@ -8,7 +8,7 @@ import {
   Maximize2, Minimize2, CalendarDays, MapPin, Users, ShieldAlert,
   FolderOpen, UserCog, CalendarClock, ExternalLink, ListChecks
 } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import * as XLSX from 'xlsx-js-style';
 import { CaseWizard } from './components/CaseWizard';
 import { ContentieuxStats, type StatsNavigateAction } from './components/ContentieuxStats';
 import { loadCases, saveCase, deleteCase, deleteCases } from '@/lib/contentieux';
@@ -396,11 +396,41 @@ function buildCaseSheetRows(c: Case): (string | number)[][] {
   return rows;
 }
 
+/** يطبّق نمطاً عربياً موحَّداً على ورقة Excel: حدود لكل خلية، اتجاه من اليمين لليسار،
+ *  محاذاة لليمين مع التفاف النص، وتمييز صفوف العناوين (تبدأ بـ ▌ أو صف الرأس) بخط عريض وخلفية.
+ *  يعمل فقط مع xlsx-js-style (نفس API مكتبة xlsx مع دعم s/style). */
+function styleArabicSheet(ws: any, opts: { headerRows?: number[] } = {}) {
+  const ref = ws['!ref'];
+  if (!ref) return;
+  const range = XLSX.utils.decode_range(ref);
+  ws['!sheetViews'] = [{ RTL: true }]; // اتجاه الورقة من اليمين لليسار
+  const thin = { style: 'thin', color: { rgb: 'D6D3D1' } };
+  const border = { top: thin, bottom: thin, left: thin, right: thin };
+  const headerSet = new Set(opts.headerRows || []);
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    const firstAddr = XLSX.utils.encode_cell({ r: R, c: 0 });
+    const fv = ws[firstAddr] && typeof ws[firstAddr].v === 'string' ? ws[firstAddr].v as string : '';
+    const isSection = fv.startsWith('▌') || fv === 'بطاقة الملف';
+    const isHeader = headerSet.has(R) || isSection;
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const addr = XLSX.utils.encode_cell({ r: R, c: C });
+      const cell = ws[addr] || (ws[addr] = { t: 's', v: '' });
+      cell.s = {
+        border,
+        alignment: { horizontal: 'right', vertical: 'center', wrapText: true, readingOrder: 2 },
+        font: { name: 'Arial', sz: 11, bold: isHeader, color: { rgb: isSection ? '065F46' : '1C1917' } },
+        ...(isHeader ? { fill: { fgColor: { rgb: isSection ? 'D1FAE5' : 'F1F5F9' } } } : {}),
+      };
+    }
+  }
+}
+
 /** Single case → ONE sheet with all data laid out vertically */
 export function exportSingleCaseXLSX(c: Case) {
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(buildCaseSheetRows(c));
   ws['!cols'] = [{ wch: 28 }, { wch: 38 }, { wch: 28 }, { wch: 38 }];
+  styleArabicSheet(ws);
   XLSX.utils.book_append_sheet(wb, ws, 'بطاقة الملف الكاملة');
   XLSX.writeFile(wb, `ملف_${(c.mahakimId || c.id).replace(/\//g, '-')}.xlsx`);
 }
@@ -434,11 +464,13 @@ export function exportAllCasesWorkbookXLSX(cases: Case[]) {
   cases.forEach(c => indexRows.push([c.mahakimId || c.id, c.court, c.subject, c.status]));
   const wsIndex = XLSX.utils.aoa_to_sheet(indexRows);
   wsIndex['!cols'] = [{ wch: 18 }, { wch: 30 }, { wch: 35 }, { wch: 25 }];
+  styleArabicSheet(wsIndex, { headerRows: [1] });
   XLSX.utils.book_append_sheet(wb, wsIndex, sanitizeSheetName('فهرس', used));
 
   for (const c of cases) {
     const ws = XLSX.utils.aoa_to_sheet(buildCaseSheetRows(c));
     ws['!cols'] = [{ wch: 28 }, { wch: 38 }, { wch: 28 }, { wch: 38 }];
+    styleArabicSheet(ws);
     XLSX.utils.book_append_sheet(wb, ws, sanitizeSheetName(c.mahakimId || c.id, used));
   }
 
@@ -490,6 +522,7 @@ export function exportAllCasesXLSX(cases: Case[]) {
   ws['!cols'] = headers.map((h, i) => ({
     wch: [18, 18, 20, 28, 14, 16, 22, 14, 12, 30, 22, 14, 20, 40, 16, 8, 14, 30, 14, 14, 25, 18, 12, 12, 20, 6, 18, 20, 14, 14, 18, 35, 22, 14, 10, 12, 18, 8][i] || 18
   }));
+  styleArabicSheet(ws, { headerRows: [0] });
   XLSX.utils.book_append_sheet(wb, ws, 'قاعدة بيانات القضايا');
   XLSX.writeFile(wb, `قاعدة_بيانات_القضايا_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.xlsx`);
 }
@@ -563,6 +596,7 @@ export function exportPeriodicReportXLSX(cases: Case[], from: string, to: string
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = [{ wch: 32 }, { wch: 22 }, { wch: 22 }, { wch: 22 }];
+  styleArabicSheet(ws);
   XLSX.utils.book_append_sheet(wb, ws, 'التقرير الدوري');
   XLSX.writeFile(wb, `تقرير_دوري_${label.replace(/\s+/g, '_')}.xlsx`);
 }
@@ -589,7 +623,6 @@ function buildCaseCardHTML(c: Case): string {
   const procs = sortProcsDesc(c.procedures);
   const deadlines = computeDeadlines(c);
   const flags = getQualityFlags(c);
-  const decoded = decodeNationalId(c);
 
   const row = (l: string, v: any) => `
     <div style="flex:1 1 50%; padding:6px 10px; box-sizing:border-box;">
@@ -648,9 +681,11 @@ function buildCaseCardHTML(c: Case): string {
       </table>`);
   }
 
-  // ── Procedures ──
+  // ── Procedures (آخر 6 فقط — البطاقة نظرة سريعة لا أرشيف كامل) ──
   if (procs.length) {
-    html += section('الإجراءات والجلسات (الأحدث أولاً)', `
+    const shown = procs.slice(0, 6);
+    const moreNote = procs.length > 6 ? `<div style="font-size:10px; color:#a8a29e; margin-top:4px;">يُعرض آخر 6 إجراءات من أصل ${procs.length} — التفاصيل الكاملة داخل النظام.</div>` : '';
+    html += section('آخر الإجراءات والجلسات', `
       <table style="width:100%; border-collapse:collapse; font-size:11px;">
         <thead><tr style="background:#f5f5f4;">
           <th style="border:1px solid #e7e5e4; padding:6px; width:80px;">التاريخ</th>
@@ -658,9 +693,9 @@ function buildCaseCardHTML(c: Case): string {
           <th style="border:1px solid #e7e5e4; padding:6px;">القرار / الملاحظة</th>
         </tr></thead>
         <tbody>
-          ${procs.map((p: any) => `<tr><td style="border:1px solid #e7e5e4; padding:6px; font-family:monospace;">${esc(p.date)}</td><td style="border:1px solid #e7e5e4; padding:6px; font-weight:700;">${esc(p.action)}${p.number ? ` (${esc(p.number)})` : ''}</td><td style="border:1px solid #e7e5e4; padding:6px; color:#047857;">${esc(p.decision)}</td></tr>`).join('')}
+          ${shown.map((p: any) => `<tr><td style="border:1px solid #e7e5e4; padding:6px; font-family:monospace;">${esc(p.date)}</td><td style="border:1px solid #e7e5e4; padding:6px; font-weight:700;">${esc(p.action)}${p.number ? ` (${esc(p.number)})` : ''}</td><td style="border:1px solid #e7e5e4; padding:6px; color:#047857;">${esc(p.decision)}</td></tr>`).join('')}
         </tbody>
-      </table>`);
+      </table>${moreNote}`);
   }
 
   // ── PV & sanctions ──
@@ -719,32 +754,15 @@ function buildCaseCardHTML(c: Case): string {
       </div>`);
   }
 
-  // ── Documents ──
-  if (c.documents && c.documents.length) {
-    html += section('الوثائق المرفقة', `
-      <ul style="font-size:12px; margin:0; padding-right:18px;">
-        ${c.documents.map(d => `<li style="margin-bottom:4px;"><strong>${esc(d.name)}</strong>${d.type ? ` — ${esc(d.type)}` : ''} <span style="color:#a8a29e; font-family:monospace; font-size:10px;">${esc(d.url)}</span></li>`).join('')}
-      </ul>`);
-  }
+  // ملاحظة: الوثائق والتحقق من الرقم الوطني وتفاصيل التدقيق تبقى داخل النظام —
+  // البطاقة بطاقة تقنية سريعة في صفحتين كحد أقصى، لا أرشيف كامل.
 
-  // ── National ID check ──
-  if (decoded) {
-    html += section('التحقق من الرقم الوطني', `
-      <div style="font-size:11px; color:${decoded.matches === false ? '#b91c1c' : '#047857'};">
-        رمز المحكمة: ${esc(decoded.courtCode)} — السنة: ${esc(decoded.year)} — الرمز: ${esc(decoded.symbol)} — الرقم: ${esc(decoded.number)}
-        ${decoded.matches === false ? `<br/>⚠ لا يطابق رقم محاكم المسجَّل (المتوقع ${esc(decoded.rebuiltMahakimId)})` : decoded.matches === true ? ' — ✓ متطابق مع رقم محاكم' : ''}
-      </div>`);
-  }
-
-  // ── Quality flags ──
-  if (flags.length) {
-    html += section('ملاحظات التدقيق', `
-      <div style="background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:8px 12px;">
-        ${flags.map(f => `<div style="font-size:11px; color:#b91c1c; font-weight:700;">⚠ ${esc(f)}</div>`).join('')}
-      </div>`);
-  }
+  const flagNote = flags.length
+    ? `<div style="margin-top:12px; font-size:10px; color:#b91c1c; font-weight:700;">⚠ تحتاج تدقيقاً: ${esc(flags.join(' • '))}</div>`
+    : '';
 
   html += `
+    ${flagNote}
     <div style="margin-top:18px; padding-top:8px; border-top:1px solid #e7e5e4; font-size:9px; color:#a8a29e; text-align:center;">
       تم إنشاء هذه البطاقة آلياً من نظام إدارة الوكالة الوطنية للمياه والغابات — قسم المنازعات
     </div>
