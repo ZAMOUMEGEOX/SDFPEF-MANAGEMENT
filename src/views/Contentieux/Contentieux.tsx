@@ -8,7 +8,7 @@ import {
   Maximize2, Minimize2, CalendarDays, MapPin, Users, ShieldAlert,
   FolderOpen, UserCog, CalendarClock, ExternalLink, ListChecks
 } from 'lucide-react';
-import * as XLSX from 'xlsx-js-style';
+import * as XLSX from 'xlsx';
 import { CaseWizard } from './components/CaseWizard';
 import { ContentieuxStats, type StatsNavigateAction } from './components/ContentieuxStats';
 import { loadCases, saveCase, deleteCase, deleteCases } from '@/lib/contentieux';
@@ -396,6 +396,50 @@ function buildCaseSheetRows(c: Case): (string | number)[][] {
   return rows;
 }
 
+// ── تحميل xlsx-js-style من CDN وقت التشغيل ───────────────────────────────────
+// لماذا CDN وليس import؟ نفس سبب html2pdf: الاستيراد الثابت/الديناميكي لاسم حزمة
+// غير مثبَّتة في node_modules يُسقط بناء Rollup بالكامل
+// ("failed to resolve import xlsx-js-style"). التحميل وقت التشغيل لا يحتاج أي
+// حزمة npm إضافية ولا يؤثر على البناء. نبني الورقة بـ xlsx العادية (utils متطابقة)
+// ونكتب الملف بالنسخة المنسّقة كي تُحترم خاصية s (الحدود والمحاذاة والخلفيات).
+let xlsxStyleLoadPromise: Promise<any> | null = null;
+function loadXLSXStyle(): Promise<any> {
+  const w = window as any;
+  if (w.__XLSXStyle) return Promise.resolve(w.__XLSXStyle);
+  if (xlsxStyleLoadPromise) return xlsxStyleLoadPromise;
+  xlsxStyleLoadPromise = new Promise((resolve, reject) => {
+    const prevGlobal = w.XLSX; // احفظ أي XLSX عام سابق لتفادي التعارض
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js';
+    script.async = true;
+    script.onload = () => {
+      const styled = w.XLSX; // النسخة المنسّقة التي حمّلها CDN كمتغير عام
+      w.__XLSXStyle = styled;
+      if (prevGlobal !== undefined) w.XLSX = prevGlobal; else { try { delete w.XLSX; } catch (_) {} }
+      if (styled && styled.writeFile) resolve(styled);
+      else reject(new Error('تعذّر تهيئة مكتبة Excel للتنسيق بعد التحميل'));
+    };
+    script.onerror = () => {
+      xlsxStyleLoadPromise = null;
+      reject(new Error('تعذّر تحميل مكتبة Excel للتنسيق من الشبكة — تحقّق من الاتصال'));
+    };
+    document.head.appendChild(script);
+  });
+  return xlsxStyleLoadPromise;
+}
+
+/** يكتب مصنّفاً مُنسَّقاً: يحمّل النسخة المنسّقة من CDN ثم يكتب الملف. عند الفشل يسقط
+ *  إلى الكتابة العادية (بلا تنسيق) كي لا يُحرَم المستخدم من الملف نهائياً. */
+function writeStyledWorkbook(wb: any, filename: string) {
+  loadXLSXStyle()
+    .then(XS => XS.writeFile(wb, filename))
+    .catch(() => {
+      // خطة بديلة: كتابة بلا تنسيق بدل فقدان الملف
+      try { XLSX.writeFile(wb, filename); }
+      catch (e) { alert('تعذّر إنشاء ملف Excel: ' + (e instanceof Error ? e.message : String(e))); }
+    });
+}
+
 /** يطبّق نمطاً عربياً موحَّداً على ورقة Excel: حدود لكل خلية، اتجاه من اليمين لليسار،
  *  محاذاة لليمين مع التفاف النص، وتمييز صفوف العناوين (تبدأ بـ ▌ أو صف الرأس) بخط عريض وخلفية.
  *  يعمل فقط مع xlsx-js-style (نفس API مكتبة xlsx مع دعم s/style). */
@@ -432,7 +476,7 @@ export function exportSingleCaseXLSX(c: Case) {
   ws['!cols'] = [{ wch: 28 }, { wch: 38 }, { wch: 28 }, { wch: 38 }];
   styleArabicSheet(ws);
   XLSX.utils.book_append_sheet(wb, ws, 'بطاقة الملف الكاملة');
-  XLSX.writeFile(wb, `ملف_${(c.mahakimId || c.id).replace(/\//g, '-')}.xlsx`);
+  writeStyledWorkbook(wb, `ملف_${(c.mahakimId || c.id).replace(/\//g, '-')}.xlsx`);
 }
 
 /** يحوّل عنوان الملف إلى اسم ورقة Excel صالح (≤31 حرفاً، بدون رموز ممنوعة) ويضمن عدم التكرار */
@@ -474,7 +518,7 @@ export function exportAllCasesWorkbookXLSX(cases: Case[]) {
     XLSX.utils.book_append_sheet(wb, ws, sanitizeSheetName(c.mahakimId || c.id, used));
   }
 
-  XLSX.writeFile(wb, `كل_الملفات_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.xlsx`);
+  writeStyledWorkbook(wb, `كل_الملفات_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.xlsx`);
 }
 
 /** All cases → ONE wide flat sheet, one row per case */
@@ -524,7 +568,7 @@ export function exportAllCasesXLSX(cases: Case[]) {
   }));
   styleArabicSheet(ws, { headerRows: [0] });
   XLSX.utils.book_append_sheet(wb, ws, 'قاعدة بيانات القضايا');
-  XLSX.writeFile(wb, `قاعدة_بيانات_القضايا_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.xlsx`);
+  writeStyledWorkbook(wb, `قاعدة_بيانات_القضايا_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.xlsx`);
 }
 
 /** تقرير دوري (شهري/فصلي) جاهز للإرسال للمديرية الجهوية — توزيع حسب المحكمة والنوع + مقارنة بفترة سابقة */
@@ -598,7 +642,7 @@ export function exportPeriodicReportXLSX(cases: Case[], from: string, to: string
   ws['!cols'] = [{ wch: 32 }, { wch: 22 }, { wch: 22 }, { wch: 22 }];
   styleArabicSheet(ws);
   XLSX.utils.book_append_sheet(wb, ws, 'التقرير الدوري');
-  XLSX.writeFile(wb, `تقرير_دوري_${label.replace(/\s+/g, '_')}.xlsx`);
+  writeStyledWorkbook(wb, `تقرير_دوري_${label.replace(/\s+/g, '_')}.xlsx`);
 }
 
 
