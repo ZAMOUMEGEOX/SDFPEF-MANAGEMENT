@@ -206,6 +206,12 @@ function findMatchLocations(c: Case, query: string): string[] {
   return found;
 }
 
+// ─── رابط تحميل إضافة محاكم (GitHub Releases) ───────────────────────────────
+// ارفع ملف الإضافة المضغوط باسم mahakim-bridge.zip في أحدث إصدار (Release) للمستودع،
+// وسيحمّله أي مستخدم بضغطة زر من الرابط أدناه. عدّل الاسم/المستودع إن لزم.
+const EXTENSION_DOWNLOAD_URL = 'https://github.com/ZAMOUMEGEOX/SDFPEF-MANAGEMENT/releases/latest/download/mahakim-bridge.zip';
+const EXTENSION_README_URL   = 'https://github.com/ZAMOUMEGEOX/SDFPEF-MANAGEMENT/blob/main/extension/README.md';
+
 // ─── المرجع الترابي: جهة طنجة-تطوان-الحسيمة ─────────────────────────────────────
 // عدّل هذه القوائم لتطابق نفوذكم الترابي بدقة. تُدمج تلقائياً مع المحاكم الموجودة فعلاً في البيانات،
 // فلن تُفقد أي محكمة مسجَّلة حتى لو لم تكن مدرجة هنا.
@@ -1780,11 +1786,21 @@ export function Contentieux() {
           <button onClick={() => setIsStatsOpen(true)} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-sm hover:-translate-y-0.5 transition-all">
             <PieChartIcon className="size-4" /> الإحصائيات
           </button>
+          <a href={EXTENSION_DOWNLOAD_URL} download
+            title="تحميل إضافة محاكم Bridge لمتصفح كروم — مع دليل التثبيت"
+            className="flex items-center gap-2 px-4 py-2.5 bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 rounded-xl text-sm font-bold shadow-sm hover:-translate-y-0.5 transition-all">
+            <DownloadCloud className="size-4" /> تحميل إضافة محاكم
+            <span className="text-[10px] text-stone-400 font-normal hidden lg:inline">(كروم)</span>
+          </a>
           <button onClick={() => { setWizardData(null); setIsWizardOpen(true); }} className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-sm hover:-translate-y-0.5 transition-all">
             <FilePlus2 className="size-4" /> إضافة ملف
           </button>
         </div>
       </div>
+
+      <p className="text-[11px] text-stone-400 -mt-2 shrink-0">
+        لم تُثبّت الإضافة بعد؟ <a href={EXTENSION_README_URL} target="_blank" rel="noreferrer" className="text-emerald-600 hover:underline font-bold">دليل التثبيت خطوة بخطوة ←</a>
+      </p>
 
       {isStatsOpen && <ContentieuxStats cases={cases} onClose={() => setIsStatsOpen(false)} onNavigate={handleStatsNavigate} />}
 
@@ -3321,6 +3337,16 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
   const [pvResultTab, setPvResultTab]       = useState<'pv'|'parties'|'procs'|'file'>('pv');
   const [pvSaveStatus, setPvSaveStatus]     = useState<'idle'|'saving'|'saved'|'error'>('idle');
 
+  // -- الأتمتة: نطاق أرقام المحاضر (النقطة 18) --
+  const [autoRunning, setAutoRunning]       = useState(false);
+  const [autoFrom, setAutoFrom]             = useState('');
+  const [autoTo, setAutoTo]                 = useState('');
+  const [autoCurrent, setAutoCurrent]       = useState<number | null>(null);
+  const [autoLog, setAutoLog]               = useState<{ num: number; status: 'ok'|'fail'|'linked'|'created'; msg: string }[]>([]);
+  const autoResolverRef                     = useRef<((pv: PVRecord | null) => void) | null>(null);
+  const autoAbortRef                        = useRef(false);
+  const createdCasesRef                     = useRef<Map<string, string>>(new Map());
+
   // -- البحث في قاعدة المحاضر المحلية --
   const [pvSearchQuery, setPvSearchQuery]   = useState('');
 
@@ -3408,6 +3434,8 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
         setPvIsSearching(false);
         setPvSearchStage('');
         setPvResultTab('pv');
+        // أثناء الأتمتة: مرّر النتيجة للحلقة بدل انتظار تدخّل المستخدم
+        if (autoResolverRef.current) { const r = autoResolverRef.current; autoResolverRef.current = null; r(parsed); }
         // لا نُغيّر extractMode هنا — المحضر له عرضه الخاص
         return;
       }
@@ -3436,6 +3464,8 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
       // أخطاء
       if (d.type === 'MAHAKIM_ERROR' && d.searchType === 'pv') {
         setPvIsSearching(false); setPvSearchStage('');
+        // أثناء الأتمتة: لا نُظهر تنبيهاً — نمرّر فشلاً للحلقة لتتابع للمحضر التالي
+        if (autoResolverRef.current) { const r = autoResolverRef.current; autoResolverRef.current = null; r(null); return; }
         const ERR: Record<string,string> = {
           no_results: 'لا توجد نتيجة لهذا المحضر',
           pv_form_not_found: 'تعذّر فتح نموذج محضر الضابطة',
@@ -3497,6 +3527,14 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     document.addEventListener('mousedown', fn); return () => document.removeEventListener('mousedown', fn);
   }, [showYearMenu]);
 
+  // ── Esc يصغّر واجهة البوابة الموسّعة (النقطة 18) ──
+  useEffect(() => {
+    if (!expandedView) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpandedView(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expandedView]);
+
   // ════════════════════════════════════════════════════════════════════
   // ── handlers ────────────────────────────────────────────────────────
   // ════════════════════════════════════════════════════════════════════
@@ -3522,17 +3560,22 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     setPvResult(null); setPvSearchStage(''); setPvNumber(''); setPvYear(''); setPvResultTab('pv');
   };
 
-  /** حفظ المحضر في قاعدة البيانات */
+  /** حفظ المحضر في قاعدة البيانات (مع ربط تلقائي بملف مطابق إن وُجد) */
   const handlePVSave = async () => {
     if (!pvResult) return;
     setPvSaveStatus('saving');
-    const ok = await savePVRecordDB(pvResult);
+    // ربط تلقائي: إن طابق المحضر ملفاً موجوداً ولم يكن مربوطاً بعد
+    const toSave: PVRecord = (matchedExistingCase && !pvResult.linkedCaseId)
+      ? { ...pvResult, linkedCaseId: matchedExistingCase.id, lastSyncedAt: new Date().toISOString() }
+      : pvResult;
+    const ok = await savePVRecordDB(toSave);
     if (ok) {
+      setPvResult(toSave);
       setPvRecords(prev => {
-        const exists = prev.find(p => p.id === pvResult.id);
-        return exists ? prev.map(p => p.id === pvResult.id ? pvResult : p) : [pvResult, ...prev];
+        const exists = prev.find(p => p.id === toSave.id);
+        return exists ? prev.map(p => p.id === toSave.id ? toSave : p) : [toSave, ...prev];
       });
-      onSavePV?.(pvResult);  // يُحدّث pvRecords في Contentieux() أيضاً
+      onSavePV?.(toSave);  // يُحدّث pvRecords في Contentieux() أيضاً
       setPvSaveStatus('saved');
       setTimeout(() => setPvSaveStatus('idle'), 2000);
     } else {
@@ -3664,6 +3707,21 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     setPvRecords(prev => prev.filter(p => p.id !== id));
     if (selectedPV?.id === id) { setSelectedPV(null); setPvDbView('list'); }
   };
+
+  // ── كشف تلقائي: هل رقم الملف في المحضر يطابق ملفاً موجوداً في قاعدة البيانات؟ (النقطة 18)
+  // نقارن مجموعات الأرقام بصرف النظر عن الترتيب (صيغة الزجري رقم/رمز/سنة مقابل صيغة محاكم سنة/رمز/رقم).
+  const fileNumKey = (s?: string) => {
+    const groups = (s || '').match(/\d+/g);
+    return groups && groups.length ? groups.slice().sort().join('-') : '';
+  };
+  const matchedExistingCase = useMemo(() => {
+    if (!pvResult) return null;
+    const ref = pvResult.linkedFileNumber
+      || [(pvResult as any).fileNum, (pvResult as any).fileMark, (pvResult as any).fileYear].filter(Boolean).join('/');
+    const k = fileNumKey(ref);
+    if (!k) return null;
+    return allCases.find(c => c.mahakimId && fileNumKey(c.mahakimId) === k) || null;
+  }, [pvResult, allCases]);
 
   // ── فلترة محاضر للبحث ────────────────────────────────────────────────────
   const filteredPVs = useMemo(() => {
@@ -4083,6 +4141,20 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
 
                         {/* أزرار الحفظ */}
                         <div className="border-t border-blue-100 p-3 space-y-2 bg-stone-50">
+                          {matchedExistingCase && !pvResult.linkedCaseId && (
+                            <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-300 rounded-xl px-3 py-2">
+                              <Activity className="size-4 text-emerald-600 shrink-0" />
+                              <p className="text-[11px] font-bold text-emerald-800 flex-1 leading-snug">
+                                مطابق لملف موجود: <span className="font-mono">{matchedExistingCase.mahakimId}</span> — سيُربط تلقائياً عند «حفظ المحضر».
+                              </p>
+                            </div>
+                          )}
+                          {pvResult.linkedCaseId && (
+                            <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-300 rounded-xl px-3 py-2">
+                              <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
+                              <p className="text-[11px] font-bold text-emerald-800">مرتبط بملف قضائي ✓</p>
+                            </div>
+                          )}
                           <div className="flex gap-2">
                             <button onClick={handlePVSave} disabled={pvSaveStatus==='saving'}
                               className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all shadow-sm ${
