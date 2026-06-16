@@ -2277,6 +2277,7 @@ export interface PVRecord {
   pvAgency:     string;
   pvAgentType:  string;
   pvOffense:    string;
+  pvAction:     string;   // الإجراء (المتابعة، إنشاء الملف...)
   court:        string;
 
   // ── الملف الجنحي المرتبط ──────────────────────────────────────────────────
@@ -2323,22 +2324,19 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
   const id  = `PV-${pvInputNumber.replace(/\//g, '-')}-${ts.toString(36).slice(-4).toUpperCase()}`;
   const now = new Date().toISOString();
 
-  // ── المسار 1: JSON مُهيَكَل من إضافة v6.6+ ─────────────────────────────────
+  // ── المسار 1: JSON من إضافة v6.6+ ───────────────────────────────────────────
   const structMatch = text.match(
     /════════ __STRUCTURED_PV__ ════════\n([\s\S]*?)\n════════ __END_STRUCTURED_PV__ ════════/
   );
   if (structMatch) {
     try {
       const s = JSON.parse(structMatch[1]);
-      // رقم الملف الجنحي يجب أن يختلف عن رقم المحضر
-      const pvRef  = (s.pvCourtRef || s.pvNumber || '').replace(/\s+/g,'');
-      let linked   = (s.linkedFileNumber || s.linkedFile?.fileNumber || '').replace(/\s+/g,'');
-      // إن كان linkedFileNumber = رقم المحضر فهو خاطئ — ابحث في allRefs
-      if (!linked || linked === pvRef) {
+      const pvRef = (s.pvCourtRef || s.pvNumber || '').replace(/\s+/g,'');
+      let linked  = (s.linkedFileNumber || s.linkedFile?.fileNumber || '').replace(/\s+/g,'');
+      if (!linked || linked === pvRef)
         linked = (Array.isArray(s.allRefs) ? s.allRefs : [])
           .map((r: string) => r.replace(/\s+/g,''))
           .find((r: string) => r !== pvRef) || '';
-      }
       const { num: fNum, mark: fMark, year: fYear } = splitFileRef(linked);
       return {
         id, linkedCaseId: undefined, pvInputNumber,
@@ -2349,6 +2347,7 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
         pvAgency:    s.pvAgency    || '',
         pvAgentType: s.pvAgentType || '',
         pvOffense:   s.pvOffense   || '',
+        pvAction:    s.pvAction    || '',
         court:       s.linkedFile?.court || '',
         linkedFileNumber: linked,
         fileNum: fNum, fileMark: fMark, fileYear: fYear,
@@ -2365,21 +2364,25 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
 
   // ── المسار 2: تحليل النص الخام ──────────────────────────────────────────────
   //
-  // الحقيقة التي كشفتها الصورة:
-  //   رقم المحضر بالمحكمة = 16814/3210/2025  ← يظهر في الجدول الأول (رأس النتيجة)
-  //   رقم الملف الجنحي    = 8716/2107/2025   ← يظهر في جدول "الملفات الزجرية"
+  // هيكل نص البوابة الحقيقي (من الصورة):
   //
-  // الخطأ السابق: أخذ أي رقم "مختلف عن رقم المحضر" — لكن الفارق كان طفيفاً
-  // فكان يأخذ رقم المحضر نفسه إن لم يجد فرقاً واضحاً.
+  // جدول النتيجة الرئيسي (صف واحد بعناوين):
+  //   رقم المحضر بالمحكمة | الإجراء          | نوع المحضر              | موضوع المحضر  | رقم الملف الجنحي | مزيد من المعلومات
+  //   16814/3210/2025     | المتابعة(إنشاءالملف) | محضر مخالفات الغابة | مخالفة الغابة | 8716/2107/2025   | بطاقة
   //
-  // الحل الصحيح:
-  //   1. استخرج رقم المحضر من الجدول الأول (عمود "رقم المحضر بالمحكمة")
-  //   2. استخرج رقم الملف من الجدول الثاني (عمود "رقم الملف" في "الملفات الزجرية")
-  //   هذان عمودان مختلفان في جداول مختلفة — يجب التمييز بينهما بوضوح.
+  // تبويبة "الملفات الزجرية":
+  //   رقم الملف       | تاريخ التسجيل | نوع الملف
+  //   8716/2107/2025  | 29/10/2025   | جنحي غابة
+  //
+  // الاستراتيجية:
+  //   1. قراءة عناوين الجدول الأول وربطها بقيم الصف
+  //   2. استخراج بيانات "الملفات الزجرية" من الجدول الثاني
+  //   3. رقم المحضر ← عمود "رقم المحضر بالمحكمة" في الجدول الأول
+  //   4. رقم الملف  ← عمود "رقم الملف" في جدول "الملفات الزجرية"
 
   const clean = text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
 
-  // ── دالة: قراءة قسم بين فاصلَي ════════ ─────────────────────────────────────
+  // ── دالة قراءة قسم بين ════════ ─────────────────────────────────────────────
   const getSection = (name: string): string => {
     const re = new RegExp(`════════[^═]*${name}[^═]*════════([\\s\\S]*?)(?:════════|$)`);
     const m  = clean.match(re);
@@ -2392,7 +2395,45 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
   const secFileCard = getSection('بطاقة الملف');
   const secCriminal = getSection('الملفات الزجرية');
 
-  // ── دالة: استخراج قيمة بعد تسمية في نص ──────────────────────────────────────
+  // ── دالة: قراءة جدول نصي → { عنوان: قيمة } ──────────────────────────────────
+  // البوابة تُرسل الجداول بصيغة: رأس الجدول في سطر ثم قيم البيانات في سطر لاحق
+  // إما بفصل بتاب \t أو بمسافات عريضة
+  const parseTable = (body: string): Record<string, string> => {
+    if (!body) return {};
+    const result: Record<string, string> = {};
+    const lines = body.split('\n').map(l => l.trim()).filter(Boolean);
+
+    for (let i = 0; i < lines.length - 1; i++) {
+      const headerLine = lines[i];
+      const dataLine   = lines[i + 1];
+
+      // تحقق أن السطر الأول رؤوس (لا يحتوي تاريخاً ولا رقماً بصيغة X/Y/Z)
+      const isHeader = !(/\d{2}\/\d{2}\/\d{4}/.test(headerLine))
+                    && !(/\d{4,}\/\d+\/\d+/.test(headerLine));
+      if (!isHeader) continue;
+
+      // فصل بتاب
+      if (headerLine.includes('\t') && dataLine.includes('\t')) {
+        const headers = headerLine.split('\t').map(h => h.trim()).filter(Boolean);
+        const values  = dataLine.split('\t').map(v => v.trim()).filter(Boolean);
+        headers.forEach((h, idx) => {
+          if (values[idx] && values[idx] !== '-') result[h] = values[idx];
+        });
+        continue;
+      }
+      // فصل بمسافات ≥3
+      if (/\s{3,}/.test(headerLine) && /\s{3,}/.test(dataLine)) {
+        const headers = headerLine.split(/\s{3,}/).map(h => h.trim()).filter(Boolean);
+        const values  = dataLine.split(/\s{3,}/).map(v => v.trim()).filter(Boolean);
+        headers.forEach((h, idx) => {
+          if (values[idx] && values[idx] !== '-') result[h] = values[idx];
+        });
+      }
+    }
+    return result;
+  };
+
+  // ── دالة: استخراج قيمة بعد تسمية ───────────────────────────────────────────
   const extractField = (body: string, labels: string[]): string => {
     if (!body) return '';
     const lines = body.split('\n').map(l => l.trim()).filter(Boolean);
@@ -2416,9 +2457,8 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
     return '';
   };
 
-  // ── نمط رقم الملف X/Y/Z ──────────────────────────────────────────────────────
+  // ── نمط رقم مرجعي X/Y/Z ────────────────────────────────────────────────────
   const REF_RE = /(\d{1,6})\/(\d{2,6})\/(\d{2,6})/g;
-
   const allRefsInText = (): string[] => {
     const out: string[] = [];
     let m: RegExpExecArray | null;
@@ -2427,102 +2467,151 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
     return [...new Set(out)];
   };
 
-  // ── 1. رقم المحضر بالمحكمة ────────────────────────────────────────────────────
-  // يأتي من الجدول الأول في قسم بيانات المحضر
+  // ════════════════════════════════════════════════════════════════════════════
+  // استخراج بيانات جدول النتيجة الأول (رأس البطاقة)
+  // العناوين المعروفة: رقم المحضر بالمحكمة | الإجراء | نوع المحضر | موضوع المحضر | رقم الملف الجنحي
+  // ════════════════════════════════════════════════════════════════════════════
+  const pvMainTable = parseTable(secPVData || clean);
+
+  // رقم المحضر بالمحكمة
   const pvCourtRef =
-    extractField(secPVData || clean, ['رقم المحضر بالمحكمة','رقم محضر الضابطة القضائية','رقم المحضر'])
-    || pvInputNumber;
+    pvMainTable['رقم المحضر بالمحكمة'] ||
+    extractField(secPVData || clean, ['رقم المحضر بالمحكمة','رقم محضر الضابطة القضائية','رقم المحضر']) ||
+    pvInputNumber;
 
   const pvCourtRefClean = pvCourtRef.replace(/\s+/g,'');
 
-  // ── 2. رقم الملف الجنحي ──────────────────────────────────────────────────────
-  // المصدر الأصح: جدول "الملفات الزجرية" — عمود "رقم الملف"
-  // يجب أن يكون مختلفاً عن رقم المحضر
+  // الإجراء الأول للمحضر
+  const pvAction =
+    pvMainTable['الإجراء'] ||
+    pvMainTable['الإجراءات'] ||
+    extractField(secPVData || clean, ['الإجراء']);
+
+  // نوع المحضر ← "محضر مخالفات الغابة"
+  const pvType =
+    pvMainTable['نوع المحضر'] ||
+    extractField(secPVData || clean, ['نوع المحضر','نوع محضر الضابطة']) ||
+    // fallback: البحث عن "محضر" في النص
+    (clean.match(/محضر\s+\S+\s+\S+/u)?.[0] || '');
+
+  // موضوع المحضر ← "مخالفة الغابة"
+  const pvSubject =
+    pvMainTable['موضوع المحضر'] ||
+    pvMainTable['الموضوع'] ||
+    extractField(secPVData || clean, ['موضوع المحضر','موضوع الضابطة','الموضوع']);
+
+  // رقم الملف الجنحي من الجدول الأول (إن وُجد في عمود مستقل)
+  const pvMainLinked = (
+    pvMainTable['رقم الملف الجنحي'] ||
+    pvMainTable['رقم الملف']
+  )?.replace(/\s+/g,'') || '';
+
+  // تاريخ المحضر
+  const pvDate =
+    pvMainTable['تاريخ المحضر'] ||
+    pvMainTable['تاريخ'] ||
+    extractField(secPVData || clean, ['تاريخ المحضر','تاريخ محضر الضابطة']);
+
+  // الجهة المعنية
+  const pvAgency = extractField(secPVData || clean, ['الجهة المعنية','المصلحة المعنية','المصلحة','الجهة']);
+
+  // نوع المخالفة
+  const pvOffense = extractField(secPVData || clean, ['نوع المخالفة','المخالفة','نوع الجريمة']);
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // استخراج بيانات جدول "الملفات الزجرية"
+  // العناوين: رقم الملف | تاريخ التسجيل | نوع الملف
+  // ════════════════════════════════════════════════════════════════════════════
+  const crimTable = parseTable(secCriminal || clean);
+
+  // رقم الملف من جدول "الملفات الزجرية" — المصدر الأصح
+  const crimFileNumberRaw =
+    crimTable['رقم الملف'] ||
+    extractField(secCriminal, ['رقم الملف']) ||
+    '';
+  const crimFileNumber = crimFileNumberRaw.replace(/\s+/g,'');
+
+  // نوع الملف ← "جنحي غابة"
+  const crimFileType =
+    crimTable['نوع الملف'] ||
+    crimTable['نوع الدعوى'] ||
+    extractField(secCriminal, ['نوع الملف','نوع الدعوى']) ||
+    extractField(secFileCard, ['نوع الملف','نوع الدعوى']);
+
+  // تاريخ التسجيل من جدول الملفات الزجرية
+  const crimRegDate =
+    crimTable['تاريخ التسجيل'] ||
+    extractField(secCriminal, ['تاريخ التسجيل']);
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // استخراج بيانات "بطاقة الملف"
+  // ════════════════════════════════════════════════════════════════════════════
+  const cardTable     = parseTable(secFileCard);
+  const cardFileNum   = cardTable['رقم الملف']  || extractField(secFileCard, ['رقم الملف']);
+  const cardFileType  = cardTable['نوع الملف']  || extractField(secFileCard, ['نوع الملف','نوع الدعوى']);
+  const cardCourt     = cardTable['المحكمة']    || extractField(secFileCard, ['المحكمة']);
+  const cardSection   = cardTable['الشعبة']     || extractField(secFileCard, ['الشعبة','القسم']);
+  const cardDate      = cardTable['تاريخ التسجيل'] || extractField(secFileCard, ['تاريخ التسجيل']);
+  const cardStatus    = cardTable['وضعية الملف'] || cardTable['الوضعية'] || extractField(secFileCard, ['وضعية الملف','الوضعية','الحالة']);
+  const cardJudge     = extractField(secFileCard, ['القاضي','المستشار','القاضي المقرر','المستشار / القاضي المقرر']);
+  const cardSession   = extractField(secFileCard, ['الجلسة القادمة','تاريخ الجلسة القادمة']);
+  const cardCrimCourt = extractField(secCriminal, ['المحكمة']);
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // رقم الملف الجنحي النهائي — بترتيب الأولوية:
+  //   1. جدول "الملفات الزجرية" (الأصح — مختلف عن رقم المحضر)
+  //   2. عمود "رقم الملف الجنحي" في جدول النتيجة الأول
+  //   3. جدول "بطاقة الملف"
+  //   4. آخر رقم في النص (رقم الملف دائماً في آخر تبويبة)
+  // ════════════════════════════════════════════════════════════════════════════
   let linkedFileNumber = '';
 
-  // أ) من قسم "الملفات الزجرية" — تسمية "رقم الملف"
-  if (secCriminal) {
-    const fromLabel = extractField(secCriminal, ['رقم الملف']);
-    if (fromLabel && fromLabel.replace(/\s+/g,'') !== pvCourtRefClean) {
-      linkedFileNumber = fromLabel.replace(/\s+/g,'');
-    }
+  if (crimFileNumber && crimFileNumber !== pvCourtRefClean)
+    linkedFileNumber = crimFileNumber;
+
+  if (!linkedFileNumber && pvMainLinked && pvMainLinked !== pvCourtRefClean)
+    linkedFileNumber = pvMainLinked;
+
+  if (!linkedFileNumber) {
+    const fromCard = (cardFileNum || '').replace(/\s+/g,'');
+    if (fromCard && fromCard !== pvCourtRefClean) linkedFileNumber = fromCard;
   }
 
-  // ب) أي رقم مرجعي داخل قسم "الملفات الزجرية" مختلف عن رقم المحضر
-  if (!linkedFileNumber && secCriminal) {
-    REF_RE.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = REF_RE.exec(secCriminal)) !== null) {
-      const r = m[0].replace(/\s+/g,'');
-      if (r !== pvCourtRefClean) { linkedFileNumber = r; break; }
-    }
-  }
-
-  // ج) من قسم "بطاقة الملف" — تسمية "رقم الملف"
-  if (!linkedFileNumber && secFileCard) {
-    const fromCard = extractField(secFileCard, ['رقم الملف']);
-    if (fromCard && fromCard.replace(/\s+/g,'') !== pvCourtRefClean) {
-      linkedFileNumber = fromCard.replace(/\s+/g,'');
-    }
-  }
-
-  // د) من الجدول الأول في رأس النتيجة — خانة "رقم الملف الجنحي"
   if (!linkedFileNumber) {
     const fromLabel = extractField(clean, ['رقم الملف الجنحي']);
-    if (fromLabel && fromLabel.replace(/\s+/g,'') !== pvCourtRefClean) {
-      linkedFileNumber = fromLabel.replace(/\s+/g,'');
-    }
+    const cleaned   = fromLabel.replace(/\s+/g,'');
+    if (cleaned && cleaned !== pvCourtRefClean) linkedFileNumber = cleaned;
   }
 
-  // هـ) آخر حل: من النص الكامل، أخذ آخر رقم مرجعي مختلف عن رقم المحضر
-  // (رقم الملف يظهر أخيراً في "الملفات الزجرية" بينما رقم المحضر يظهر أولاً)
   if (!linkedFileNumber) {
+    // آخر رقم مرجعي في النص مختلف عن رقم المحضر
     const allRefs  = allRefsInText();
-    // ابحث من الأخير للأول — رقم الملف يكون في آخر تبويبة
     const fromLast = [...allRefs].reverse().find(r => r !== pvCourtRefClean);
     if (fromLast) linkedFileNumber = fromLast;
   }
 
-  // تنظيف القيم غير الصالحة
-  if (['-','–','—',''].includes((linkedFileNumber||'').trim())) linkedFileNumber = '';
+  // تنظيف
+  if (['-','–','—'].includes((linkedFileNumber).trim())) linkedFileNumber = '';
 
-  // ── 3. تقسيم رقم الملف إلى (رقم/رمز/سنة) لشريط البحث ──────────────────────
+  // ── تقسيم رقم الملف → (رقم/رمز/سنة) لشريط البحث ───────────────────────────
   const { num: fileNum, mark: fileMark, year: fileYear } = splitFileRef(linkedFileNumber);
 
-  // ── 4. بيانات المحضر الأساسية ───────────────────────────────────────────────
-  const pvDate    = extractField(secPVData||clean, ['تاريخ المحضر','تاريخ محضر الضابطة']);
-  const pvType    = extractField(secPVData||clean, ['نوع المحضر','نوع محضر الضابطة']);
-  const pvSubject = extractField(secPVData||clean, ['موضوع المحضر','الموضوع']);
-  const pvAgency  = extractField(secPVData||clean, ['الجهة المعنية','المصلحة المعنية','المصلحة','الجهة']);
-  const pvOffense = extractField(secPVData||clean, ['نوع المخالفة','المخالفة','نوع الجريمة']);
+  // ── المحكمة ──────────────────────────────────────────────────────────────────
+  const court =
+    cardCourt || cardCrimCourt ||
+    extractField(clean, ['المحكمة']) ||
+    (clean.match(/(المحكمة\s+الابتدائية[^\n\t،]+|محكمة\s+الاستئناف[^\n\t،]+)/u)?.[1]||'').trim();
 
-  // ── 5. بيانات بطاقة الملف ──────────────────────────────────────────────────
-  const cardFileNum  = extractField(secFileCard, ['رقم الملف']);
-  const cardFileType = extractField(secFileCard, ['نوع الملف','نوع الدعوى']);
-  const cardCourt    = extractField(secFileCard, ['المحكمة']);
-  const cardSection  = extractField(secFileCard, ['الشعبة','القسم']);
-  const cardDate     = extractField(secFileCard, ['تاريخ التسجيل','تاريخ الملف']);
-  const cardStatus   = extractField(secFileCard, ['وضعية الملف','الوضعية','الحالة']);
-  const cardJudge    = extractField(secFileCard, ['القاضي','المستشار','القاضي المقرر','المستشار / القاضي المقرر']);
-  const cardSession  = extractField(secFileCard, ['الجلسة القادمة','تاريخ الجلسة القادمة']);
-
-  // بيانات "الملفات الزجرية" كاحتياط لبطاقة الملف
-  const crimFileType = extractField(secCriminal, ['نوع الملف']);
-  const crimCourt    = extractField(secCriminal, ['المحكمة']);
-  const crimDate     = extractField(secCriminal, ['تاريخ التسجيل']);
-
-  const court = cardCourt || crimCourt
-    || extractField(clean, ['المحكمة'])
-    || (clean.match(/(المحكمة\s+الابتدائية[^\n\t،]+|محكمة\s+الاستئناف[^\n\t،]+)/u)?.[1]||'').trim();
-
-  // ── 6. الأطراف ──────────────────────────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════════════════════
+  // الأطراف
+  // ════════════════════════════════════════════════════════════════════════════
   const parties: { role: string; name: string }[] = [];
   if (secParties) {
     const ROLES = ['متهم','مشتكي','مشتكى به','ضحية','مسؤول مدني',
       'مدعي','مدعى عليه','مطلوب','طالب','الجاني','المجني','نيابة عامة'];
-    const lines = secParties.split('\n').map(l => l.trim()).filter(Boolean);
-    // جدول بتابات
+    const lines    = secParties.split('\n').map(l => l.trim()).filter(Boolean);
     const tabLines = lines.filter(l => l.includes('\t'));
+
     if (tabLines.length > 0) {
       for (const line of tabLines) {
         const parts = line.split('\t').map(s => s.trim()).filter(Boolean);
@@ -2530,7 +2619,6 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
           parties.push({ role: parts[0], name: parts.slice(1).join(' ') });
       }
     }
-    // مسافات عريضة
     if (!parties.length) {
       for (const line of lines) {
         const parts = line.split(/\s{3,}/).map(s => s.trim()).filter(Boolean);
@@ -2538,7 +2626,6 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
           parties.push({ role: parts[0], name: parts.slice(1).join(' ') });
       }
     }
-    // سطر بعد سطر
     if (!parties.length) {
       for (let i = 0; i < lines.length; i++) {
         const role = ROLES.find(r => lines[i] === r || lines[i].startsWith(r+' ') || lines[i].startsWith(r+':'));
@@ -2549,7 +2636,6 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
         }
       }
     }
-    // صيغة "التسمية: القيمة"
     if (!parties.length) {
       for (const line of lines) {
         const m = line.match(/^([^:]+)\s*:\s*(.+)$/);
@@ -2557,15 +2643,25 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
           parties.push({ role: m[1].trim(), name: m[2].trim() });
       }
     }
+    // قراءة جدول "الأطراف" إن وُجد
+    if (!parties.length) {
+      const tbl = parseTable(secParties);
+      const ROLE_KEYS = ['الصفة','اسم الطرف','المتهم','المشتكي'];
+      const roleKey   = ROLE_KEYS.find(k => tbl[k]);
+      if (roleKey && tbl['الاسم'] ) parties.push({ role: tbl[roleKey]||'', name: tbl['الاسم'] });
+    }
   }
 
-  // ── 7. الإجراءات ────────────────────────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════════════════════
+  // الإجراءات
+  // ════════════════════════════════════════════════════════════════════════════
   const procedures: { date: string; action: string; decision: string }[] = [];
   if (secProcs) {
-    const dateRe = /(\d{2}\/\d{2}\/\d{4})/;
-    const SKIP   = new Set(['لائحة الإجراءات','تاريخ الإجراء','نوع الإجراء','القرار','ملاحظات']);
-    const lines  = secProcs.split('\n').map(l => l.trim()).filter(Boolean);
+    const dateRe   = /(\d{2}\/\d{2}\/\d{4})/;
+    const SKIP     = new Set(['لائحة الإجراءات','تاريخ الإجراء','نوع الإجراء','القرار','ملاحظات']);
+    const lines    = secProcs.split('\n').map(l => l.trim()).filter(Boolean);
     const tabLines = lines.filter(l => l.includes('\t') && dateRe.test(l));
+
     if (tabLines.length > 0) {
       for (const line of tabLines) {
         const parts   = line.split('\t').map(s => s.trim()).filter(Boolean);
@@ -2588,23 +2684,34 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
         }
       }
     }
+    // إذا لم تجد إجراءات في لائحة الإجراءات، أضف إجراء المتابعة من الجدول الأول
+    if (!procedures.length && pvAction) {
+      procedures.push({ date: pvDate || now.slice(0,10), action: pvAction, decision: '' });
+    }
   }
 
   return {
     id, linkedCaseId: undefined, pvInputNumber,
-    pvCourtRef, pvDate, pvType, pvSubject, pvAgency, pvAgentType: '', pvOffense,
+    pvCourtRef,
+    pvDate,
+    pvType,
+    pvSubject,
+    pvAgency,
+    pvAgentType: '',
+    pvOffense,
+    pvAction,
     court,
     linkedFileNumber,
     fileNum, fileMark, fileYear,
     linkedFile: {
       fileNumber:  linkedFileNumber || cardFileNum || '',
-      fileType:    cardFileType || crimFileType || '',
-      court:       cardCourt    || crimCourt || court,
-      section:     cardSection  || '',
-      date:        cardDate     || crimDate  || '',
-      status:      cardStatus   || '',
-      judge:       cardJudge    || '',
-      nextSession: cardSession  || '',
+      fileType:    crimFileType || cardFileType || '',
+      court:       cardCourt || cardCrimCourt || court,
+      section:     cardSection || '',
+      date:        crimRegDate || cardDate || '',
+      status:      cardStatus  || '',
+      judge:       cardJudge   || '',
+      nextSession: cardSession || '',
     },
     parties, procedures,
     rawText: text, createdAt: now, lastSyncedAt: now,
@@ -2619,7 +2726,7 @@ function pvRecordToCase(pv: PVRecord): Case {
     mahakimId:  lf.fileNumber || pv.linkedFileNumber || undefined,
     court:      lf.court  || pv.court || 'غير محددة',
     type:       lf.fileType || 'جنحية',
-    subject:    pv.pvSubject || pv.pvOffense || 'مخالفة غابوية — مستخرج من محضر الضابطة',
+    subject:    pv.pvSubject || pv.pvOffense || pv.pvType || 'مخالفة غابوية — مستخرج من محضر الضابطة',
     date:       lf.date   || new Date().toISOString().split('T')[0],
     judge:      lf.judge  || undefined,
     section:    lf.section || undefined,
@@ -2756,7 +2863,7 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
                       </td>
                       <td className="px-4 py-3 max-w-[180px]">
                         <p className="font-bold text-stone-800 truncate text-sm">{pv.pvSubject || pv.pvOffense || '—'}</p>
-                        {pv.pvType && <p className="text-[10px] text-stone-400">{pv.pvType}</p>}
+                        {pv.pvType && <p className="text-[10px] text-emerald-600 font-bold mt-0.5">{pv.pvType}</p>}
                       </td>
                       <td className="px-4 py-3 max-w-[140px]">
                         <p className="text-xs text-stone-600 truncate">{pv.pvAgency || '—'}</p>
@@ -2875,9 +2982,10 @@ function PVDetail({ pv, onBack, onDelete, relatedCase, onOpenRelatedCase }: {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {[
                     {l:'رقم المحضر بالمحكمة', v:pv.pvCourtRef||pv.pvInputNumber, mono:true, hi:true, copy:true},
-                    {l:'تاريخ المحضر',         v:pv.pvDate,    mono:true},
-                    {l:'نوع المحضر',           v:pv.pvType},
-                    {l:'موضوع المحضر',         v:pv.pvSubject},
+                    {l:'تاريخ المحضر',         v:pv.pvDate,       mono:true},
+                    {l:'نوع المحضر',           v:pv.pvType,       hi2:true},
+                    {l:'موضوع المحضر',         v:pv.pvSubject,    hi2:true},
+                    {l:'الإجراء',              v:(pv as any).pvAction},
                     {l:'نوع المخالفة',         v:pv.pvOffense},
                     {l:'الجهة المعنية',        v:pv.pvAgency},
                     {l:'المحكمة',              v:pv.court},
@@ -3740,20 +3848,21 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
                           {pvResultTab==='pv' && (
                             <div className="space-y-1.5">
                               {[
-                                {l:'رقم المحضر بالمحكمة', v:pvResult.pvCourtRef||pvResult.pvInputNumber, mono:true, copy:true},
-                                {l:'تاريخ المحضر',         v:pvResult.pvDate,   mono:true},
-                                {l:'نوع المحضر',           v:pvResult.pvType},
-                                {l:'موضوع المحضر',         v:pvResult.pvSubject},
+                                {l:'رقم المحضر بالمحكمة', v:pvResult.pvCourtRef||pvResult.pvInputNumber, mono:true, copy:true, hi:true},
+                                {l:'تاريخ المحضر',         v:pvResult.pvDate,                   mono:true},
+                                {l:'نوع المحضر',           v:pvResult.pvType,                   badge:'emerald'},
+                                {l:'موضوع المحضر',         v:pvResult.pvSubject,                badge:'blue'},
+                                {l:'الإجراء',              v:(pvResult as any).pvAction},
                                 {l:'نوع المخالفة',         v:pvResult.pvOffense},
                                 {l:'الجهة المعنية',        v:pvResult.pvAgency},
                                 {l:'المحكمة',              v:pvResult.court},
                               ].filter(f=>f.v).map((f,i)=>(
-                                <div key={i} className="flex items-center justify-between gap-2 bg-blue-50 rounded-lg px-3 py-1.5 border border-blue-100">
+                                <div key={i} className={`flex items-center justify-between gap-2 rounded-lg px-3 py-1.5 border ${(f as any).hi ? 'bg-blue-100 border-blue-300' : (f as any).badge==='emerald' ? 'bg-emerald-50 border-emerald-200' : (f as any).badge==='blue' ? 'bg-blue-50 border-blue-200' : 'bg-stone-50 border-stone-100'}`}>
                                   <div className="min-w-0 flex-1">
                                     <p className="text-[9px] font-bold text-stone-400 uppercase">{f.l}</p>
-                                    <p className={`text-[11px] font-bold text-stone-800 truncate ${f.mono?'font-mono':''}`}>{f.v}</p>
+                                    <p className={`text-[11px] font-bold truncate ${(f as any).mono?'font-mono':''}  ${(f as any).hi?'text-blue-900 text-xs':(f as any).badge==='emerald'?'text-emerald-800':(f as any).badge==='blue'?'text-blue-800':'text-stone-800'}`}>{f.v}</p>
                                   </div>
-                                  {f.copy && (
+                                  {(f as any).copy && (
                                     <button onClick={()=>copyText(f.v!)} className="shrink-0 p-1 text-stone-300 hover:text-blue-600">
                                       <Database className="size-3"/>
                                     </button>
