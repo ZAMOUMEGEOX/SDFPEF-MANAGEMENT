@@ -92,6 +92,14 @@ export interface Case {
   geoLng?: string;
   /** رسم Polygon للقطعة بصيغة GeoJSON (نص) — اختياري */
   geoPolygon?: string;
+  /** الإقليم المُكتشَف من الخريطة */
+  geoProvince?: string;
+  /** ملخّص نصّي لتداخل القطعة مع الملك الغابوي (يُحسب من خريطة الملك الغابوي) */
+  geoOverlap?: string;
+  /** الوضعية إزاء الملك الغابوي: داخل / جزئيا داخل / خارج */
+  geoPosition?: string;
+  /** نسبة التداخل الكلية مع الملك الغابوي (%) */
+  geoOverlapPct?: number;
 
   // ── الوثائق المرفقة ──────────────────────────────────────────────
   documents?: { name: string; url: string; type?: string; addedAt?: string }[];
@@ -3605,6 +3613,85 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     alert(`✅ تم حفظ المحضر وإنشاء الملف القضائي: ${newCase.mahakimId || newCase.id}`);
   };
 
+  // ════════════════════════════════════════════════════════════════════
+  // ── الأتمتة: معالجة نطاق أرقام محاضر تلقائياً (النقطة 18) ──────────────
+  // ════════════════════════════════════════════════════════════════════
+
+  /** حفظ محضر تلقائياً مع ربط بملف مطابق أو إنشاء ملف جديد. يُستخدم داخل الحلقة. */
+  const autoSavePV = async (pv: PVRecord): Promise<'ok'|'linked'|'created'> => {
+    const ref = pv.linkedFileNumber
+      || [(pv as any).fileNum, (pv as any).fileMark, (pv as any).fileYear].filter(Boolean).join('/');
+    const k = fileNumKey(ref);
+    let linkedId = pv.linkedCaseId || '';
+    let status: 'ok'|'linked'|'created' = 'ok';
+    if (k) {
+      const match = allCases.find(c => c.mahakimId && fileNumKey(c.mahakimId) === k);
+      if (match) { linkedId = match.id; status = 'linked'; }
+      else if (createdCasesRef.current.has(k)) { linkedId = createdCasesRef.current.get(k)!; status = 'linked'; }
+      else {
+        const nc = pvRecordToCase(pv);
+        await onSave(nc);
+        createdCasesRef.current.set(k, nc.id);
+        linkedId = nc.id; status = 'created';
+      }
+    }
+    const finalPV: PVRecord = { ...pv, linkedCaseId: linkedId || undefined, lastSyncedAt: new Date().toISOString() };
+    await savePVRecordDB(finalPV);
+    setPvRecords(prev => {
+      const exists = prev.find(p => p.id === finalPV.id);
+      return exists ? prev.map(p => p.id === finalPV.id ? finalPV : p) : [finalPV, ...prev];
+    });
+    onSavePV?.(finalPV);
+    return status;
+  };
+
+  /** بحث عن محضر واحد ويُرجِع وعداً يُحَلّ عند وصول النتيجة (أو فشلاً/مهلة). */
+  const searchPVOnce = (numero: string): Promise<PVRecord | null> => new Promise((resolve) => {
+    const isAppeal = pvCourt.startsWith('استئناف ');
+    const courtName = isAppeal ? pvCourt.replace('استئناف ', '').trim() : pvCourt;
+    const PRIMARY = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
+    const isPrimary = !isAppeal && PRIMARY.includes(pvCourt);
+    let done = false;
+    const finish = (pv: PVRecord | null) => { if (done) return; done = true; autoResolverRef.current = null; clearTimeout(to); resolve(pv); };
+    autoResolverRef.current = finish;
+    const to = setTimeout(() => finish(null), 100000); // مهلة أمان لكل محضر
+    window.postMessage({ type: 'MAHAKIM_TO_EXTENSION', payload: {
+      searchType: 'pv', numero, year: pvYear.trim(), court: courtName, isPrimary, agentType: pvAgentType, agency: pvAgency,
+    }}, '*');
+  });
+
+  /** حلقة الأتمتة على نطاق الأرقام: بحث → حفظ → ربط/إنشاء → التالي. */
+  const runAutomation = async () => {
+    const from = parseInt(autoFrom, 10), to = parseInt(autoTo, 10);
+    if (isNaN(from) || isNaN(to) || from < 1 || to < from) { alert('أدخل نطاقاً صحيحاً (من ≤ إلى).'); return; }
+    if (!extensionReady) { alert('⚠️ يتطلب إضافة Mahakim Bridge.'); return; }
+    if (!pvYear.trim()) { alert('أدخل سنة المحاضر أولاً.'); return; }
+    if (to - from > 200 && !confirm(`ستُعالَج ${to - from + 1} محضراً تلقائياً. هل تتابع؟`)) return;
+
+    setAutoRunning(true); setAutoLog([]); autoAbortRef.current = false; createdCasesRef.current.clear();
+    for (let n = from; n <= to; n++) {
+      if (autoAbortRef.current) break;
+      setAutoCurrent(n); setPvNumber(String(n)); setPvSearchStage(`أتمتة: محضر رقم ${n}`);
+      const pv = await searchPVOnce(String(n));
+      const hasData = !!(pv && (pv.pvCourtRef || pv.linkedFileNumber || (pv.parties && pv.parties.length)));
+      if (!hasData) {
+        setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'لا نتيجة' }]);
+      } else {
+        try {
+          const st = await autoSavePV(pv!);
+          setAutoLog(l => [...l, { num: n, status: st, msg: st === 'created' ? 'حُفظ + أُنشئ ملف' : st === 'linked' ? 'حُفظ + رُبط بملف' : 'حُفظ' }]);
+        } catch {
+          setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'فشل الحفظ' }]);
+        }
+      }
+      await new Promise(r => setTimeout(r, 700)); // مهلة قصيرة بين المحاضر
+    }
+    setAutoRunning(false); setAutoCurrent(null); setPvSearchStage('');
+  };
+
+  const stopAutomation = () => { autoAbortRef.current = true; if (autoResolverRef.current) { autoResolverRef.current(null); autoResolverRef.current = null; } setAutoRunning(false); };
+
+
   /**
    * البحث عن الملف الجنحي المستخرج من المحضر.
    * يتعامل مع صيغتين:
@@ -3933,14 +4020,74 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
                     {/* أزرار البحث */}
                     <div className="flex gap-2">
                       <button onClick={handlePVSearch}
-                        disabled={pvIsSearching||!pvNumber.trim()||!extensionReady}
+                        disabled={pvIsSearching||autoRunning||!pvNumber.trim()||!extensionReady}
                         className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl py-2.5 font-bold text-sm flex items-center justify-center gap-2 shadow-sm transition-all">
                         {pvIsSearching ? <><RefreshCw className="size-4 animate-spin"/>جاري البحث...</> : <><Search className="size-4"/>بحث عن المحضر</>}
                       </button>
-                      <button onClick={handlePVReset} title="مسح وإعادة تعيين"
-                        className="px-3 py-2 bg-white border border-stone-200 hover:bg-red-50 hover:border-red-200 text-stone-400 hover:text-red-500 rounded-xl transition-colors">
+                      <button onClick={handlePVReset} title="مسح وإعادة تعيين" disabled={autoRunning}
+                        className="px-3 py-2 bg-white border border-stone-200 hover:bg-red-50 hover:border-red-200 text-stone-400 hover:text-red-500 rounded-xl transition-colors disabled:opacity-40">
                         <X className="size-4"/>
                       </button>
+                    </div>
+
+                    {/* ── أتمتة نطاق المحاضر (النقطة 18) ── */}
+                    <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3 space-y-2">
+                      <p className="text-[10px] font-bold text-indigo-700 uppercase tracking-wide flex items-center gap-1">
+                        <Sparkles className="size-3.5"/> أتمتة نطاق المحاضر
+                      </p>
+                      <p className="text-[9px] text-stone-500 leading-snug">
+                        يبحث عن كل محضر في النطاق، يستخرجه، يحفظه، ويربطه بملفه القضائي (أو يُنشئه) — دون أي تدخّل.
+                        تُستعمل <strong>السنة والمحكمة والمصلحة المختارة أعلاه</strong>.
+                      </p>
+                      <div className="flex gap-2 items-end">
+                        <div className="flex-1 space-y-1">
+                          <label className="text-[10px] text-stone-500 font-bold">من رقم</label>
+                          <input value={autoFrom} onChange={e=>setAutoFrom(e.target.value.replace(/\D/g,''))} inputMode="numeric" placeholder="1" disabled={autoRunning}
+                            className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-indigo-400 focus:outline-none disabled:bg-stone-100"/>
+                        </div>
+                        <div className="flex-1 space-y-1">
+                          <label className="text-[10px] text-stone-500 font-bold">إلى رقم</label>
+                          <input value={autoTo} onChange={e=>setAutoTo(e.target.value.replace(/\D/g,''))} inputMode="numeric" placeholder="15" disabled={autoRunning}
+                            className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-indigo-400 focus:outline-none disabled:bg-stone-100"/>
+                        </div>
+                      </div>
+                      {!autoRunning ? (
+                        <button onClick={runAutomation} disabled={!extensionReady||!autoFrom||!autoTo}
+                          className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl py-2.5 font-bold text-sm flex items-center justify-center gap-2 shadow-sm transition-all">
+                          <Sparkles className="size-4"/>بدء الأتمتة
+                        </button>
+                      ) : (
+                        <button onClick={stopAutomation}
+                          className="w-full bg-red-600 hover:bg-red-700 text-white rounded-xl py-2.5 font-bold text-sm flex items-center justify-center gap-2 shadow-sm transition-all">
+                          <X className="size-4"/>إيقاف الأتمتة{autoCurrent!=null?` (عند رقم ${autoCurrent})`:''}
+                        </button>
+                      )}
+                      {(autoRunning || autoLog.length>0) && (
+                        <div className="space-y-1.5">
+                          {autoRunning && (
+                            <div className="flex items-center gap-2 text-[11px] font-bold text-indigo-700">
+                              <RefreshCw className="size-3.5 animate-spin"/> جارٍ معالجة المحضر رقم {autoCurrent}…
+                            </div>
+                          )}
+                          {autoLog.length>0 && (
+                            <div className="max-h-36 overflow-y-auto bg-white border border-stone-200 rounded-lg divide-y divide-stone-100">
+                              {autoLog.slice().reverse().map((e,i)=>(
+                                <div key={i} className="flex items-center justify-between px-2.5 py-1.5 text-[11px]">
+                                  <span className="font-mono font-bold text-stone-600">محضر {e.num}</span>
+                                  <span className={`font-bold ${e.status==='fail'?'text-red-500':e.status==='created'?'text-emerald-600':e.status==='linked'?'text-blue-600':'text-stone-500'}`}>
+                                    {e.status==='fail'?'✗ '+e.msg:'✓ '+e.msg}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {!autoRunning && autoLog.length>0 && (
+                            <p className="text-[10px] text-stone-500 text-center">
+                              انتهت: {autoLog.filter(e=>e.status!=='fail').length} نجحت / {autoLog.filter(e=>e.status==='fail').length} بلا نتيجة
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     {!extensionReady && (
