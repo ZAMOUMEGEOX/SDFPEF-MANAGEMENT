@@ -1,7 +1,5 @@
 // src/lib/contentieux.ts
-import { supabase } from '@/lib/supabase';
-import { loadPVRecords, savePVRecord, deletePVRecord } from '@/lib/pvMahakim';
-
+import { supabase } from '@/lib/supabase'
 import type { Case } from '@/views/Contentieux/Contentieux'
 
 // ══════════════════════════════════════════════════
