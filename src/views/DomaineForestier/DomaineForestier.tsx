@@ -261,7 +261,7 @@ const MapResizeTracker = ({ isPanelCollapsed }: { isPanelCollapsed: boolean }) =
   return null;
 };
 
-const CustomMapEventsHandler = ({ setCustomLayers }: { setCustomLayers: any }) => {
+const CustomMapEventsHandler = ({ setCustomLayers, onLayerImported }: { setCustomLayers: any; onLayerImported?: (id: string, name: string, geojson: any) => void }) => {
   const map = useMap();
   useEffect(() => {
     const handleZoomIn  = () => map.zoomIn();
@@ -290,7 +290,16 @@ const CustomMapEventsHandler = ({ setCustomLayers }: { setCustomLayers: any }) =
         marker.closePopup();
         delete (map as any)._searchMarker;
         const id = `search-${Date.now()}`;
-        setCustomLayers((prev: any) => [...prev, { id, name: `Recherche: ${data.display_name?.substring(0, 20) || 'Point'}`, type: 'drawn', visible: true, color: '#10b981', leafletLayer: marker }]);
+        const layerName = `Recherche: ${data.display_name?.substring(0, 20) || 'Point'}`;
+        setCustomLayers((prev: any) => [...prev, { id, name: layerName, type: 'drawn', visible: true, color: '#10b981', leafletLayer: marker, geojson: marker.toGeoJSON() }]);
+        // Run chevauchement on a small buffer (10m) around the point
+        if (onLayerImported) {
+          try {
+            const ptGeoJSON = marker.toGeoJSON();
+            const buffered = turf.buffer(ptGeoJSON, 0.01, { units: 'kilometers' }); // 10m buffer
+            onLayerImported(id, layerName, buffered || ptGeoJSON);
+          } catch { onLayerImported(id, layerName, marker.toGeoJSON()); }
+        }
       });
       popupDiv.querySelector('#btn-remove-marker')?.addEventListener('click', () => { map.removeLayer(marker); delete (map as any)._searchMarker; });
       (map as any)._searchMarker = marker;
@@ -592,7 +601,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
           <MapEvents setCoords={setCoords} onIdentify={handleIdentify} customLayersRef={customLayersRef} />
           <MapResizeTracker isPanelCollapsed={isPanelCollapsed} />
           <MapCenterUpdater mapTargetCenter={mapTargetCenter} setMapTargetCenter={setMapTargetCenter} />
-          <CustomMapEventsHandler setCustomLayers={setCustomLayers} />
+          <CustomMapEventsHandler setCustomLayers={setCustomLayers} onLayerImported={handleLayerImported} />
           <ScaleControl position="bottomleft" imperial={false} />
         </MapContainer>
 
@@ -1147,24 +1156,31 @@ function PolyBuilder({
       </div>
 
       <div className="px-3 py-2.5 space-y-2.5">
-        {/* Professional layer name input */}
-        <div>
-          <div className="flex items-center gap-1 mb-1.5">
-            <PenLine className="w-3 h-3 text-amber-500" />
-            <span className="text-[9px] font-bold uppercase tracking-wider text-amber-600">Nom de la couche</span>
+        {/* Layer name input — prominent rename field */}
+        <div className="rounded-xl border-2 border-dashed border-amber-400/70 bg-amber-400/5 p-2.5">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <Edit3 className="w-3 h-3 text-amber-500" />
+            <span className="text-[9px] font-black uppercase tracking-wider text-amber-600">✏ Nommez votre couche</span>
+            <span className="ml-auto text-[8px] text-amber-400/80 italic font-medium">Obligatoire</span>
           </div>
           <div className="relative">
             <input
               type="text"
               value={polyName}
               onChange={e => setPolyName(e.target.value)}
-              placeholder="Ex: Parcelle forestière Nord…"
-              className="w-full bg-white/80 dark:bg-zinc-900/80 border-2 border-amber-400/60 rounded-xl py-2 px-3 text-[13px] font-semibold focus:outline-none focus:border-amber-500 transition-colors text-(--text-main) placeholder:text-amber-400/60 shadow-sm"
+              placeholder="Ex: Parcelle Nord — Lot 4B…"
+              className="w-full bg-white dark:bg-zinc-900 border-2 border-amber-400 rounded-lg py-2.5 px-3 pr-8 text-[13px] font-bold focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 transition-all text-(--text-main) placeholder:text-amber-300 shadow-sm"
+              autoComplete="off"
             />
-            {polyName && polyName !== 'Polygone personnalisé' && (
-              <div className="absolute right-2.5 top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full bg-amber-500" />
+            {polyName && polyName !== 'Polygone personnalisé' ? (
+              <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              </div>
+            ) : (
+              <Edit3 className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-amber-400 pointer-events-none" />
             )}
           </div>
+          <p className="text-[9px] text-amber-500/70 mt-1.5 font-medium">Ce nom identifiera votre couche dans le panneau</p>
         </div>
 
         {/* Points list */}
@@ -1234,6 +1250,7 @@ function RechercheTab({
   const [polyPoints, setPolyPoints]   = useState<PolyPoint[]>([]);
   const [polyName, setPolyName]       = useState('Polygone personnalisé');
   const [polyMsg, setPolyMsg]         = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [polySourceMode, setPolySourceMode] = useState<'lambert' | 'wgs84' | null>(null);
 
   const inp = "flex-1 min-w-0 bg-(--bg-main) border border-(--border-color) rounded-lg py-2 px-2.5 text-[12px] font-mono focus:outline-none focus:border-(--brand) transition-colors text-(--text-main) placeholder:text-(--text-muted)";
   const rowLabel = "text-[9px] font-bold uppercase tracking-wider text-(--text-muted) select-none";
@@ -1255,12 +1272,14 @@ function RechercheTab({
     const x = parseFloat(lambertX), y = parseFloat(lambertY);
     if (isNaN(x) || isNaN(y)) return;
     setPolyPoints(prev => [...prev, { id: `pt-${Date.now()}`, x: lambertX, y: lambertY, mode: 'lambert', label: `${x.toFixed(0)}, ${y.toFixed(0)}` }]);
+    setPolySourceMode('lambert');
     setPolyMsg(null);
   };
   const addWgsPoint = () => {
     const lng = parseFloat(lngVal), lat = parseFloat(latVal);
     if (isNaN(lng) || isNaN(lat)) return;
     setPolyPoints(prev => [...prev, { id: `pt-${Date.now()}`, x: lngVal, y: latVal, mode: 'wgs84', label: `${lng.toFixed(5)}, ${lat.toFixed(5)}` }]);
+    setPolySourceMode('wgs84');
     setPolyMsg(null);
   };
   const removePoint = (id: string) => setPolyPoints(prev => prev.filter(p => p.id !== id));
@@ -1310,6 +1329,7 @@ function RechercheTab({
       setPolyName('Polygone personnalisé');
       setLambertPoly(false);
       setWgsPoly(false);
+      setPolySourceMode(null);
       if (setActiveTab) setTimeout(() => { setActiveTab('couches'); setIsPanelCollapsed?.(false); }, 700);
     } catch { setPolyMsg({ type: 'error', text: 'Erreur lors de la création.' }); }
   };
@@ -1403,10 +1423,10 @@ function RechercheTab({
         )}
 
         {/* Inline Poly Builder for Lambert */}
-        {lambertPoly && hasPoints && (
+        {(lambertPoly || polySourceMode === 'lambert') && hasPoints && (
           <PolyBuilder
             polyPoints={polyPoints} polyName={polyName} polyMsg={polyMsg}
-            setPolyName={setPolyName} setPolyPoints={setPolyPoints} setPolyMsg={setPolyMsg}
+            setPolyName={setPolyName} setPolyPoints={(fn) => { setPolyPoints(fn); if (fn(polyPoints).length === 0) setPolySourceMode(null); }} setPolyMsg={setPolyMsg}
             removePoint={removePoint} buildPolygon={buildPolygon}
           />
         )}
@@ -1474,28 +1494,14 @@ function RechercheTab({
         )}
 
         {/* Inline Poly Builder for WGS84 */}
-        {wgsPoly && hasPoints && (
+        {(wgsPoly || polySourceMode === 'wgs84') && hasPoints && (
           <PolyBuilder
             polyPoints={polyPoints} polyName={polyName} polyMsg={polyMsg}
-            setPolyName={setPolyName} setPolyPoints={setPolyPoints} setPolyMsg={setPolyMsg}
+            setPolyName={setPolyName} setPolyPoints={(fn) => { setPolyPoints(fn); if (fn(polyPoints).length === 0) setPolySourceMode(null); }} setPolyMsg={setPolyMsg}
             removePoint={removePoint} buildPolygon={buildPolygon}
           />
         )}
       </div>
-
-      {/* Poly builder shown at bottom if neither toggle active but points exist */}
-      {hasPoints && !lambertPoly && !wgsPoly && (
-        <>
-          <div className="h-px bg-(--border-color)" />
-          <div className="pt-3">
-            <PolyBuilder
-              polyPoints={polyPoints} polyName={polyName} polyMsg={polyMsg}
-              setPolyName={setPolyName} setPolyPoints={setPolyPoints} setPolyMsg={setPolyMsg}
-              removePoint={removePoint} buildPolygon={buildPolygon}
-            />
-          </div>
-        </>
-      )}
 
       <div className="h-px bg-(--border-color) mt-4" />
 
@@ -1561,6 +1567,8 @@ function CouchesTab({
   const [excelSheetPending, setExcelSheetPending] = useState<{ wb: any; sheets: string[]; name: string } | null>(null);
   const [showStats, setShowStats] = useState(false);
   const [sessionRestored, setSessionRestored] = useState(false);
+  const [layerFilter, setLayerFilter] = useState('');
+  const [showCompare, setShowCompare] = useState(false);
 
   // ── Restore session on first mount ─────────────────────────────────────────
   useEffect(() => {
@@ -1889,6 +1897,15 @@ function CouchesTab({
         />
       )}
 
+      {/* Compare modal */}
+      {showCompare && (
+        <CompareLayersModal
+          customLayers={customLayers}
+          chevauchementResults={chevauchementResults}
+          onClose={() => setShowCompare(false)}
+        />
+      )}
+
       {/* Stats panel */}
       {showStats && (
         <StatsPanel customLayers={customLayers} chevauchementResults={chevauchementResults} />
@@ -1984,6 +2001,15 @@ function CouchesTab({
           >
             <BarChart3 className="w-3.5 h-3.5" />
           </button>
+          {customLayers.length >= 2 && (
+            <button
+              onClick={() => setShowCompare(true)}
+              title="Comparer deux couches"
+              className="p-1.5 rounded-lg border border-(--border-color) text-(--text-muted) hover:text-indigo-500 hover:border-indigo-500/40 transition-all"
+            >
+              <TrendingUp className="w-3.5 h-3.5" />
+            </button>
+          )}
           {customLayers.length > 0 && (
             <button
               onClick={() => {
@@ -2013,6 +2039,25 @@ function CouchesTab({
           className="hidden" />
       </div>
 
+      {/* Layer filter / search */}
+      {customLayers.length > 2 && (
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-(--text-muted) pointer-events-none" />
+          <input
+            type="text"
+            value={layerFilter}
+            onChange={e => setLayerFilter(e.target.value)}
+            placeholder="Filtrer les couches par nom…"
+            className="w-full bg-(--bg-main) border border-(--border-color) rounded-lg pl-8 pr-8 py-1.5 text-[11px] focus:outline-none focus:border-(--brand) text-(--text-main) placeholder:text-(--text-muted) transition-colors"
+          />
+          {layerFilter && (
+            <button onClick={() => setLayerFilter('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-(--text-muted) hover:text-(--text-main) p-0.5">
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Custom layers list */}
       <div className="space-y-2 max-h-105 overflow-y-auto pr-0.5 select-none">
         {customLayers.length === 0 && (
@@ -2022,22 +2067,228 @@ function CouchesTab({
             <p className="text-[10px] mt-1 opacity-70">GeoJSON · CSV · KML · SHP · XLSX</p>
           </div>
         )}
-        {customLayers.map((layer: any) => (
-          <LayerItem
-            key={layer.id}
-            layer={layer}
-            chevauchementResult={chevauchementResults[layer.id]}
-            onToggle={() => toggleLayer(layer.id)}
-            onDelete={() => deleteLayer(layer.id)}
-            onChangeColor={(c: string) => changeColor(layer.id, c)}
-            onChangeOpacity={(o: number) => changeOpacity(layer.id, o)}
-            onChangeSize={(s: number) => changeSize(layer.id, s)}
-            onChangeFillMode={(m: string) => changeFillMode(layer.id, m)}
-            onChangeSymbol={(s: string) => changeSymbol(layer.id, s)}
-            onZoom={() => zoomToLayer(layer.id)}
-            onRename={(name: string) => renameLayer(layer.id, name)}
-          />
-        ))}
+        {(() => {
+          const filtered = layerFilter
+            ? customLayers.filter((l: any) => l.name.toLowerCase().includes(layerFilter.toLowerCase()))
+            : customLayers;
+          if (customLayers.length > 0 && filtered.length === 0) return (
+            <div className="text-center py-6 text-(--text-muted) border border-dashed border-(--border-color) rounded-xl bg-(--bg-main)">
+              <Search className="w-5 h-5 mx-auto mb-2 opacity-50" />
+              <p className="text-[11px] font-semibold">Aucun résultat pour «{layerFilter}»</p>
+            </div>
+          );
+          return filtered.map((layer: any) => (
+            <LayerItem
+              key={layer.id}
+              layer={layer}
+              chevauchementResult={chevauchementResults[layer.id]}
+              onToggle={() => toggleLayer(layer.id)}
+              onDelete={() => deleteLayer(layer.id)}
+              onChangeColor={(c: string) => changeColor(layer.id, c)}
+              onChangeOpacity={(o: number) => changeOpacity(layer.id, o)}
+              onChangeSize={(s: number) => changeSize(layer.id, s)}
+              onChangeFillMode={(m: string) => changeFillMode(layer.id, m)}
+              onChangeSymbol={(s: string) => changeSymbol(layer.id, s)}
+              onZoom={() => zoomToLayer(layer.id)}
+              onRename={(name: string) => renameLayer(layer.id, name)}
+            />
+          ));
+        })()}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CompareLayersModal — side-by-side layer comparison with metrics
+// ─────────────────────────────────────────────────────────────────────────────
+function CompareLayersModal({ customLayers, chevauchementResults, onClose }: {
+  customLayers: any[];
+  chevauchementResults: Record<string, ChevauchementResult>;
+  onClose: () => void;
+}) {
+  const [layerA, setLayerA] = useState(customLayers[0]?.id || '');
+  const [layerB, setLayerB] = useState(customLayers[1]?.id || '');
+
+  const sel = "w-full bg-(--bg-main) border border-(--border-color) text-(--text-main) rounded-lg p-2 text-[12px] focus:outline-none focus:border-(--brand)";
+
+  const getStats = (layer: any) => {
+    if (!layer) return null;
+    const chev = chevauchementResults[layer.id];
+    let area = 0, perim = 0, pointCount = 0;
+    try {
+      if (layer.geojson) {
+        const gj = layer.geojson;
+        const features = gj.type === 'FeatureCollection' ? gj.features : [gj];
+        const polyFeats = features.filter((f: any) => f?.geometry?.type?.includes('Polygon'));
+        const pointFeats = features.filter((f: any) => f?.geometry?.type === 'Point');
+        pointCount = pointFeats.length;
+        if (polyFeats.length > 0) {
+          const fc = { type: 'FeatureCollection', features: polyFeats };
+          area = turf.area(fc as any);
+          perim = turf.length(fc as any, { units: 'kilometers' });
+        }
+      }
+    } catch {}
+    return { area, perim, pointCount, chev };
+  };
+
+  const lA = customLayers.find((l: any) => l.id === layerA);
+  const lB = customLayers.find((l: any) => l.id === layerB);
+  const sA = getStats(lA);
+  const sB = getStats(lB);
+
+  const chevLabel = (chev: ChevauchementResult | undefined) => {
+    if (!chev) return { label: 'Non analysée', color: '#9ca3af' };
+    if (chev.globalPosition === 'داخل الملك الغابوي') return { label: 'Inclusion totale', color: '#ef4444' };
+    if (chev.globalPosition === 'جزئيا داخل الملك الغابوي') return { label: `Chevauch. ${chev.totalPercentage.toFixed(1)}%`, color: '#f97316' };
+    return { label: 'Hors domaine', color: '#22c55e' };
+  };
+
+  const MetricRow = ({ label, a, b }: { label: string; a: string; b: string }) => (
+    <div className="grid grid-cols-3 gap-2 py-2 border-b border-(--border-color) last:border-0">
+      <span className="text-[10px] text-(--text-muted) font-medium self-center text-center">{label}</span>
+      <span className="text-[11px] font-bold text-(--text-main) text-center bg-blue-500/10 rounded-lg py-1">{a}</span>
+      <span className="text-[11px] font-bold text-(--text-main) text-center bg-emerald-500/10 rounded-lg py-1">{b}</span>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+      <div className="bg-(--bg-surface) border border-(--border-color) rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-(--border-color) flex items-center justify-between shrink-0">
+          <div>
+            <h3 className="text-sm font-bold text-(--text-main) flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-(--brand)" /> Comparer deux couches
+            </h3>
+            <p className="text-[10px] text-(--text-muted) mt-0.5">Analyse comparative — Domaine Forestier</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 text-(--text-muted) hover:text-(--text-main) hover:bg-(--bg-main) rounded-lg">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto flex-1">
+          {/* Layer selectors */}
+          <div className="px-5 py-4 space-y-3 border-b border-(--border-color)">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[9px] font-bold uppercase tracking-wider text-blue-500 mb-1 block">Couche A</label>
+                <select value={layerA} onChange={e => setLayerA(e.target.value)} className={sel}>
+                  {customLayers.map((l: any) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[9px] font-bold uppercase tracking-wider text-emerald-500 mb-1 block">Couche B</label>
+                <select value={layerB} onChange={e => setLayerB(e.target.value)} className={sel}>
+                  {customLayers.map((l: any) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Comparison table */}
+          {layerA && layerB && layerA !== layerB && sA && sB ? (
+            <div className="px-5 py-4 space-y-4">
+              {/* Header row */}
+              <div className="grid grid-cols-3 gap-2 pb-2">
+                <div />
+                <div className="text-center">
+                  <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wide text-blue-500 bg-blue-500/10 px-2 py-1 rounded-lg">
+                    <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" style={{ backgroundColor: lA?.color }} /> A
+                  </span>
+                  <p className="text-[9px] text-(--text-muted) mt-0.5 truncate">{lA?.name}</p>
+                </div>
+                <div className="text-center">
+                  <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wide text-emerald-500 bg-emerald-500/10 px-2 py-1 rounded-lg">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" style={{ backgroundColor: lB?.color }} /> B
+                  </span>
+                  <p className="text-[9px] text-(--text-muted) mt-0.5 truncate">{lB?.name}</p>
+                </div>
+              </div>
+
+              <div className="bg-(--bg-main) rounded-xl border border-(--border-color) px-3 divide-y divide-(--border-color)">
+                <MetricRow
+                  label="Surface"
+                  a={sA.area > 0 ? (sA.area < 10000 ? `${sA.area.toFixed(0)} m²` : `${(sA.area/10000).toFixed(3)} ha`) : '—'}
+                  b={sB.area > 0 ? (sB.area < 10000 ? `${sB.area.toFixed(0)} m²` : `${(sB.area/10000).toFixed(3)} ha`) : '—'}
+                />
+                <MetricRow
+                  label="Périmètre"
+                  a={sA.perim > 0 ? `${sA.perim.toFixed(3)} km` : '—'}
+                  b={sB.perim > 0 ? `${sB.perim.toFixed(3)} km` : '—'}
+                />
+                <MetricRow
+                  label="Points"
+                  a={sA.pointCount > 0 ? String(sA.pointCount) : '—'}
+                  b={sB.pointCount > 0 ? String(sB.pointCount) : '—'}
+                />
+                <MetricRow
+                  label="Type"
+                  a={lA?.type === 'static_polygon' ? 'Référence' : lA?.type === 'drawn' ? 'Dessin' : 'Import'}
+                  b={lB?.type === 'static_polygon' ? 'Référence' : lB?.type === 'drawn' ? 'Dessin' : 'Import'}
+                />
+                <div className="grid grid-cols-3 gap-2 py-2">
+                  <span className="text-[10px] text-(--text-muted) font-medium self-center text-center">Domaine F.</span>
+                  {[sA, sB].map((s, i) => {
+                    const { label, color } = chevLabel(s?.chev);
+                    return (
+                      <span key={i} className="text-[10px] font-bold text-center rounded-lg py-1 px-1" style={{ backgroundColor: color + '20', color }}>
+                        {label}
+                      </span>
+                    );
+                  })}
+                </div>
+                {sA.chev && sB.chev && (
+                  <MetricRow
+                    label="% Chevauch."
+                    a={`${sA.chev.totalPercentage.toFixed(1)}%`}
+                    b={`${sB.chev.totalPercentage.toFixed(1)}%`}
+                  />
+                )}
+              </div>
+
+              {/* Diff highlight */}
+              {sA.area > 0 && sB.area > 0 && (
+                <div className="bg-(--bg-main) rounded-xl border border-(--border-color) px-3 py-2.5">
+                  <p className="text-[9px] font-bold uppercase tracking-wider text-(--text-muted) mb-1.5">Différence de surface</p>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-2 rounded-full bg-(--border-color) overflow-hidden relative">
+                      <div className="h-full rounded-full absolute left-0 top-0 transition-all" style={{ width: `${Math.min(100, (sA.area / Math.max(sA.area, sB.area)) * 100)}%`, backgroundColor: lA?.color || '#3b82f6' }} />
+                    </div>
+                    <span className="text-[10px] font-black font-mono text-(--text-main) w-20 text-right">
+                      {sA.area > sB.area
+                        ? `A + ${((sA.area - sB.area) / 10000).toFixed(3)} ha`
+                        : `B + ${((sB.area - sA.area) / 10000).toFixed(3)} ha`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <div className="flex-1 h-2 rounded-full bg-(--border-color) overflow-hidden relative">
+                      <div className="h-full rounded-full absolute left-0 top-0 transition-all" style={{ width: `${Math.min(100, (sB.area / Math.max(sA.area, sB.area)) * 100)}%`, backgroundColor: lB?.color || '#22c55e' }} />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : layerA === layerB ? (
+            <div className="px-5 py-8 text-center text-(--text-muted)">
+              <AlertTriangle className="w-6 h-6 mx-auto mb-2 opacity-50" />
+              <p className="text-[11px]">Sélectionnez deux couches différentes</p>
+            </div>
+          ) : (
+            <div className="px-5 py-8 text-center text-(--text-muted)">
+              <p className="text-[11px]">Sélectionnez deux couches pour comparer</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-(--border-color) shrink-0">
+          <button onClick={onClose} className="w-full py-2 text-[11px] font-semibold text-(--text-muted) hover:text-(--text-main) border border-(--border-color) hover:border-(--brand)/40 rounded-lg transition-all">
+            Fermer
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -2398,13 +2649,19 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
                 className="p-0.5 text-red-400 hover:text-red-500 shrink-0"><X className="w-3.5 h-3.5" /></button>
             </div>
           ) : (
-            <p
-              className={cn("text-[12px] font-semibold leading-tight truncate", layer.visible ? "text-(--text-main)" : "text-(--text-muted)")}
-              onDoubleClick={() => { if (onRename) { setRenameVal(layer.name); setIsRenaming(true); } }}
-              title={onRename ? `Double-clic pour renommer: ${layer.name}` : layer.name}
-            >
-              {layer.name}
-            </p>
+            <div className="flex-1 min-w-0 cursor-pointer group/name" onDoubleClick={() => { if (onRename) { setRenameVal(layer.name); setIsRenaming(true); } }}>
+              <p
+                className={cn("text-[12px] font-semibold leading-tight truncate", layer.visible ? "text-(--text-main)" : "text-(--text-muted)")}
+                title={onRename ? `Double-clic pour renommer` : layer.name}
+              >
+                {layer.name}
+              </p>
+              {onRename && (
+                <p className="text-[8px] text-(--text-muted) opacity-0 group-hover/name:opacity-60 transition-opacity font-medium">
+                  ✏ double-clic pour renommer
+                </p>
+              )}
+            </div>
           )}
           <p className="text-[9px] text-(--text-muted) uppercase tracking-wide font-medium">
             {layer.type === 'static_polygon' ? 'référence' : layer.type === 'drawn' ? 'dessin' : 'import'}
