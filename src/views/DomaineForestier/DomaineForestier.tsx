@@ -508,6 +508,65 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     return { lng: p[0], lat: p[1] };
   };
 
+  // ── الربط المكاني مع قسم المنازعات عبر window (لا استيراد ⇒ لا خطأ مسار) — النقطة 1 ──
+  const [pickingForCase, setPickingForCase] = useState<boolean>(() => { try { return !!(window as any).__anefParcelPicking; } catch { return false; } });
+  useEffect(() => {
+    const sync = () => { try { setPickingForCase(!!(window as any).__anefParcelPicking); } catch {} };
+    sync();
+    window.addEventListener('parcel:pick-requested', sync);
+    window.addEventListener('parcel:pick-cancelled', sync);
+    window.addEventListener('parcel:delivered', sync);
+    return () => {
+      window.removeEventListener('parcel:pick-requested', sync);
+      window.removeEventListener('parcel:pick-cancelled', sync);
+      window.removeEventListener('parcel:delivered', sync);
+    };
+  }, []);
+
+  const cancelParcelPick = () => {
+    try { (window as any).__anefParcelPicking = false; } catch {}
+    window.dispatchEvent(new CustomEvent('parcel:pick-cancelled'));
+    setPickingForCase(false);
+  };
+
+  /** يبني بطاقة تموقع القطعة (هندسة + مساحة + مركز + لامبير + إقليم + تداخل) ويُسلّمها لملف القضية. */
+  const attachParcelToCase = () => {
+    const layer = lastImportedLayer;
+    if (!layer || !layer.geojson) { addToast({ type: 'warning', title: 'لا توجد قطعة محدّدة', msg: 'ارسم القطعة على الخريطة أولاً' }); return; }
+    try {
+      const gj = layer.geojson;
+      const feat = gj.type === 'FeatureCollection'
+        ? (gj.features.find((f: any) => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')) || gj.features[0])
+        : gj;
+      const centroid = turf.centroid(feat);
+      const [lng, lat] = centroid.geometry.coordinates as [number, number];
+      let areaM2 = 0; try { areaM2 = turf.area(feat); } catch { areaM2 = layer.chevauchement?.importedArea || 0; }
+      let perimeterKm = 0; try { perimeterKm = turf.length(feat, { units: 'kilometers' }); } catch {}
+      const lam = calcLambert(lat, lng);
+      const chev = layer.chevauchement;
+      const location = {
+        geojson: feat,
+        centroidLat: lat, centroidLng: lng,
+        lambertX: parseFloat(lam.x), lambertY: parseFloat(lam.y),
+        areaM2, perimeterKm,
+        province: layer.province || null,
+        overlap: chev ? {
+          globalPosition: chev.globalPosition,
+          totalPercentage: chev.totalPercentage,
+          totalIntersectionArea: chev.totalIntersectionArea,
+          hits: chev.hits.map(h => ({ foret: h.foret, foretAr: h.foretAr, canton: h.canton, intersectionArea: h.intersectionArea, percentage: h.percentage, position: h.position })),
+        } : null,
+        capturedAt: new Date().toISOString(),
+      };
+      try { (window as any).__anefParcelPicking = false; } catch {}
+      try { sessionStorage.setItem('anef_parcel_pending', JSON.stringify(location)); } catch {}
+      window.dispatchEvent(new CustomEvent('parcel:delivered', { detail: location }));
+      window.dispatchEvent(new CustomEvent('anef:return-from-map'));
+      setPickingForCase(false);
+      addToast({ type: 'success', title: 'أُرفقت القطعة بالملف ✓', msg: 'عُد إلى قسم المنازعات لإكمال الملف' });
+    } catch (e) { addToast({ type: 'error', title: 'تعذّر الإرفاق', msg: String((e as Error)?.message || e) }); }
+  };
+
   // ── Layer imported: run chevauchement, auto-load forest if needed ──────────
   const handleLayerImported = (layerId: string, name: string, geojson: any) => {
     const runAnalysis = (forestData: any) => {
@@ -631,6 +690,26 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* ── وضع تحديد قطعة لملف قضائي (النقطة 1) ── */}
+        {pickingForCase && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1003] pointer-events-auto w-[min(92%,560px)]">
+            <div className="flex items-center gap-3 bg-emerald-600 text-white rounded-2xl shadow-2xl px-4 py-2.5">
+              <MapPin className="w-4 h-4 shrink-0" />
+              <p className="text-[12px] font-bold flex-1 leading-snug">
+                وضع تحديد القطعة لملف قضائي — ارسم القطعة (يُحسب التداخل تلقائياً){lastImportedLayer ? ' ثم أرفقها' : ''}.
+              </p>
+              <button onClick={attachParcelToCase} disabled={!lastImportedLayer}
+                className="shrink-0 bg-white text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed font-bold text-[12px] px-3 py-1.5 rounded-lg transition-colors">
+                إرفاق القطعة بالملف
+              </button>
+              <button onClick={cancelParcelPick} title="إلغاء"
+                className="shrink-0 text-white/80 hover:text-white transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         )}
 

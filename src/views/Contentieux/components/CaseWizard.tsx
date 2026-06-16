@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronRight, ChevronLeft, Save, Plus, Trash2, X, AlertCircle, UserCog, CalendarClock, MapPin, FolderOpen } from 'lucide-react';
 import { Case } from '../Contentieux';
+import { parcelBridge, formatOverlapSummary, ParcelLocation } from './parcelBridge';
 
 const COURTS_BY_LEVEL: Record<string, string[]> = {
   'ابتدائية': [
@@ -69,6 +70,50 @@ export function CaseWizard({ initialData, onSave, onCancel }: CaseWizardProps) {
 
   const updateField = (field: keyof Case, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));
+  };
+
+  // ── الربط المكاني: استقبال التموقع من خريطة الملك الغابوي (النقطة 1) ──
+  const [awaitingParcel, setAwaitingParcel] = useState(false);
+  const applyParcelLocation = (loc: ParcelLocation) => {
+    if (!loc) return;
+    setAwaitingParcel(false);
+    setFormData(prev => ({
+      ...prev,
+      geoLat: loc.centroidLat.toFixed(6),
+      geoLng: loc.centroidLng.toFixed(6),
+      geoPolygon: (() => { try { return JSON.stringify(loc.geojson?.geometry || loc.geojson); } catch { return prev.geoPolygon; } })(),
+      parcelArea: (loc.areaM2 / 10000).toFixed(2),
+      geoProvince: loc.province || prev.geoProvince,
+      geoOverlap: formatOverlapSummary(loc),
+      geoPosition: loc.overlap?.globalPosition || prev.geoPosition,
+      geoOverlapPct: loc.overlap?.totalPercentage,
+    }));
+    setStep(6);
+  };
+
+  // عند التحميل: التقط أي قطعة مُسلَّمة محفوظة (حالة تبديل العرض وإعادة فتح المعالج)
+  React.useEffect(() => {
+    try {
+      const pending = sessionStorage.getItem('anef_parcel_pending');
+      if (pending) { sessionStorage.removeItem('anef_parcel_pending'); applyParcelLocation(JSON.parse(pending)); }
+    } catch {}
+  }, []);
+
+  // أثناء بقاء المعالج مفتوحاً (دون تبديل عرض): استقبل فورياً
+  React.useEffect(() => {
+    const onDelivered = (e: Event) => {
+      const loc = (e as CustomEvent).detail as ParcelLocation;
+      if (loc) { try { sessionStorage.removeItem('anef_parcel_pending'); } catch {} applyParcelLocation(loc); }
+    };
+    window.addEventListener('parcel:delivered', onDelivered);
+    return () => { window.removeEventListener('parcel:delivered', onDelivered); };
+  }, []);
+
+  const startParcelPick = () => {
+    setAwaitingParcel(true);
+    // احفظ مسودّة الملف الحالية كي تُستعاد بعد العودة من الخريطة (تبديل العرض يُلغي تحميل المعالج)
+    try { sessionStorage.setItem('anef_wizard_draft', JSON.stringify(formData)); } catch {}
+    parcelBridge.requestPick();
   };
 
   const handleSave = () => {
@@ -500,7 +545,37 @@ export function CaseWizard({ initialData, onSave, onCancel }: CaseWizardProps) {
 
               {/* الموقع الجغرافي والقطعة الغابوية */}
               <div className="bg-white p-4 rounded-xl border border-stone-200 shadow-sm space-y-4">
-                <h3 className="font-bold text-sm text-stone-700 flex items-center gap-2"><MapPin className="size-4 text-emerald-600" /> الموقع الجغرافي والقطعة الغابوية</h3>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <h3 className="font-bold text-sm text-stone-700 flex items-center gap-2"><MapPin className="size-4 text-emerald-600" /> الموقع الجغرافي والقطعة الغابوية</h3>
+                  <button type="button" onClick={startParcelPick}
+                    className="flex items-center gap-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-2 rounded-lg shadow-sm transition-colors">
+                    <MapPin className="size-4" /> تحديد التموقع وحساب التداخل على الخريطة
+                  </button>
+                </div>
+
+                {awaitingParcel && (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2.5 text-[12px] text-emerald-800 leading-relaxed">
+                    <strong>وضع التحديد مُفعّل.</strong> افتح قسم «الملك الغابوي»، ارسم القطعة موضوع النزاع (يُحسب التداخل تلقائياً)، ثم اضغط <strong>«إرفاق القطعة بملف القضية»</strong>. ستُملأ الحقول هنا تلقائياً.
+                  </div>
+                )}
+
+                {formData.geoOverlap && (
+                  <div className="bg-stone-50 border border-stone-200 rounded-xl p-3 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-stone-600">التداخل مع الملك الغابوي</span>
+                      {formData.geoPosition && (
+                        <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                          (formData.geoPosition.includes('خارج')) ? 'bg-stone-200 text-stone-600'
+                          : (formData.geoPosition.includes('جزئيا')) ? 'bg-amber-100 text-amber-700'
+                          : 'bg-red-100 text-red-700'}`}>
+                          {formData.geoPosition}{formData.geoOverlapPct != null ? ` — ${formData.geoOverlapPct.toFixed(1)}%` : ''}
+                        </span>
+                      )}
+                    </div>
+                    <pre className="text-[11px] text-stone-700 whitespace-pre-wrap font-sans leading-relaxed">{formData.geoOverlap}</pre>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                   <div className="space-y-1.5">
                      <label className="text-sm font-medium text-stone-700">مرجع القطعة / الرسم العقاري</label>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Sidebar } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
 import { Dashboard } from './views/Dashboard/Dashboard';
@@ -37,6 +37,18 @@ const { isAuthenticated, isLoading, login, user, logout } = useAuth();
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const { layout, mode, setMode, transparency } = useTheme();
+
+  // الربط المكاني (قسم المنازعات ⇄ خريطة الملك الغابوي): تبديل العرض تلقائياً
+  useEffect(() => {
+    const toMap = () => setCurrentView('domaine');
+    const toBack = () => setCurrentView('contentieux');
+    window.addEventListener('anef:open-map', toMap);
+    window.addEventListener('anef:return-from-map', toBack);
+    return () => {
+      window.removeEventListener('anef:open-map', toMap);
+      window.removeEventListener('anef:return-from-map', toBack);
+    };
+  }, []);
   if (isLoading) return (
   <div className="min-h-screen bg-black flex items-center justify-center">
     <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
@@ -293,4 +305,3 @@ return <Login onLogin={login} />;
     </div>
   );
 }
-

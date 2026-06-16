@@ -1534,6 +1534,20 @@ export function Contentieux() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [wizardData, setWizardData] = useState<Case | null>(null);
+
+  // استئناف معالج الملف بعد العودة من خريطة الملك الغابوي (النقطة 1):
+  // تبديل العرض يُلغي تحميل هذا القسم، فنستعيد المسودّة المحفوظة ونعيد فتح المعالج.
+  useEffect(() => {
+    try {
+      const draft = sessionStorage.getItem('anef_wizard_draft');
+      if (draft) {
+        sessionStorage.removeItem('anef_wizard_draft');
+        setWizardData(JSON.parse(draft) as Case);
+        setIsWizardOpen(true);
+      }
+    } catch {}
+  }, []);
+
   const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [showOverview, setShowOverview] = useState(false);
   const [cases, setCases] = useState<Case[]>([]);
