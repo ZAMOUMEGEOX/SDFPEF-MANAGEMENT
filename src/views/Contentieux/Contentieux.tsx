@@ -206,6 +206,57 @@ function findMatchLocations(c: Case, query: string): string[] {
   return found;
 }
 
+// ─── المرجع الترابي: جهة طنجة-تطوان-الحسيمة ─────────────────────────────────────
+// عدّل هذه القوائم لتطابق نفوذكم الترابي بدقة. تُدمج تلقائياً مع المحاكم الموجودة فعلاً في البيانات،
+// فلن تُفقد أي محكمة مسجَّلة حتى لو لم تكن مدرجة هنا.
+const REGION_COURTS: string[] = [
+  // محاكم الاستئناف
+  'محكمة الاستئناف بطنجة',
+  'محكمة الاستئناف بتطوان',
+  // المحاكم الابتدائية
+  'المحكمة الابتدائية بطنجة',
+  'المحكمة الابتدائية بتطوان',
+  'المحكمة الابتدائية بالعرائش',
+  'المحكمة الابتدائية بالقصر الكبير',
+  'المحكمة الابتدائية بالحسيمة',
+  'المحكمة الابتدائية بشفشاون',
+  'المحكمة الابتدائية بوزان',
+  'المحكمة الابتدائية بالمضيق-الفنيدق',
+];
+
+// المديريات الإقليمية للوكالة الوطنية للمياه والغابات بنفوذ جهة طنجة-تطوان-الحسيمة (قابلة للتعديل)
+const REGION_DIRECTORATES: string[] = [
+  'المديرية الإقليمية طنجة-أصيلة',
+  'المديرية الإقليمية الفحص-أنجرة',
+  'المديرية الإقليمية تطوان',
+  'المديرية الإقليمية المضيق-الفنيدق',
+  'المديرية الإقليمية العرائش',
+  'المديرية الإقليمية الحسيمة',
+  'المديرية الإقليمية شفشاون',
+  'المديرية الإقليمية وزان',
+];
+
+/** يدمج قائمة مرجعية ثابتة مع القيم الموجودة في البيانات دون تكرار، مع إبقاء الترتيب المرجعي أولاً */
+function mergeWithData(reference: string[], fromData: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of [...reference, ...fromData]) {
+    const k = (v || '').trim();
+    if (k && !seen.has(k)) { seen.add(k); out.push(k); }
+  }
+  return out;
+}
+
+/** يولّد قائمة سنوات تنازلياً من السنة الحالية إلى أقدم سنة في البيانات (10 سنوات كحد أدنى) */
+function buildYearOptions(dataYears: string[]): string[] {
+  const now = new Date().getFullYear();
+  const nums = dataYears.map(y => parseInt(y, 10)).filter(n => !isNaN(n));
+  const min = Math.min(now - 9, ...(nums.length ? nums : [now]));
+  const out: string[] = [];
+  for (let y = now; y >= min; y--) out.push(String(y));
+  return out;
+}
+
 // ─── Fuzzy Search ─────────────────────────────────────────────────────────────
 
 const normalizeAr = (t: string) =>
@@ -1408,6 +1459,7 @@ export function Contentieux() {
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [wizardData, setWizardData] = useState<Case | null>(null);
   const [isStatsOpen, setIsStatsOpen] = useState(false);
+  const [showOverview, setShowOverview] = useState(false);
   const [cases, setCases] = useState<Case[]>([]);
   const [pvRecords, setPvRecords] = useState<PVRecord[]>([]);
   const [pvLocalTab, setPvLocalTab] = useState<'cases'|'pvs'>('cases');
@@ -1462,8 +1514,8 @@ export function Contentieux() {
   const [reportLabel, setReportLabel] = useState('');
 
   const uniqueTypes = useMemo(() => Array.from(new Set(cases.map(c => c.type).filter(Boolean))), [cases]);
-  const uniqueCourts = useMemo(() => Array.from(new Set(cases.map(c => c.court).filter(Boolean))), [cases]);
-  const uniqueYears = useMemo(() => Array.from(new Set(cases.map(c => c.date?.substring(0, 4)).filter(Boolean))).sort((a, b) => Number(b) - Number(a)), [cases]);
+  const uniqueCourts = useMemo(() => mergeWithData(REGION_COURTS, cases.map(c => c.court).filter(Boolean) as string[]), [cases]);
+  const uniqueYears = useMemo(() => buildYearOptions(cases.map(c => c.date?.substring(0, 4)).filter(Boolean) as string[]), [cases]);
   const uniqueExecStatuses = useMemo(() => Array.from(new Set(cases.map(c => c.executionStatus).filter(Boolean))) as string[], [cases]);
   const uniqueJudges = useMemo(() => Array.from(new Set(cases.map(c => c.judge).filter(Boolean))) as string[], [cases]);
   const uniqueSections = useMemo(() => Array.from(new Set(cases.map(c => c.section).filter(Boolean))) as string[], [cases]);
@@ -1713,6 +1765,25 @@ export function Contentieux() {
         {/* ── قسم الملفات القضائية ── */}
         {!selectedCase && !selectedPV && pvLocalTab === 'cases' && (
           <div className="space-y-5">
+            {/* شريط طي النظرة العامة: يقلّل الازدحام ويظهر عند الطلب */}
+            <div className="flex items-center justify-between bg-white rounded-2xl border border-stone-200 shadow-sm px-4 py-2.5">
+              <button onClick={() => setShowOverview(v => !v)}
+                className="flex items-center gap-2 text-sm font-bold text-stone-700 hover:text-emerald-700 transition-colors">
+                <PieChartIcon className="size-4 text-emerald-600" />
+                نظرة عامة سريعة
+                <ChevronDown className={`size-4 transition-transform ${showOverview ? 'rotate-180' : ''}`} />
+              </button>
+              <div className="flex items-center gap-3 text-xs text-stone-500">
+                <span className="font-bold text-stone-700">{cases.length}</span> ملف
+                <span className="text-stone-300">•</span>
+                <span className="font-bold text-blue-600">{cases.filter(c => !c.status.includes('حكم') && !c.status.includes('قرار')).length}</span> رائج
+                {criticalDeadlinesCount > 0 && <><span className="text-stone-300">•</span><span className="font-bold text-red-600">{criticalDeadlinesCount}</span> أجل حرج</>}
+                <button onClick={() => setIsStatsOpen(true)} className="mr-2 text-emerald-700 hover:underline font-bold">تفاصيل ومبيانات ←</button>
+              </div>
+            </div>
+
+            {showOverview && (
+            <div className="space-y-5 animate-in fade-in slide-in-from-top-2 duration-200">
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {[
                 { label: 'إجمالي القضايا', value: cases.length, icon: Scale, c: 'emerald', onClick: () => { resetFilters(); scrollToTable(); } },
@@ -1743,6 +1814,8 @@ export function Contentieux() {
                 </div>
               ))}
             </div>
+            </div>
+            )}
 
             <div className={tableExpanded
               ? 'fixed inset-0 z-50 bg-white overflow-y-auto'
@@ -2002,7 +2075,7 @@ export function Contentieux() {
                           </td>
                           {/* أدوات */}
                           <td className={densityCls.cell} onClick={e => e.stopPropagation()}>
-                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <div className="flex items-center gap-1 transition-opacity">
                               <button onClick={() => setSelectedCase(c)} title="فتح الملف" className="p-1.5 bg-white text-stone-500 hover:text-emerald-700 hover:bg-emerald-50 border border-stone-200 rounded-lg"><Eye className="size-3.5" /></button>
                               <button onClick={() => exportSingleCaseXLSX(c)} title="Excel" className="p-1.5 bg-white text-stone-500 hover:text-emerald-700 hover:bg-emerald-50 border border-stone-200 rounded-lg"><FileSpreadsheet className="size-3.5" /></button>
                               <button onClick={() => exportCasePDF(c)} title="بطاقة PDF" className="p-1.5 bg-white text-stone-500 hover:text-rose-700 hover:bg-rose-50 border border-stone-200 rounded-lg"><FileDown className="size-3.5" /></button>
