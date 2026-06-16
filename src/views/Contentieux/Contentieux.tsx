@@ -206,29 +206,6 @@ function findMatchLocations(c: Case, query: string): string[] {
   return found;
 }
 
-const recentCases: Case[] = [
-  {
-    id: 'CTX-2024-001', mahakimId: '2024/1101/221', date: '2024-03-15',
-    type: 'مدني', subject: 'الترامي على الملك الغابوي',
-    court: 'المحكمة الابتدائية بتطوان', status: 'جلسة مبرمجة',
-    nextSession: '2024-06-15', defendant: 'أحمد التطواني',
-    procedures: [
-      { date: '2024-03-15', action: 'تسجيل المقال', decision: '-' },
-      { date: '2024-05-15', action: 'إدراج الجلسة', decision: 'تأخير لإعداد الدفاع' }
-    ],
-    parties: [
-      { role: 'المدعي', name: 'إدارة المياه والغابات' },
-      { role: 'المدعى عليه', name: 'أحمد التطواني' }
-    ]
-  },
-  {
-    id: 'CTX-2024-002', mahakimId: '2023/7101/458', date: '2023-11-02',
-    type: 'جنحي', subject: 'قطع الأشجار بدون مرخص',
-    court: 'محكمة الاستئناف بالقنيطرة', status: 'محجوز للمداولة',
-    defendant: 'مجهول'
-  },
-];
-
 // ─── Fuzzy Search ─────────────────────────────────────────────────────────────
 
 const normalizeAr = (t: string) =>
@@ -289,7 +266,7 @@ function buildCaseSheetRows(c: Case): (string | number)[][] {
 
   // ── Info block ──
   rows.push(['بطاقة الملف', '', '', '']);
-  rows.push(['المرجع الداخلي', c.id, 'رقم محاكم', c.mahakimId || '']);
+  rows.push(['رقم الملف بالمحكمة', c.mahakimId || '', 'رقم محضر الضابطة', c.pvNumber || '']);
   rows.push(['الرقم الوطني للملف', c.nationalId || '', 'المحكمة', c.court]);
   rows.push(['نوع الدعوى', c.type, 'الشعبة', c.section || '']);
   rows.push(['القاضي المقرر', c.judge || '', 'تاريخ التسجيل', c.date]);
@@ -422,7 +399,7 @@ export function exportAllCasesXLSX(cases: Case[]) {
   const wb = XLSX.utils.book_new();
 
   const headers = [
-    'المرجع الداخلي', 'رقم محاكم', 'الرقم الوطني للملف',
+    'رقم محضر الضابطة', 'رقم الملف بالمحكمة', 'الرقم الوطني للملف',
     'المحكمة', 'درجة المحكمة', 'الشعبة', 'القاضي المقرر',
     'تاريخ التسجيل', 'نوع الدعوى', 'موضوع النزاع',
     'الوضعية', 'الجلسة القادمة', 'الخصم',
@@ -442,7 +419,7 @@ export function exportAllCasesXLSX(cases: Case[]) {
     const nd = nearestDeadline(c);
 
     return [
-      c.id, c.mahakimId || '', c.nationalId || '',
+      c.pvNumber || '', c.mahakimId || '', c.nationalId || '',
       c.court, c.courtLevel || '', c.section || '', c.judge || '',
       c.date, c.type, c.subject,
       c.status, c.nextSession || '', c.defendant || '',
@@ -583,13 +560,14 @@ function buildCaseCardHTML(c: Case): string {
         <div style="font-size:11px; color:#78716c; margin-top:2px;">الوكالة الوطنية للمياه والغابات — قسم المنازعات</div>
       </div>
       <div style="text-align:left;">
-        <div style="font-size:16px; font-weight:900; font-family:monospace; color:#047857;">${esc(c.mahakimId || c.id)}</div>
+        <div style="font-size:16px; font-weight:900; font-family:monospace; color:#047857;">${esc(c.mahakimId || c.pvNumber || '—')}</div>
         <div style="font-size:10px; color:#a8a29e;">${esc(new Date().toLocaleDateString('fr-MA'))}</div>
       </div>
     </div>
 
     <div style="display:flex; flex-wrap:wrap; border:1px solid #e7e5e4; border-radius:10px; overflow:hidden;">
-      ${row('المرجع الداخلي', c.id)}
+      ${row('رقم الملف بالمحكمة', c.mahakimId)}
+      ${row('رقم محضر الضابطة', c.pvNumber)}
       ${row('الرقم الوطني للملف', c.nationalId)}
       ${row('المحكمة', c.court)}
       ${row('درجة المحكمة / الشعبة', [c.courtLevel, c.section].filter(Boolean).join(' — '))}
@@ -1445,7 +1423,7 @@ export function Contentieux() {
   };
 
   useEffect(() => {
-    loadCases().then(({ data }) => { setCases(data.length > 0 ? data : recentCases); setIsLoading(false); });
+    loadCases().then(({ data }) => { setCases(data); setIsLoading(false); });
     loadPVRecordsDB().then(data => setPvRecords(data));
   }, []);
 
@@ -1475,7 +1453,7 @@ export function Contentieux() {
   const [deadlineFilter, setDeadlineFilter] = useState<'all' | 'soon'>('all');
   const [repeatFilter, setRepeatFilter] = useState<'all' | 'repeat'>('all');
   const [sessionWeekFilter, setSessionWeekFilter] = useState<'all' | 'week'>('all');
-  const [densityLevel, setDensityLevel] = useState<'compact' | 'normal' | 'large'>('normal');
+  const [densityLevel] = useState<'compact' | 'normal' | 'large'>('normal');
   const [showBulkMenu, setShowBulkMenu] = useState(false);
   const [tableExpanded, setTableExpanded] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
@@ -1554,6 +1532,14 @@ export function Contentieux() {
     return () => document.removeEventListener('mousedown', onClickOutside);
   }, [showBulkMenu]);
   const scrollToTable = () => tableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  // Esc يصغّر الجدول الموسّع
+  useEffect(() => {
+    if (!tableExpanded) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTableExpanded(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tableExpanded]);
 
   // أحجام الجدول حسب مستوى التكبير المختار
   const densityCls = densityLevel === 'compact'
@@ -1770,23 +1756,9 @@ export function Contentieux() {
                     <Search className="size-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
                     {searchQuery && <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600"><X className="size-4" /></button>}
                   </div>
-                  {/* أدوات العرض: الكثافة + التوسيع لملء الصفحة */}
+                  {/* أداة العرض: توسيع لملء الشاشة / تصغير (Esc يصغّر أيضاً) */}
                   <div className="flex gap-2 shrink-0">
-                    <div className="flex items-center bg-white border border-stone-200 rounded-xl overflow-hidden text-stone-500">
-                      <button onClick={() => setDensityLevel('compact')} title="عرض مضغوط (تفاصيل أكثر في الشاشة)"
-                        className={`px-2.5 py-2.5 transition-colors ${densityLevel === 'compact' ? 'bg-emerald-50 text-emerald-700' : 'hover:bg-stone-50'}`}>
-                        <Minimize2 className="size-4" />
-                      </button>
-                      <button onClick={() => setDensityLevel('normal')} title="عرض عادي"
-                        className={`px-2.5 py-2.5 text-[10px] font-bold border-x border-stone-200 transition-colors ${densityLevel === 'normal' ? 'bg-emerald-50 text-emerald-700' : 'hover:bg-stone-50'}`}>
-                        100%
-                      </button>
-                      <button onClick={() => setDensityLevel('large')} title="عرض موسّع (نص أكبر لتفاصيل أوضح)"
-                        className={`px-2.5 py-2.5 transition-colors ${densityLevel === 'large' ? 'bg-emerald-50 text-emerald-700' : 'hover:bg-stone-50'}`}>
-                        <Maximize2 className="size-4" />
-                      </button>
-                    </div>
-                    <button onClick={() => setTableExpanded(v => !v)} title={tableExpanded ? 'تصغير' : 'توسيع الجدول لملء الصفحة'}
+                    <button onClick={() => setTableExpanded(v => !v)} title={tableExpanded ? 'تصغير (Esc)' : 'توسيع الجدول لملء الشاشة'}
                       className="flex items-center gap-2 px-3 py-2.5 bg-white border border-stone-200 text-stone-700 rounded-xl text-sm font-bold hover:bg-stone-50 transition-colors">
                       {tableExpanded ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
                       <span className="hidden sm:inline">{tableExpanded ? 'تصغير' : 'توسيع'}</span>
@@ -1843,10 +1815,6 @@ export function Contentieux() {
                     <button onClick={() => setShowReportModal(true)}
                       className="flex items-center gap-2 px-3 py-2.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-xl text-sm font-bold border border-blue-200">
                       <ListChecks className="size-4" /> تقرير دوري
-                    </button>
-                    <button onClick={() => window.print()} title="طباعة"
-                      className="flex items-center gap-2 px-3 py-2.5 bg-white border border-stone-200 text-stone-700 rounded-xl text-sm font-bold hover:bg-stone-50">
-                      <Printer className="size-4" /> <span className="hidden sm:inline">طباعة</span>
                     </button>
                   </div>
                 </div>
