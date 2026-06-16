@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { CaseWizard } from './components/CaseWizard';
+import { parcelBridge, formatOverlapSummary, ParcelLocation } from './components/parcelBridge';
 import { ContentieuxStats, type StatsNavigateAction } from './components/ContentieuxStats';
 import { loadCases, saveCase, deleteCase, deleteCases } from '@/lib/contentieux';
 import { supabase } from '@/lib/supabase';
@@ -1279,6 +1280,10 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit, allCases, onSelectCase
             className="flex items-center gap-2 px-3 py-2 bg-stone-50 text-stone-700 hover:bg-stone-100 rounded-lg font-bold text-sm border border-stone-200">
             <Printer className="size-4" /> طباعة
           </button>
+          <button onClick={() => { try { sessionStorage.setItem('anef_parcel_target', JSON.stringify({ kind: 'case', id: caseData.id })); } catch {} parcelBridge.requestPick(); }}
+            className="flex items-center gap-2 px-3 py-2 bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg font-bold text-sm shadow-sm">
+            <MapPin className="size-4" /> {caseData.geoOverlap ? 'تحديث موقع القطعة' : 'تحديد موقع القطعة'}
+          </button>
           <button onClick={onEdit}
             className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg font-bold text-sm border border-blue-200">
             <Activity className="size-4" /> تعديل
@@ -1289,6 +1294,30 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit, allCases, onSelectCase
           </button>
         </div>
       </div>
+
+      {/* ── التموقع والتداخل مع الملك الغابوي ── */}
+      {(caseData.geoOverlap || caseData.parcelArea || caseData.geoLat) && (
+        <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm">
+          <h3 className="font-bold text-base border-b border-stone-100 pb-3 mb-4 flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2"><MapPin className="size-5 text-emerald-600" /> التموقع والتداخل مع الملك الغابوي</span>
+            {caseData.geoPosition && (
+              <span className={`text-[12px] font-bold px-2.5 py-1 rounded-full ${
+                caseData.geoPosition.includes('خارج') ? 'bg-stone-100 text-stone-600'
+                : caseData.geoPosition.includes('جزئيا') ? 'bg-amber-100 text-amber-700'
+                : 'bg-red-100 text-red-700'}`}>
+                {caseData.geoPosition}{caseData.geoOverlapPct != null ? ` — ${caseData.geoOverlapPct.toFixed(1)}%` : ''}
+              </span>
+            )}
+          </h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3 text-center">
+            {caseData.parcelArea && <div className="bg-stone-50 rounded-xl p-2.5 border border-stone-100"><p className="text-[10px] text-stone-400 font-bold">المساحة (هـ)</p><p className="font-mono font-black text-stone-700">{caseData.parcelArea}</p></div>}
+            {caseData.geoLat && <div className="bg-stone-50 rounded-xl p-2.5 border border-stone-100"><p className="text-[10px] text-stone-400 font-bold">خط العرض</p><p className="font-mono text-xs text-stone-700">{caseData.geoLat}</p></div>}
+            {caseData.geoLng && <div className="bg-stone-50 rounded-xl p-2.5 border border-stone-100"><p className="text-[10px] text-stone-400 font-bold">خط الطول</p><p className="font-mono text-xs text-stone-700">{caseData.geoLng}</p></div>}
+            {caseData.geoProvince && <div className="bg-stone-50 rounded-xl p-2.5 border border-stone-100"><p className="text-[10px] text-stone-400 font-bold">الإقليم</p><p className="text-xs font-bold text-stone-700">{caseData.geoProvince}</p></div>}
+          </div>
+          {caseData.geoOverlap && <pre className="text-[12px] text-stone-700 whitespace-pre-wrap font-sans leading-relaxed bg-stone-50 rounded-xl p-3 border border-stone-100">{caseData.geoOverlap}</pre>}
+        </div>
+      )}
 
       {/* ── الآجال القانونية: عدّادات تنازلية مبنية على دقة المسطرة المغربية ── */}
       {deadlines.length > 0 && (
@@ -1568,6 +1597,45 @@ export function Contentieux() {
     loadCases().then(({ data }) => { setCases(data); setIsLoading(false); });
     loadPVRecordsDB().then(data => setPvRecords(data));
   }, []);
+
+  // تطبيق التموقع المُلتقَط من الخريطة على الملف أو المحضر المستهدَف بعد العودة (النقطة 1)
+  const parcelApplyDoneRef = useRef(false);
+  useEffect(() => {
+    if (parcelApplyDoneRef.current) return;
+    let targetRaw: string | null = null, pendingRaw: string | null = null;
+    try { targetRaw = sessionStorage.getItem('anef_parcel_target'); pendingRaw = sessionStorage.getItem('anef_parcel_pending'); } catch {}
+    if (!targetRaw || !pendingRaw) return;
+    let target: { kind: 'case'|'pv'; id: string }, loc: ParcelLocation;
+    try { target = JSON.parse(targetRaw); loc = JSON.parse(pendingRaw); } catch { return; }
+    const geo = {
+      geoLat: loc.centroidLat.toFixed(6),
+      geoLng: loc.centroidLng.toFixed(6),
+      geoPolygon: (() => { try { return JSON.stringify(loc.geojson?.geometry || loc.geojson); } catch { return undefined; } })(),
+      parcelArea: (loc.areaM2 / 10000).toFixed(2),
+      geoProvince: loc.province || undefined,
+      geoOverlap: formatOverlapSummary(loc),
+      geoPosition: loc.overlap?.globalPosition,
+      geoOverlapPct: loc.overlap?.totalPercentage,
+    };
+    const clearKeys = () => { try { sessionStorage.removeItem('anef_parcel_target'); sessionStorage.removeItem('anef_parcel_pending'); } catch {} };
+    if (target.kind === 'case') {
+      const c = cases.find(x => x.id === target.id);
+      if (!c) return; // ننتظر تحميل الملفات
+      parcelApplyDoneRef.current = true; clearKeys();
+      const updated = { ...c, ...geo } as Case;
+      saveCase(updated).catch(() => {});
+      setCases(prev => prev.map(x => x.id === updated.id ? updated : x));
+      setSelectedPV(null); setSelectedCase(updated);
+    } else if (target.kind === 'pv') {
+      const p = pvRecords.find(x => x.id === target.id);
+      if (!p) return;
+      parcelApplyDoneRef.current = true; clearKeys();
+      const updated = { ...p, ...geo, lastSyncedAt: new Date().toISOString() } as PVRecord;
+      savePVRecordDB(updated).catch(() => {});
+      setPvRecords(prev => prev.map(x => x.id === updated.id ? updated : x));
+      setSelectedCase(null); setPvLocalTab('pvs'); setSelectedPV(updated);
+    }
+  }, [cases, pvRecords]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -2442,6 +2510,16 @@ export interface PVRecord {
   rawText: string;
   createdAt: string;
   lastSyncedAt: string;
+
+  // ── الربط المكاني (يُحسب من خريطة الملك الغابوي) — النقطة 1 ──
+  geoLat?: string;
+  geoLng?: string;
+  geoPolygon?: string;
+  parcelArea?: string;     // هكتار
+  geoProvince?: string;
+  geoOverlap?: string;     // ملخّص نصّي للتداخل
+  geoPosition?: string;    // داخل / جزئيا داخل / خارج الملك الغابوي
+  geoOverlapPct?: number;
 }
 
 
@@ -3084,6 +3162,10 @@ function PVDetail({ pv, onBack, onDelete, relatedCase, onOpenRelatedCase }: {
           </div>
         </div>
         <div className="flex gap-2">
+          <button onClick={() => { try { sessionStorage.setItem('anef_parcel_target', JSON.stringify({ kind: 'pv', id: pv.id })); } catch {} parcelBridge.requestPick(); }}
+            className="flex items-center gap-2 px-3 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold">
+            <MapPin className="size-4"/> {pv.geoOverlap ? 'تحديث الموقع' : 'تحديد موقع القطعة'}
+          </button>
           {relatedCase && (
             <button onClick={() => onOpenRelatedCase(relatedCase)}
               className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold">
@@ -3879,29 +3961,53 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
         </div>
       </div>
 
-      {/* ── تبويبا القسمين ── */}
-      <div className="flex border-b border-stone-200 bg-stone-50 shrink-0">
-        <button onClick={() => setMainTab('pv')}
-          className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-bold transition-colors border-b-2 ${
-            mainTab==='pv' ? 'border-blue-600 text-blue-700 bg-white' : 'border-transparent text-stone-500 hover:text-stone-700'
-          }`}>
-          <ShieldAlert className="size-4" />
-          محاضر الضابطة القضائية
-          {pvRecords.length > 0 && (
-            <span className="bg-blue-100 text-blue-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">{pvRecords.length}</span>
-          )}
-        </button>
-        <button onClick={() => setMainTab('files')}
-          className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-bold transition-colors border-b-2 ${
-            mainTab==='files' ? 'border-emerald-600 text-emerald-700 bg-white' : 'border-transparent text-stone-500 hover:text-stone-700'
-          }`}>
-          <Scale className="size-4" />
-          الملفات القضائية
-          {result && <span className="size-2 bg-emerald-500 rounded-full" />}
-        </button>
+      {/* ── مُحدّد المسلكين: بارز وواضح ── */}
+      <div className="px-3 py-3 border-b border-stone-200 bg-gradient-to-b from-stone-100 to-stone-50 shrink-0">
+        <p className="text-[11px] font-bold text-stone-400 mb-2 text-center">اختر مسلك البحث في بوابة محاكم</p>
+        <div className="flex gap-2 max-w-2xl mx-auto">
+          <button onClick={() => setMainTab('pv')}
+            className={`flex-1 flex items-center gap-3 px-4 py-3 rounded-2xl border-2 text-right transition-all ${
+              mainTab==='pv'
+                ? 'border-blue-600 bg-blue-600 text-white shadow-lg shadow-blue-600/20 scale-[1.02]'
+                : 'border-stone-200 bg-white text-stone-600 hover:border-blue-300 hover:bg-blue-50'
+            }`}>
+            <div className={`size-10 rounded-xl flex items-center justify-center shrink-0 ${mainTab==='pv' ? 'bg-white/20' : 'bg-blue-50'}`}>
+              <ShieldAlert className={`size-5 ${mainTab==='pv' ? 'text-white' : 'text-blue-600'}`} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-black text-sm">محاضر الضابطة القضائية</span>
+                {pvRecords.length > 0 && (
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${mainTab==='pv' ? 'bg-white/25 text-white' : 'bg-blue-100 text-blue-700'}`}>{pvRecords.length}</span>
+                )}
+              </div>
+              <p className={`text-[10px] mt-0.5 leading-tight ${mainTab==='pv' ? 'text-blue-100' : 'text-stone-400'}`}>مخالفات المياه والغابات — بحث تلقائي بالرقم</p>
+            </div>
+          </button>
+
+          <button onClick={() => setMainTab('files')}
+            className={`flex-1 flex items-center gap-3 px-4 py-3 rounded-2xl border-2 text-right transition-all ${
+              mainTab==='files'
+                ? 'border-emerald-600 bg-emerald-600 text-white shadow-lg shadow-emerald-600/20 scale-[1.02]'
+                : 'border-stone-200 bg-white text-stone-600 hover:border-emerald-300 hover:bg-emerald-50'
+            }`}>
+            <div className={`size-10 rounded-xl flex items-center justify-center shrink-0 ${mainTab==='files' ? 'bg-white/20' : 'bg-emerald-50'}`}>
+              <Scale className={`size-5 ${mainTab==='files' ? 'text-white' : 'text-emerald-600'}`} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-black text-sm">الملفات القضائية</span>
+                {result && <span className={`size-2 rounded-full ${mainTab==='files' ? 'bg-white' : 'bg-emerald-500'}`} />}
+              </div>
+              <p className={`text-[10px] mt-0.5 leading-tight ${mainTab==='files' ? 'text-emerald-100' : 'text-stone-400'}`}>الملف بالمحكمة — الجلسات والأحكام والتنفيذ</p>
+            </div>
+          </button>
+        </div>
       </div>
 
-      <div className={`flex flex-col md:flex-row flex-1 ${expandedView?'overflow-y-auto md:overflow-hidden':''}`}>
+
+      <div className={`flex flex-col md:flex-row flex-1 scroll-smooth ${expandedView?'overflow-y-auto md:overflow-hidden':''}`}
+        style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
 
         {/* ══════════════════════════════════════════════════════════════════
             اللوحة اليسرى
@@ -3931,7 +4037,8 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto min-h-0 p-3 space-y-3">
+          <div className="flex-1 overflow-y-auto min-h-0 p-3 space-y-3 scroll-smooth"
+            style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain', scrollbarWidth: 'thin' }}>
 
             {/* ════════════════════════════════════════════════
                 تبويب أ: محاضر الضابطة القضائية
@@ -4652,7 +4759,8 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
 
           {/* عرض نتائج الملف */}
           {extractMode==='parsed' && result && mainTab==='files' && (
-            <div className="absolute inset-0 bg-white overflow-y-auto p-6 z-20 animate-in fade-in duration-300">
+            <div className="absolute inset-0 bg-white overflow-y-auto p-6 z-20 animate-in fade-in duration-300 scroll-smooth"
+              style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}>
               <div className="flex justify-between items-center mb-6 pb-5 border-b border-stone-100">
                 <div>
                   <h3 className="font-bold text-2xl text-emerald-900 flex items-center gap-3">
