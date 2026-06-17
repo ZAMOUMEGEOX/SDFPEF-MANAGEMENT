@@ -3152,13 +3152,3 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
                   </button>
                 </>
               )}
-              <button onClick={onDelete} className="flex items-center gap-1.5 text-[10px] font-bold text-red-500 hover:bg-red-500/10 px-2.5 py-1.5 rounded-lg transition-colors">
-                <Trash2 className="w-3.5 h-3.5" /> Supprimer
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
