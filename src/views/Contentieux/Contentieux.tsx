@@ -3323,6 +3323,30 @@ function PVDetail({ pv, onBack, onDelete, relatedCase, onOpenRelatedCase }: {
               )}
             </div>
           </div>
+
+          {/* ── التموقع والتداخل مع الملك الغابوي ── */}
+          {(pv.geoOverlap || pv.parcelArea || pv.geoLat) && (
+            <div className="bg-white p-4 rounded-2xl border border-emerald-200 shadow-sm">
+              <h3 className="font-bold text-sm border-b border-stone-100 pb-2.5 mb-3 flex items-center justify-between gap-2">
+                <span className="flex items-center gap-2"><MapPin className="size-4 text-emerald-600" /> التموقع والتداخل مع الملك الغابوي</span>
+                {pv.geoPosition && (
+                  <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                    pv.geoPosition.includes('خارج') ? 'bg-stone-100 text-stone-600'
+                    : pv.geoPosition.includes('جزئيا') ? 'bg-amber-100 text-amber-700'
+                    : 'bg-red-100 text-red-700'}`}>
+                    {pv.geoPosition}{pv.geoOverlapPct != null ? ` — ${pv.geoOverlapPct.toFixed(1)}%` : ''}
+                  </span>
+                )}
+              </h3>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3 text-center">
+                {pv.parcelArea && <div className="bg-stone-50 rounded-lg p-2 border border-stone-100"><p className="text-[9px] text-stone-400 font-bold">المساحة (هـ)</p><p className="font-mono font-black text-sm text-stone-700">{pv.parcelArea}</p></div>}
+                {pv.geoLat && <div className="bg-stone-50 rounded-lg p-2 border border-stone-100"><p className="text-[9px] text-stone-400 font-bold">خط العرض</p><p className="font-mono text-[11px] text-stone-700">{pv.geoLat}</p></div>}
+                {pv.geoLng && <div className="bg-stone-50 rounded-lg p-2 border border-stone-100"><p className="text-[9px] text-stone-400 font-bold">خط الطول</p><p className="font-mono text-[11px] text-stone-700">{pv.geoLng}</p></div>}
+                {pv.geoProvince && <div className="bg-stone-50 rounded-lg p-2 border border-stone-100"><p className="text-[9px] text-stone-400 font-bold">الإقليم</p><p className="text-[11px] font-bold text-stone-700">{pv.geoProvince}</p></div>}
+              </div>
+              {pv.geoOverlap && <pre className="text-[11px] text-stone-700 whitespace-pre-wrap font-sans leading-relaxed bg-stone-50 rounded-lg p-3 border border-stone-100">{pv.geoOverlap}</pre>}
+            </div>
+          )}
         </div>
 
         {/* العمود الأيمن — ملخص */}
