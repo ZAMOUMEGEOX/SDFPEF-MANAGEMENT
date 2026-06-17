@@ -6,6 +6,7 @@ import {
   X, Printer, FileDown, FileText, Layers,
   Plus, Minus, MapPin, RefreshCw, Copy, Download,
 } from 'lucide-react';
+import { exportFicheDocx, exportAttestationDocx, htmlToDocx } from '../../lib/forestDocx';
 
 try {
   proj4.defs("EPSG:26191", "+proj=lcc +lat_1=33.3 +lat_0=33.3 +lon_0=-5.4 +k_0=0.999625769 +x_0=500000 +y_0=300000 +a=6378249.2 +b=6356515 +towgs84=31,146,47,0,0,0,0 +units=m +no_defs");
@@ -50,6 +51,7 @@ export interface ChevauchementResult {
   hits: ChevauchementHit[];
   intersections?: any[];
   importedGeoJSON: any; forestGeoJSON: any;
+  insideArea?: number; outsideArea?: number; outsideGeoJSON?: any;
 }
 
 export interface ImportedLayerInfo {
@@ -78,15 +80,24 @@ export function runChevauchementAnalysis(
     importedPoly = importedGeojson.type === 'Feature' ? importedGeojson : turf.feature(importedGeojson);
   }
   const importedArea = turf.area(importedPoly);
+  let impBbox: number[] | null = null;
+  try { impBbox = turf.bbox(importedPoly); } catch {}
+  const bboxOverlap = (a: number[], b: number[]) => !(a[2] < b[0] || a[0] > b[2] || a[3] < b[1] || a[1] > b[3]);
+
   const hits: ChevauchementHit[] = [];
+  const interFeatures: any[] = [];   // pour le dé-doublonnage (dissolve)
+  const candidates: any[] = [];      // parcelles forêt réellement concernées
   for (const feat of (forestGeojson?.features || [])) {
     if (!feat.geometry) continue;
     if (feat.geometry.type !== 'Polygon' && feat.geometry.type !== 'MultiPolygon') continue;
+    if (impBbox) { try { if (!bboxOverlap(impBbox, turf.bbox(feat))) continue; } catch {} }  // pré-filtre rapide
     try {
       const intersection = turf.intersect(turf.featureCollection([importedPoly, feat]));
       if (!intersection) continue;
       const intersectionArea = turf.area(intersection);
       if (intersectionArea < 1) continue;
+      interFeatures.push(intersection);
+      candidates.push(feat);
       const pct = (intersectionArea / importedArea) * 100;
       const foret = feat.properties?.FORET || feat.properties?.foret || '';
       const foretAr = FORET_AR[foret.toUpperCase()] || feat.properties?.FORET_AR || '';
@@ -97,11 +108,33 @@ export function runChevauchementAnalysis(
     } catch (_) {}
   }
   hits.sort((a, b) => b.intersectionArea - a.intersectionArea);
-  const totalIntersectionArea = hits.reduce((s, h) => s + h.intersectionArea, 0);
-  const totalPercentage = Math.min(100, (totalIntersectionArea / importedArea) * 100);
+
+  // Surface intérieure DÉ-DOUBLONNÉE : union des intersections (évite de compter
+  // deux fois une zone couverte par 2 parcelles forêt qui se chevauchent).
+  let insideArea = 0; let outsideGeoJSON: any = null;
+  try {
+    let merged: any = interFeatures[0] || null;
+    for (let i = 1; i < interFeatures.length; i++) {
+      const u = turf.union(turf.featureCollection([merged, interFeatures[i]]));
+      if (u) merged = u;
+    }
+    insideArea = merged ? turf.area(merged) : 0;
+    if (candidates.length) {
+      let forestMerged: any = candidates[0];
+      for (let i = 1; i < candidates.length; i++) {
+        const u = turf.union(turf.featureCollection([forestMerged, candidates[i]]));
+        if (u) forestMerged = u;
+      }
+      outsideGeoJSON = turf.difference(turf.featureCollection([importedPoly, forestMerged]));
+    } else { outsideGeoJSON = importedPoly; }
+  } catch (_) { insideArea = hits.reduce((s, h) => s + h.intersectionArea, 0); }
+
+  const totalIntersectionArea = insideArea;                       // = surface réelle dans le domaine
+  const outsideArea = Math.max(0, importedArea - insideArea);
+  const totalPercentage = Math.min(100, importedArea > 0 ? (insideArea / importedArea) * 100 : 0);
   const globalPosition: ChevauchementResult['globalPosition'] =
     totalPercentage >= 95 ? 'داخل الملك الغابوي' : totalPercentage >= 1 ? 'جزئيا داخل الملك الغابوي' : 'خارج الملك الغابوي';
-  return { layerName, importedArea, totalIntersectionArea, totalPercentage, globalPosition, hits, intersections: hits, importedGeoJSON: importedGeojson, forestGeoJSON: forestGeojson };
+  return { layerName, importedArea, totalIntersectionArea, totalPercentage, globalPosition, hits, intersections: hits, importedGeoJSON: importedGeojson, forestGeoJSON: forestGeojson, insideArea, outsideArea, outsideGeoJSON };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -363,11 +396,8 @@ function printHtml(html: string) {
 }
 
 function downloadWord(html: string, filename: string) {
-  const wordHtml = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>${html}</html>`;
-  const blob = new Blob(['\ufeff', wordHtml], { type: 'application/msword' });
-  const url = URL.createObjectURL(blob);
-  Object.assign(document.createElement('a'), { href: url, download: filename }).click();
-  URL.revokeObjectURL(url);
+  // Produit désormais un VRAI .docx (au lieu du faux application/msword)
+  void htmlToDocx(html, filename);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -743,7 +773,7 @@ export function FicheModal({ onClose, forestData, communesData, importedLayer }:
       </div>
       <ActionBar>
         <BtnPrimary onClick={() => printHtml(buildFicheHTML(c, croquisSvg || undefined))} icon={Printer}>Imprimer PDF</BtnPrimary>
-        <BtnSecondary onClick={() => downloadWord(buildFicheHTML(c, croquisSvg || undefined), `fiche-${c.immeubleDit||'requisition'}.doc`)} icon={FileDown}>Word (.doc)</BtnSecondary>
+        <BtnSecondary onClick={() => exportFicheDocx(c as any)} icon={FileDown}>Word (.docx)</BtnSecondary>
         <BtnSecondary onClick={() => navigator.clipboard.writeText(`Fiche ${c.immeubleDit} | ${c.foret} | ${c['empiètement']}`).catch(()=>{})} icon={Copy} title="Copier" />
       </ActionBar>
     </ModalWrap>
@@ -984,8 +1014,7 @@ export function AttestationModal({ onClose, forestData, communesData, importedLa
 
   const handlePrint = () => printHtml(buildAttestationHTML(c, croquisSvg || undefined));
   const handleWord  = () => {
-    const html = buildAttestationHTML(c, croquisSvg || undefined);
-    downloadWord(html, `بطاقة-${c.nomProprietaire||'عقار'}.doc`);
+    void exportAttestationDocx(c as any);
   };
 
   // ── Tab content ────────────────────────────────────────────────────────────
@@ -1186,7 +1215,7 @@ export function AttestationModal({ onClose, forestData, communesData, importedLa
       </div>
       <ActionBar>
         <BtnPrimary onClick={handlePrint} icon={Printer}>طباعة / Imprimer</BtnPrimary>
-        <BtnSecondary onClick={handleWord} icon={FileDown}>Word (.doc)</BtnSecondary>
+        <BtnSecondary onClick={handleWord} icon={FileDown}>Word (.docx)</BtnSecondary>
       </ActionBar>
     </ModalWrap>
   );
@@ -1710,7 +1739,7 @@ export function ExpertiseModal({ onClose, importedLayer, forestData }: {
       </div>
       <ActionBar>
         <BtnPrimary onClick={() => printHtml(getPDF())} icon={Printer}>توليد وطباعة PDF</BtnPrimary>
-        <BtnSecondary onClick={() => downloadWord(getPDF(), getFilename())} icon={FileDown}>Word (.doc)</BtnSecondary>
+        <BtnSecondary onClick={() => htmlToDocx(getPDF(), getFilename())} icon={FileDown}>Word (.docx)</BtnSecondary>
       </ActionBar>
     </ModalWrap>
   );

@@ -23,8 +23,17 @@ import {
 } from './DocumentModals';
 import type { ChevauchementResult } from './DocumentModals';
 import proj4 from 'proj4';
+import { createPortal } from 'react-dom';
+import {
+  registerProjections, normalizeToWGS84, repairGeometry, hasSelfIntersection,
+  difference, clip, symmetricDifference, unionAll, splitPolygonByLine,
+  multiRingBuffer, dissolveAll, convexHullOf, envelopeOf, centroidOf,
+  voronoiOf, distanceToBoundary, toKML, toGPX, downloadText,
+  buildScaledPlanSVG, printPlan, polygonFromLambertBornes, exportShapefile,
+} from '../../lib/forestGisCore';
+import { ESRI_WORLD_IMAGERY, fetchWaybackReleases, type WaybackRelease } from '../../lib/forestMaps';
 
-proj4.defs("EPSG:26191", "+proj=lcc +lat_1=33.3 +lat_0=33.3 +lon_0=-5.4 +k_0=0.999625769 +x_0=500000 +y_0=300000 +a=6378249.2 +b=6356515 +towgs84=31,146,47,0,0,0,0 +units=m +no_defs");
+registerProjections();
 
 import icon from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
@@ -634,7 +643,11 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
             <BaseLayer name="Topographique">
               <TileLayer url="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png" attribution="OSM" />
             </BaseLayer>
+            <BaseLayer name="Satellite (Esri World Imagery)">
+              <TileLayer url={ESRI_WORLD_IMAGERY} attribution="Esri, Maxar, Earthstar" maxZoom={21} />
+            </BaseLayer>
           </LayersControl>
+          <MapComparison />
 
           {customLayers.filter((l: any) => l.visible && l.type === 'static_polygon' && l.areaCoords).map((layer: any) => {
             const mockGeoJSON = turf.polygon([[...layer.areaCoords, layer.areaCoords[0]]] as any);
@@ -1728,7 +1741,9 @@ function CouchesTab({
   };
 
   // ── addGeoLayer: central function for adding any imported layer ────────────
-  const addGeoLayer = (geojson: any, fileName: string, opts: { noPoints?: boolean } = {}) => {
+  const addGeoLayer = (rawGeojson: any, fileName: string, opts: { noPoints?: boolean } = {}) => {
+    const _norm = normalizeToWGS84(rawGeojson);
+    const geojson = repairGeometry(_norm.geojson);
     const id = `imported-${Date.now()}`;
     const color = '#38bdf8';
     const layerName = fileName.replace(/\.[^/.]+$/, '');
@@ -2376,115 +2391,283 @@ function CompareLayersModal({ customLayers, chevauchementResults, onClose }: {
 // ─────────────────────────────────────────────────────────────────────────────
 // GeotoolsTab (unchanged from original)
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// MapComparison — Swipe + imagerie historique (Esri Wayback) pour détection de
+// changement. Auto-contenu : gère sa propre couche + son UI (portal). Injecté
+// comme enfant de <MapContainer/>.
+// ─────────────────────────────────────────────────────────────────────────────
+function MapComparison() {
+  const map = useMap();
+  const [open, setOpen] = useState(false);
+  const [on, setOn] = useState(false);
+  const [mode, setMode] = useState<'swipe' | 'blend'>('swipe');
+  const [src, setSrc] = useState<'esri' | 'wayback' | 'osm' | 'ghybrid'>('wayback');
+  const [swipe, setSwipe] = useState(50);
+  const [opacity, setOpacity] = useState(65);
+  const [wb, setWb] = useState<WaybackRelease[]>([]);
+  const [rel, setRel] = useState<number | null>(null);
+  const layerRef = useRef<any>(null);
+  const ctrlRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!map.getPane('comparePane')) {
+      map.createPane('comparePane');
+      const p = map.getPane('comparePane');
+      if (p) { p.style.zIndex = '350'; p.style.pointerEvents = 'none'; }
+    }
+  }, [map]);
+
+  useEffect(() => { fetchWaybackReleases().then((r) => { setWb(r); if (r[0]) setRel(r[0].rel); }).catch(() => {}); }, []);
+  useEffect(() => { if (ctrlRef.current) L.DomEvent.disableClickPropagation(ctrlRef.current); }, [open]);
+
+  const compareUrl = () => {
+    if (src === 'esri') return ESRI_WORLD_IMAGERY;
+    if (src === 'osm') return 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+    if (src === 'ghybrid') return 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}';
+    const r = wb.find((w) => w.rel === rel) || wb[0];
+    return r?.url || ESRI_WORLD_IMAGERY;
+  };
+
+  useEffect(() => {
+    if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null; }
+    if (!on) return;
+    const tl = L.tileLayer(compareUrl(), { pane: 'comparePane', maxZoom: 21 } as any);
+    tl.addTo(map);
+    layerRef.current = tl;
+    return () => { if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null; } };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [on, src, rel, wb, map]);
+
+  useEffect(() => {
+    const pane = map.getPane('comparePane'); if (!pane) return;
+    if (!on) { pane.style.clipPath = ''; pane.style.opacity = '1'; return; }
+    if (mode === 'swipe') { pane.style.opacity = '1'; pane.style.clipPath = `inset(0 ${100 - swipe}% 0 0)`; }
+    else { pane.style.clipPath = ''; pane.style.opacity = String(opacity / 100); }
+  }, [on, mode, swipe, opacity, map, src, rel]);
+
+  const inp = "w-full bg-(--bg-main) border border-(--border-color) text-(--text-main) rounded-md p-1.5 text-[11px]";
+  return createPortal(
+    <div ref={ctrlRef} style={{ position: 'absolute', top: 78, right: 10, zIndex: 1000 }}>
+      <button onClick={() => setOpen(o => !o)} title="Comparaison / détection de changement"
+        className="w-9 h-9 bg-white text-gray-800 rounded-md shadow flex items-center justify-center hover:bg-gray-100">
+        <Layers className="w-4 h-4" />
+      </button>
+      {open && (
+        <div className="mt-2 w-64 bg-(--bg-surface) border border-(--border-color) rounded-lg shadow-xl p-3 space-y-2 text-(--text-main)">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold">Détection de changement</span>
+            <label className="flex items-center gap-1 text-[11px] cursor-pointer">
+              <input type="checkbox" checked={on} onChange={e => setOn(e.target.checked)} /> Activer
+            </label>
+          </div>
+          <p className="text-[10px] text-(--text-muted) leading-tight">Compare la carte actuelle (Google) avec une imagerie de référence ou historique (Wayford daté).</p>
+          <div>
+            <label className="text-[10px] font-semibold text-(--text-muted) uppercase">Couche de comparaison</label>
+            <select value={src} onChange={e => setSrc(e.target.value as any)} className={inp}>
+              <option value="wayback">Esri Wayback (historique daté)</option>
+              <option value="esri">Esri World Imagery</option>
+              <option value="ghybrid">Hybride Google</option>
+              <option value="osm">OpenStreetMap</option>
+            </select>
+          </div>
+          {src === 'wayback' && (
+            <div>
+              <label className="text-[10px] font-semibold text-(--text-muted) uppercase">Date ({wb.length} versions)</label>
+              <select value={rel ?? ''} onChange={e => setRel(Number(e.target.value))} className={inp}>
+                {wb.length === 0 && <option>Chargement…</option>}
+                {wb.map(w => <option key={w.rel} value={w.rel}>{w.date}</option>)}
+              </select>
+            </div>
+          )}
+          <div className="flex gap-1">
+            <button onClick={() => setMode('swipe')} className={`flex-1 py-1 rounded text-[11px] ${mode === 'swipe' ? 'bg-(--brand) text-white' : 'bg-(--bg-main)'}`}>Swipe</button>
+            <button onClick={() => setMode('blend')} className={`flex-1 py-1 rounded text-[11px] ${mode === 'blend' ? 'bg-(--brand) text-white' : 'bg-(--bg-main)'}`}>Fondu</button>
+          </div>
+          {mode === 'swipe'
+            ? <div><label className="text-[10px] text-(--text-muted)">Curseur ({swipe}%)</label><input type="range" min={0} max={100} value={swipe} onChange={e => setSwipe(Number(e.target.value))} className="w-full" /></div>
+            : <div><label className="text-[10px] text-(--text-muted)">Opacité ({opacity}%)</label><input type="range" min={0} max={100} value={opacity} onChange={e => setOpacity(Number(e.target.value))} className="w-full" /></div>}
+        </div>
+      )}
+    </div>,
+    map.getContainer()
+  );
+}
+
+function AttributeTableModal({ layer, onClose }: { layer: any; onClose: () => void }) {
+  const [q, setQ] = useState('');
+  const gj = layer.geojson || layer.leafletLayer?.toGeoJSON?.();
+  const features = gj ? (gj.type === 'FeatureCollection' ? gj.features : [gj]) : [];
+  const cols = Array.from(new Set(features.flatMap((f: any) => Object.keys(f.properties || {})))).slice(0, 40) as string[];
+  const rows = features.filter((f: any) => !q || JSON.stringify(f.properties || {}).toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div className="fixed inset-0 z-2000 flex items-center justify-center p-3 bg-black/60" onClick={onClose}>
+      <div className="bg-(--bg-surface) rounded-xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden border border-(--border-color)" onClick={e => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-(--border-color) flex items-center justify-between shrink-0">
+          <span className="font-bold text-sm text-(--text-main)">Table attributaire — {layer.name} ({rows.length}/{features.length})</span>
+          <button onClick={onClose} className="text-(--text-muted) hover:text-(--text-main)">✕</button>
+        </div>
+        <div className="px-4 py-2 shrink-0">
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Filtrer (sélection par attribut)…"
+            className="w-full bg-(--bg-main) border border-(--border-color) rounded-lg p-2 text-sm text-(--text-main)" />
+        </div>
+        <div className="flex-1 overflow-auto px-4 pb-4">
+          <table className="w-full text-[11px] border-collapse">
+            <thead className="sticky top-0 bg-(--bg-main)">
+              <tr><th className="border border-(--border-color) px-2 py-1 text-(--text-muted)">#</th>
+              {cols.map((c) => <th key={c} className="border border-(--border-color) px-2 py-1 text-left text-(--text-muted) whitespace-nowrap">{c}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((f: any, i: number) => (
+                <tr key={i} className="hover:bg-(--bg-main)">
+                  <td className="border border-(--border-color) px-2 py-1 text-(--text-muted)">{i + 1}</td>
+                  {cols.map((c) => <td key={c} className="border border-(--border-color) px-2 py-1 text-(--text-main) whitespace-nowrap">{String(f.properties?.[c] ?? '')}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
-  const [tool, setTool] = useState<string>('points_to_polygon');
+  const [tool, setTool] = useState<string>('buffer');
   const [layer1, setLayer1] = useState<string>('');
   const [layer2, setLayer2] = useState<string>('');
   const [radius, setRadius] = useState<number>(50);
+  const [tableLayer, setTableLayer] = useState<any>(null);
+
+  const SECOND = ['intersect', 'union', 'difference', 'symdiff', 'split', 'distance_boundary'];
+  const DISTANCE = ['buffer', 'multibuffer'];
 
   const getGeojson = (l: any) => {
+    if (!l) return null;
     if (l.geojson) return l.geojson;
     if (l.leafletLayer?.toGeoJSON) return l.leafletLayer.toGeoJSON();
     if (l.type === 'static_polygon' && l.areaCoords) {
       const coords = [...l.areaCoords];
-      if (coords[0][0] !== coords[coords.length-1][0] || coords[0][1] !== coords[coords.length-1][1]) coords.push([...coords[0]]);
+      if (coords[0][0] !== coords[coords.length - 1][0] || coords[0][1] !== coords[coords.length - 1][1]) coords.push([...coords[0]]);
       return turf.polygon([coords.map((c: any) => [c[1], c[0]])]);
     }
     return null;
   };
 
+  const addResult = (resultGeojson: any, label: string) => {
+    const id = `geotool-${Date.now()}`, color = '#eab308', opacity = 0.8;
+    const leafletLayer = L.geoJSON(resultGeojson, {
+      style: { color, weight: 2, opacity, fillOpacity: opacity * 0.4 },
+      pointToLayer: (_f, latlng) => L.circleMarker(latlng, { radius: 6, fillColor: color, color, weight: 1, opacity: 1, fillOpacity: 0.8 }),
+    });
+    if (featureGroupRef?.current) featureGroupRef.current.addLayer(leafletLayer);
+    setCustomLayers((prev: any) => [...prev, { id, name: `Résultat: ${label}`, type: 'imported', visible: true, color, opacity, geojson: resultGeojson, leafletLayer }]);
+    alert('✅ Opération réussie — couche ajoutée.');
+  };
+
   const executeTool = () => {
+    // COGO : ne nécessite pas de couche source (on saisit des bornes)
+    if (tool === 'cogo_lambert') {
+      const raw = prompt('Collez les bornes en Lambert Nord (une par ligne, "X Y" ou "X,Y") :');
+      if (!raw) return;
+      const bornes = raw.split(/\n/).map((line) => line.trim().split(/[ ,;\t]+/).map(Number))
+        .filter((a) => a.length >= 2 && !isNaN(a[0]) && !isNaN(a[1])).map((a) => ({ x: a[0], y: a[1] }));
+      if (bornes.length < 3) return alert('Minimum 3 bornes valides requises.');
+      const poly = polygonFromLambertBornes(bornes);
+      if (!poly) return alert('Construction du polygone impossible.');
+      return addResult(poly, 'Parcelle COGO (bornes Lambert)');
+    }
     const l1 = customLayers.find((l: any) => l.id === layer1);
-    if (!l1) return alert("Sélectionnez la couche principale");
+    if (!l1) return alert('Sélectionnez la couche principale.');
+    const g1 = getGeojson(l1);
+    if (!g1) return alert('Couche principale invalide.');
+    const l2 = customLayers.find((l: any) => l.id === layer2);
+    const g2 = getGeojson(l2);
+    let result: any = null;
     try {
-      const g1 = getGeojson(l1);
-      let resultGeojson: any;
-
-      if (tool === 'calculate_geometry') {
-        const area = turf.area(g1), length = turf.length(g1, { units: 'kilometers' });
-        alert(`📐 Attributs géométriques — ${l1.name}\n\nSurface: ${(area/10000).toFixed(4)} Ha (${area.toFixed(2)} m²)\nPérimètre: ${length.toFixed(4)} km`);
-        return;
-      } else if (tool === 'check_geometry') {
-        try {
-          const kinks = turf.kinks(g1 as any);
-          if (kinks.features.length > 0) { resultGeojson = kinks; alert(`⚠️ Géométrie invalide: ${kinks.features.length} auto-intersection(s) détectée(s).`); }
-          else { alert('✅ Géométrie valide — aucune auto-intersection.'); return; }
-        } catch { alert('Impossible de vérifier la géométrie.'); return; }
-      } else if (tool === 'explode') {
-        resultGeojson = turf.explode(g1);
-      } else if (tool === 'export_excel') {
-        const features = g1.type === 'FeatureCollection' ? g1.features : [g1];
-        const data = features.map((f: any) => ({
-          Couche: l1.name, Type: f.geometry.type,
-          Coordonnees: f.geometry.type === 'Point' ? f.geometry.coordinates.join(', ') : `${f.geometry.type} (${f.geometry.coordinates?.[0]?.length || '?'} pts)`,
-          ...f.properties
-        }));
-        const ws = XLSX.utils.json_to_sheet(data), wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Données");
-        const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-        const blob = new Blob([buf], { type: 'application/octet-stream' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = `${l1.name}_export.xlsx`;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        alert("✅ Fichier Excel téléchargé."); return;
-      } else if (tool === 'reproject_lambert') {
-        const transformed = structuredClone(g1);
-        turf.coordEach(transformed, (c) => { const p = proj4('EPSG:4326','EPSG:26191',c); c[0]=p[0]; c[1]=p[1]; });
-        const blob = new Blob([JSON.stringify(transformed, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = `${l1.name}_lambert.geojson`;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        alert("✅ Fichier Lambert Nord téléchargé."); return;
-      } else if (tool === 'reproject_wgs84') {
-        resultGeojson = structuredClone(g1);
-        turf.coordEach(resultGeojson, (c) => { const p = proj4('EPSG:26191','EPSG:4326',c); c[0]=p[0]; c[1]=p[1]; });
-      } else if (tool === 'buffer') {
-        resultGeojson = turf.buffer(g1, radius, { units: 'meters' });
-      } else if (tool === 'envelope') {
-        resultGeojson = turf.envelope(g1);
-      } else if (tool === 'points_to_polygon') {
-        if (g1.type === 'FeatureCollection') {
-          const coords = g1.features.map((f: any) => f.geometry.coordinates);
-          if (coords.length > 2) {
-            if (coords[0][0] !== coords[coords.length-1][0] || coords[0][1] !== coords[coords.length-1][1]) coords.push([...coords[0]]);
-            resultGeojson = turf.polygon([coords]);
-          } else return alert("Minimum 3 points requis.");
-        } else return alert("La couche doit contenir des points.");
-      } else if (tool === 'polygon_to_line') {
-        resultGeojson = turf.polygonToLine(g1);
-      } else if (tool === 'intersect') {
-        const l2 = customLayers.find((l: any) => l.id === layer2);
-        if (!l2) return alert("Sélectionnez la couche secondaire");
-        const g2 = getGeojson(l2);
-        const m1 = g1.type==='FeatureCollection' ? turf.union(g1) : g1;
-        const m2 = g2.type==='FeatureCollection' ? turf.union(g2) : g2;
-        if (!m1 || !m2) return alert("Polygones valides requis.");
-        resultGeojson = turf.intersect(turf.featureCollection([m1, m2]));
-        if (!resultGeojson) return alert("Aucune intersection trouvée.");
-      } else if (tool === 'union') {
-        const l2 = customLayers.find((l: any) => l.id === layer2);
-        if (!l2) return alert("Sélectionnez la couche secondaire");
-        const g2 = getGeojson(l2);
-        const m1 = g1.type==='FeatureCollection' ? turf.union(g1) : g1;
-        const m2 = g2.type==='FeatureCollection' ? turf.union(g2) : g2;
-        if (!m1 || !m2) return alert("Polygones valides requis.");
-        resultGeojson = turf.union(turf.featureCollection([m1, m2]));
+      switch (tool) {
+        // ── Informations & attributs ──
+        case 'calculate_geometry': {
+          const area = turf.area(g1), len = turf.length(g1, { units: 'kilometers' });
+          return alert(`📐 ${l1.name}\n\nSurface: ${(area / 10000).toFixed(4)} ha (${area.toFixed(2)} m²)\nPérimètre: ${len.toFixed(4)} km`);
+        }
+        case 'check_geometry':
+          return alert(hasSelfIntersection(g1) ? '⚠️ Auto-intersections détectées — utilisez « Réparer la géométrie ».' : '✅ Géométrie valide.');
+        case 'repair': result = repairGeometry(g1); break;
+        // ── Export ──
+        case 'export_kml': return downloadText(toKML(g1, l1.name), `${l1.name}.kml`, 'application/vnd.google-earth.kml+xml');
+        case 'export_gpx': return downloadText(toGPX(g1, l1.name), `${l1.name}.gpx`, 'application/gpx+xml');
+        case 'export_shp': return void exportShapefile(g1, l1.name, { lambert: false });
+        case 'export_shp_lambert': return void exportShapefile(g1, l1.name, { lambert: true });
+        case 'export_excel': {
+          const features = g1.type === 'FeatureCollection' ? g1.features : [g1];
+          const data = features.map((f: any) => ({ Couche: l1.name, Type: f.geometry?.type || '', ...f.properties }));
+          const ws = XLSX.utils.json_to_sheet(data), wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, ws, 'Données');
+          const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+          const blob = new Blob([buf], { type: 'application/octet-stream' });
+          const url = URL.createObjectURL(blob);
+          Object.assign(document.createElement('a'), { href: url, download: `${l1.name}.xlsx` }).click();
+          URL.revokeObjectURL(url);
+          return alert('✅ Excel téléchargé.');
+        }
+        // ── Topologie & géotraitement ──
+        case 'buffer': result = turf.buffer(g1, radius, { units: 'meters' }); break;
+        case 'multibuffer': result = multiRingBuffer(g1, [radius, radius * 2, radius * 3]); break;
+        case 'intersect': if (!g2) return alert('Couche secondaire requise.'); result = clip(g1, g2); break;
+        case 'union': if (!g2) return alert('Couche secondaire requise.'); result = unionAll(g1, g2); break;
+        case 'difference': if (!g2) return alert('Couche secondaire requise.'); result = difference(g1, g2); break;
+        case 'symdiff': if (!g2) return alert('Couche secondaire requise.'); result = symmetricDifference(g1, g2); break;
+        case 'split': if (!g2) return alert('Ligne de coupe (couche secondaire) requise.'); result = splitPolygonByLine(g1, g2); break;
+        case 'dissolve': result = dissolveAll(g1.type === 'FeatureCollection' ? g1.features : [g1]); break;
+        // ── Géométrie & conversion ──
+        case 'convex': result = convexHullOf(g1); break;
+        case 'envelope': result = envelopeOf(g1); break;
+        case 'centroid': result = centroidOf(g1); break;
+        case 'voronoi': result = voronoiOf(g1); break;
+        case 'explode': result = turf.explode(g1); break;
+        case 'points_to_polygon': {
+          if (g1.type === 'FeatureCollection') {
+            const coords = g1.features.map((f: any) => f.geometry.coordinates);
+            if (coords.length > 2) {
+              if (coords[0][0] !== coords[coords.length - 1][0] || coords[0][1] !== coords[coords.length - 1][1]) coords.push([...coords[0]]);
+              result = turf.polygon([coords]);
+            } else return alert('Minimum 3 points requis.');
+          } else return alert('La couche doit contenir des points.');
+          break;
+        }
+        case 'polygon_to_line': result = turf.polygonToLine(g1); break;
+        // ── Plan à l'échelle ──
+        case 'print_plan': {
+          const sd = Number(prompt('Échelle 1:N (ex. 2000 pour 1:2000)', '2000')) || 2000;
+          const svg = buildScaledPlanSVG(g1, { scaleDenominator: sd, title: l1.name, showBornes: true });
+          printPlan(svg, l1.name);
+          return;
+        }
+        // ── Proximité ──
+        case 'distance_boundary': {
+          if (!g2) return alert('Sélectionnez la couche forêt comme couche secondaire.');
+          const c = centroidOf(g1);
+          const d = distanceToBoundary(c, g2);
+          return alert(d < 0 ? `Le centre est À L'INTÉRIEUR — à ${Math.abs(d).toFixed(0)} m du bord.` : `Distance au bord : ${d.toFixed(0)} m.`);
+        }
+        // ── Reprojection ──
+        case 'reproject_lambert': {
+          const t = structuredClone(g1);
+          turf.coordEach(t, (cc: any) => { const p = proj4('EPSG:4326', 'EPSG:26191', cc); cc[0] = p[0]; cc[1] = p[1]; });
+          downloadText(JSON.stringify(t, null, 2), `${l1.name}_lambert.geojson`, 'application/json');
+          return alert('✅ GeoJSON Lambert téléchargé.');
+        }
+        case 'reproject_wgs84': {
+          result = structuredClone(g1);
+          turf.coordEach(result, (cc: any) => { const p = proj4('EPSG:26191', 'EPSG:4326', cc); cc[0] = p[0]; cc[1] = p[1]; });
+          break;
+        }
       }
-
-      if (resultGeojson) {
-        const id = `geotool-${Date.now()}`, color = '#eab308', opacity = 0.8;
-        const layer = L.geoJSON(resultGeojson, {
-          style: { color, weight: 2, opacity, fillOpacity: opacity * 0.4 },
-          pointToLayer: (_f, latlng) => L.circleMarker(latlng, { radius: 6, fillColor: color, color, weight: 1, opacity: 1, fillOpacity: 0.8 }),
-        });
-        if (featureGroupRef?.current) featureGroupRef.current.addLayer(layer);
-        setCustomLayers((prev: any) => [...prev, { id, name: `Résultat: ${tool}`, type: 'imported', visible: true, color, opacity, geojson: resultGeojson, leafletLayer: layer }]);
-        alert("✅ Opération réussie — couche ajoutée.");
-      }
+      if (!result) return alert('Aucun résultat (géométries invalides ou pas de chevauchement). Essayez « Réparer ».');
+      addResult(result, tool);
     } catch (e) {
-      console.error(e);
-      alert("Erreur lors du traitement. Vérifiez que les géométries sont valides.");
+      console.error('[geotool]', tool, e);
+      alert('Erreur de traitement. Essayez « Réparer la géométrie » sur la couche d\'abord.');
     }
   };
 
@@ -2497,23 +2680,43 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
           <label className="text-xs font-semibold text-(--text-muted) uppercase tracking-wider mb-1.5 block">Outil</label>
           <select value={tool} onChange={e => setTool(e.target.value)} className={sel}>
             <optgroup label="Informations & Attributs">
-              <option value="calculate_geometry">Calculer la Géométrie (Surface / Périmètre)</option>
-              <option value="export_excel">Exporter vers Excel (.xlsx)</option>
-              <option value="check_geometry">Vérifier la Géométrie (Auto-intersections)</option>
+              <option value="calculate_geometry">Calculer la géométrie (surface/périmètre)</option>
+              <option value="check_geometry">Vérifier la géométrie</option>
+              <option value="repair">Réparer la géométrie (ST_MakeValid)</option>
+              <option value="export_excel">Exporter Excel (.xlsx)</option>
+              <option value="export_kml">Exporter KML (QGIS)</option>
+              <option value="export_gpx">Exporter GPX (GPS)</option>
+              <option value="export_shp">Exporter Shapefile (.zip · WGS84)</option>
+              <option value="export_shp_lambert">Exporter Shapefile (.zip · Lambert Nord)</option>
             </optgroup>
             <optgroup label="Topologie & Géotraitement">
               <option value="buffer">Zone tampon (Buffer)</option>
-              <option value="intersect">Intersection</option>
+              <option value="multibuffer">Tampon multi-anneaux (×3)</option>
+              <option value="intersect">Intersection (Clip)</option>
               <option value="union">Union</option>
+              <option value="difference">Différence (Erase) — surface hors domaine</option>
+              <option value="symdiff">Différence symétrique</option>
+              <option value="split">Découper par ligne</option>
+              <option value="dissolve">Fusionner (Dissolve)</option>
             </optgroup>
-            <optgroup label="Conversion & Géométrie">
-              <option value="explode">Extraire les Sommets</option>
+            <optgroup label="Géométrie & Conversion">
+              <option value="convex">Enveloppe convexe</option>
+              <option value="envelope">Boîte englobante</option>
+              <option value="centroid">Centroïde</option>
+              <option value="voronoi">Voronoï (couche de points)</option>
+              <option value="explode">Extraire les sommets</option>
               <option value="points_to_polygon">Points → Polygone</option>
               <option value="polygon_to_line">Polygone → Ligne</option>
-              <option value="envelope">Enveloppe (Bounding Box)</option>
+            </optgroup>
+            <optgroup label="Bornage / Plan">
+              <option value="cogo_lambert">Saisir parcelle par bornes Lambert (COGO)</option>
+              <option value="print_plan">Imprimer un plan à l'échelle (1:N)</option>
+            </optgroup>
+            <optgroup label="Proximité">
+              <option value="distance_boundary">Distance au bord (forêt en 2ᵉ couche)</option>
             </optgroup>
             <optgroup label="Reprojection">
-              <option value="reproject_lambert">Reprojeter → Lambert Nord (Export)</option>
+              <option value="reproject_lambert">Reprojeter → Lambert Nord (export)</option>
               <option value="reproject_wgs84">Reprojeter → WGS84</option>
             </optgroup>
           </select>
@@ -2525,7 +2728,7 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
             {customLayers.map((l: any) => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
         </div>
-        {(tool === 'intersect' || tool === 'union') && (
+        {SECOND.includes(tool) && (
           <div>
             <label className="text-xs font-semibold text-(--text-muted) uppercase tracking-wider mb-1.5 block">Couche secondaire</label>
             <select value={layer2} onChange={e => setLayer2(e.target.value)} className={sel}>
@@ -2534,16 +2737,21 @@ function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
             </select>
           </div>
         )}
-        {tool === 'buffer' && (
+        {DISTANCE.includes(tool) && (
           <div>
-            <label className="text-xs font-semibold text-(--text-muted) uppercase tracking-wider mb-1.5 block">Distance (mètres)</label>
-            <input type="number" value={radius} onChange={e => setRadius(Number(e.target.value))} min={1} className="w-full bg-(--bg-main) border border-(--border-color) text-(--text-main) rounded-lg p-2 text-sm focus:outline-none focus:border-(--brand)" />
+            <label className="text-xs font-semibold text-(--text-muted) uppercase tracking-wider mb-1.5 block">Distance (mètres){tool === 'multibuffer' ? ' — base ×1 / ×2 / ×3' : ''}</label>
+            <input type="number" value={radius} onChange={e => setRadius(Number(e.target.value))} min={1} className={sel} />
           </div>
         )}
         <button onClick={executeTool} className="w-full mt-4 bg-(--brand) hover:opacity-90 text-white font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2">
           <Combine className="w-4 h-4" /> Exécuter
         </button>
+        <button onClick={() => { const l = customLayers.find((x: any) => x.id === layer1); if (!l) return alert('Sélectionnez la couche principale.'); setTableLayer(l); }}
+          className="w-full bg-(--bg-main) border border-(--border-color) hover:border-(--brand) text-(--text-main) text-xs font-semibold py-2 rounded-lg">
+          Table attributaire de la couche
+        </button>
       </div>
+      {tableLayer && <AttributeTableModal layer={tableLayer} onClose={() => setTableLayer(null)} />}
     </div>
   );
 }

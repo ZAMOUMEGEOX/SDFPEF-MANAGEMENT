@@ -1316,6 +1316,18 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit, allCases, onSelectCase
             {caseData.geoProvince && <div className="bg-stone-50 rounded-xl p-2.5 border border-stone-100"><p className="text-[10px] text-stone-400 font-bold">الإقليم</p><p className="text-xs font-bold text-stone-700">{caseData.geoProvince}</p></div>}
           </div>
           {caseData.geoOverlap && <pre className="text-[12px] text-stone-700 whitespace-pre-wrap font-sans leading-relaxed bg-stone-50 rounded-xl p-3 border border-stone-100">{caseData.geoOverlap}</pre>}
+          {caseData.geoPolygon && (
+            <div className="flex flex-wrap gap-2 mt-3">
+              <button onClick={() => { try { sessionStorage.setItem('anef_show_parcel', JSON.stringify({ geojson: JSON.parse(caseData.geoPolygon!), openFiche: false })); } catch {} window.dispatchEvent(new CustomEvent('anef:open-map')); }}
+                className="flex items-center gap-2 px-3 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg font-bold text-sm border border-emerald-200">
+                <MapPin className="size-4" /> معاينة القطعة على الخريطة
+              </button>
+              <button onClick={() => { try { sessionStorage.setItem('anef_show_parcel', JSON.stringify({ geojson: JSON.parse(caseData.geoPolygon!), openFiche: true })); } catch {} window.dispatchEvent(new CustomEvent('anef:open-map')); }}
+                className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg font-bold text-sm border border-blue-200">
+                <FileDown className="size-4" /> توليد تصميم القطعة
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -1618,6 +1630,7 @@ export function Contentieux() {
       geoOverlapPct: loc.overlap?.totalPercentage,
     };
     const clearKeys = () => { try { sessionStorage.removeItem('anef_parcel_target'); sessionStorage.removeItem('anef_parcel_pending'); } catch {} };
+    const numKey = (s?: string) => { const g = (s || '').match(/\d+/g); return g && g.length ? g.slice().sort().join('-') : ''; };
     if (target.kind === 'case') {
       const c = cases.find(x => x.id === target.id);
       if (!c) return; // ننتظر تحميل الملفات
@@ -1626,6 +1639,15 @@ export function Contentieux() {
       saveCase(updated).catch(() => {});
       setCases(prev => prev.map(x => x.id === updated.id ? updated : x));
       setSelectedPV(null); setSelectedCase(updated);
+      // مزامنة متبادلة: انقل التموقع لكل محضر مرتبط بهذا الملف
+      const fk = numKey(updated.mahakimId);
+      setPvRecords(prev => prev.map(p => {
+        const linked = p.linkedCaseId === updated.id || (!!fk && numKey(p.linkedFileNumber) === fk);
+        if (!linked) return p;
+        const up = { ...p, ...geo, lastSyncedAt: new Date().toISOString() } as PVRecord;
+        savePVRecordDB(up).catch(() => {});
+        return up;
+      }));
     } else if (target.kind === 'pv') {
       const p = pvRecords.find(x => x.id === target.id);
       if (!p) return;
@@ -1634,6 +1656,13 @@ export function Contentieux() {
       savePVRecordDB(updated).catch(() => {});
       setPvRecords(prev => prev.map(x => x.id === updated.id ? updated : x));
       setSelectedCase(null); setPvLocalTab('pvs'); setSelectedPV(updated);
+      // مزامنة متبادلة: انقل التموقع للملف القضائي المرتبط
+      const linkedCase = cases.find(c => c.id === updated.linkedCaseId || (!!numKey(c.mahakimId) && numKey(c.mahakimId) === numKey(updated.linkedFileNumber)));
+      if (linkedCase) {
+        const uc = { ...linkedCase, ...geo } as Case;
+        saveCase(uc).catch(() => {});
+        setCases(prev => prev.map(x => x.id === uc.id ? uc : x));
+      }
     }
   }, [cases, pvRecords]);
 
@@ -1665,6 +1694,12 @@ export function Contentieux() {
   const [sessionWeekFilter, setSessionWeekFilter] = useState<'all' | 'week'>('all');
   const [densityLevel] = useState<'compact' | 'normal' | 'large'>('normal');
   const [showBulkMenu, setShowBulkMenu] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  // عدد الفلاتر النشطة (لإظهاره على زر «فلاتر متقدمة» وتقليل ازدحام الواجهة)
+  const activeFilterCount =
+    [statusFilter, typeFilter, courtFilter, yearFilter, sectionFilter, judgeFilter, assignedFilter, executionStatusFilter].filter(v => v && v !== 'all').length
+    + (reviewFilter === 'review' ? 1 : 0) + (deadlineFilter === 'soon' ? 1 : 0)
+    + (repeatFilter === 'repeat' ? 1 : 0) + (sessionWeekFilter === 'week' ? 1 : 0);
   const [tableExpanded, setTableExpanded] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportFrom, setReportFrom] = useState('');
@@ -2015,6 +2050,15 @@ export function Contentieux() {
                       <option value="active">قيد الرائجة</option>
                       <option value="judged">محكومة</option>
                     </select>
+                    <button onClick={() => setShowFilters(v => !v)}
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-bold border transition-colors ${
+                        showFilters || activeFilterCount > 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'
+                      }`}>
+                      <ListChecks className="size-4" /> فلاتر متقدمة
+                      {activeFilterCount > 0 && <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{activeFilterCount}</span>}
+                      <ChevronDown className={`size-3.5 transition-transform ${showFilters ? 'rotate-180' : ''}`} />
+                    </button>
+                    <span className="text-xs text-stone-400 font-bold">{processedCases.length}{processedCases.length !== cases.length ? ` / ${cases.length}` : ''} ملف</span>
                     {selectedIds.size > 0 && (
                       <div className="flex items-center gap-2 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200 animate-in fade-in">
                         <span className="text-sm font-bold text-emerald-800">{selectedIds.size} محدد</span>
@@ -2060,8 +2104,9 @@ export function Contentieux() {
                   </div>
                 </div>
 
-                {/* ── شريط الفلاتر: ظاهر دائماً ── */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 pt-3 border-t border-stone-200">
+                {/* ── شريط الفلاتر: يظهر عند الطلب لتقليل الازدحام ── */}
+                {showFilters && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 pt-3 border-t border-stone-200 animate-in fade-in slide-in-from-top-1 duration-200">
                   {[
                     { label: 'نوع الملف', val: typeFilter, set: setTypeFilter, opts: uniqueTypes },
                     { label: 'المحكمة', val: courtFilter, set: setCourtFilter, opts: uniqueCourts },
@@ -2117,6 +2162,7 @@ export function Contentieux() {
                     </button>
                   </div>
                 </div>
+                )}
               </div>
 
               {isLoading ? (
@@ -3345,6 +3391,18 @@ function PVDetail({ pv, onBack, onDelete, relatedCase, onOpenRelatedCase }: {
                 {pv.geoProvince && <div className="bg-stone-50 rounded-lg p-2 border border-stone-100"><p className="text-[9px] text-stone-400 font-bold">الإقليم</p><p className="text-[11px] font-bold text-stone-700">{pv.geoProvince}</p></div>}
               </div>
               {pv.geoOverlap && <pre className="text-[11px] text-stone-700 whitespace-pre-wrap font-sans leading-relaxed bg-stone-50 rounded-lg p-3 border border-stone-100">{pv.geoOverlap}</pre>}
+              {pv.geoPolygon && (
+                <div className="flex flex-wrap gap-2 mt-3">
+                  <button onClick={() => { try { sessionStorage.setItem('anef_show_parcel', JSON.stringify({ geojson: JSON.parse(pv.geoPolygon!), openFiche: false })); } catch {} window.dispatchEvent(new CustomEvent('anef:open-map')); }}
+                    className="flex items-center gap-2 px-3 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg font-bold text-xs border border-emerald-200">
+                    <MapPin className="size-3.5" /> معاينة على الخريطة
+                  </button>
+                  <button onClick={() => { try { sessionStorage.setItem('anef_show_parcel', JSON.stringify({ geojson: JSON.parse(pv.geoPolygon!), openFiche: true })); } catch {} window.dispatchEvent(new CustomEvent('anef:open-map')); }}
+                    className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg font-bold text-xs border border-blue-200">
+                    <FileDown className="size-3.5" /> توليد تصميم القطعة
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
