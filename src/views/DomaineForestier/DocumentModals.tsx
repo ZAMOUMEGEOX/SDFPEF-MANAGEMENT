@@ -26,7 +26,7 @@ const RAPPORTEURS_LIST = [
   'تجريبات موسى','طوال محمد','مجاهيد مهدي','العتمد يوسف','الزاموم أحمد',
 ];
 
-const FORET_AR: Record<string, string> = {
+export const FORET_AR: Record<string, string> = {
   'BENI HASSAN':'بني حسن','BOUHACHEM':'بوهشم','RHOMARA':'غمارة',
   'TALEMBOTE':'تالمبوت','JBEL DARSA':'جبل درسة',
   'ANJRA NORD':'أنجرة الشمالية','ANJRA SUD':'أنجرة الجنوبية',

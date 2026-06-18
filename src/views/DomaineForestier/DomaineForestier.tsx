@@ -19,7 +19,7 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
 import {
   FicheModal, AttestationModal, ExpertiseModal, ChevauchementModal,
-  runChevauchementAnalysis,
+  runChevauchementAnalysis, FORET_AR,
 } from './DocumentModals';
 import type { ChevauchementResult } from './DocumentModals';
 import proj4 from 'proj4';
@@ -32,8 +32,27 @@ import {
   buildScaledPlanSVG, printPlan, polygonFromLambertBornes, exportShapefile,
 } from '../../lib/forestGisCore';
 import { ESRI_WORLD_IMAGERY, fetchWaybackReleases, type WaybackRelease } from '../../lib/forestMaps';
+import { analyzeOverlapServer } from '../../lib/forestRepo';
 
 registerProjections();
+
+// Mappe le résultat serveur (PostGIS) vers la forme bilingue ChevauchementResult.
+function mapServerToChevResult(srv: any, importedGeojson: any, name: string): ChevauchementResult {
+  const hits = (srv.hits || []).map((h: any) => {
+    const foret = h.foret || '';
+    const pct = h.percentage ?? (srv.total_area ? (h.intersection_area / srv.total_area) * 100 : 0);
+    const position = pct >= 95 ? 'داخل الملك الغابوي' : pct >= 1 ? 'جزئيا داخل الملك الغابوي' : 'خارج الملك الغابوي';
+    return { foret, foretAr: FORET_AR[foret.toUpperCase()] || '', canton: h.canton || '', intersectionArea: h.intersection_area, importedArea: srv.total_area, percentage: pct, position, properties: {} } as any;
+  });
+  const totalPercentage = Math.min(100, srv.total_percentage ?? 0);
+  const globalPosition = totalPercentage >= 95 ? 'داخل الملك الغابوي' : totalPercentage >= 1 ? 'جزئيا داخل الملك الغابوي' : 'خارج الملك الغابوي';
+  return {
+    layerName: name, importedArea: srv.total_area, totalIntersectionArea: srv.inside_area,
+    totalPercentage, globalPosition, hits, intersections: hits,
+    importedGeoJSON: importedGeojson, forestGeoJSON: null,
+    insideArea: srv.inside_area, outsideArea: srv.outside_area, outsideGeoJSON: null,
+  } as ChevauchementResult;
+}
 
 import icon from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
@@ -52,7 +71,7 @@ import {
   Menu, Navigation, Plus, Minus, LocateFixed, Wrench, Combine,
   Circle, Square, Triangle, Settings, MapPin, MousePointer2,
   Zap, PenLine, RotateCcw, Bell, BarChart3, AlertTriangle,
-  Edit3, CheckCircle, History, TrendingUp, RefreshCw,
+  Edit3, CheckCircle, History, TrendingUp, RefreshCw, Contrast,
 } from 'lucide-react';
 import { ViewState } from '../../types';
 import { cn } from '../../lib/utils';
@@ -578,10 +597,13 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 
   // ── Layer imported: run chevauchement, auto-load forest if needed ──────────
   const handleLayerImported = (layerId: string, name: string, geojson: any) => {
-    const runAnalysis = (forestData: any) => {
+    const runAnalysis = async (forestData: any) => {
       let chev: ChevauchementResult | null = null;
       try {
-        chev = runChevauchementAnalysis(geojson, forestData, name);
+        const srv = await analyzeOverlapServer(geojson);   // PostGIS d'abord
+        chev = (srv && srv.total_area > 0)
+          ? mapServerToChevResult(srv, geojson, name)
+          : runChevauchementAnalysis(geojson, forestData, name);  // repli local
         setChevauchementResults(prev => ({ ...prev, [layerId]: chev! }));
         // ── Overlap alert if > 5% ──
         if (chev && chev.totalPercentage > 5) {
@@ -2389,25 +2411,26 @@ function CompareLayersModal({ customLayers, chevauchementResults, onClose }: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GeotoolsTab (unchanged from original)
-// ─────────────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
-// MapComparison — Swipe + imagerie historique (Esri Wayback) pour détection de
-// changement. Auto-contenu : gère sa propre couche + son UI (portal). Injecté
-// comme enfant de <MapContainer/>.
+// MapComparison — Comparaison d'imagerie / détection de changement.
+//  • Fondu  : superpose l'imagerie de référence/historique avec opacité réglable.
+//  • Swipe  : barre verticale GLISSABLE sur la carte ; à gauche = imagerie de
+//             comparaison, à droite = carte actuelle. (poignée ⇔ visible)
+//  • Wayback : frise temporelle (timeline) pour parcourir les dates réelles.
+// Auto-contenu : gère sa couche + son UI (portal). Injecté dans <MapContainer/>.
 // ─────────────────────────────────────────────────────────────────────────────
 function MapComparison() {
   const map = useMap();
   const [open, setOpen] = useState(false);
   const [on, setOn] = useState(false);
-  const [mode, setMode] = useState<'swipe' | 'blend'>('swipe');
+  const [mode, setMode] = useState<'swipe' | 'blend'>('blend');
   const [src, setSrc] = useState<'esri' | 'wayback' | 'osm' | 'ghybrid'>('wayback');
-  const [swipe, setSwipe] = useState(50);
-  const [opacity, setOpacity] = useState(65);
+  const [opacity, setOpacity] = useState(70);
   const [wb, setWb] = useState<WaybackRelease[]>([]);
   const [rel, setRel] = useState<number | null>(null);
+  const [dividerX, setDividerX] = useState(0);
   const layerRef = useRef<any>(null);
   const ctrlRef = useRef<HTMLDivElement | null>(null);
+  const dragging = useRef(false);
 
   useEffect(() => {
     if (!map.getPane('comparePane')) {
@@ -2419,6 +2442,22 @@ function MapComparison() {
 
   useEffect(() => { fetchWaybackReleases().then((r) => { setWb(r); if (r[0]) setRel(r[0].rel); }).catch(() => {}); }, []);
   useEffect(() => { if (ctrlRef.current) L.DomEvent.disableClickPropagation(ctrlRef.current); }, [open]);
+
+  // initialise la barre au centre quand on active le mode swipe
+  useEffect(() => { if (on && mode === 'swipe' && !dividerX) setDividerX(Math.round(map.getSize().x / 2)); }, [on, mode, map, dividerX]);
+
+  // drag global de la barre
+  useEffect(() => {
+    const move = (e: any) => {
+      if (!dragging.current) return;
+      const rect = map.getContainer().getBoundingClientRect();
+      const cx = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+      setDividerX(Math.max(0, Math.min(rect.width, cx)));
+    };
+    const up = () => { dragging.current = false; };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+  }, [map]);
 
   const compareUrl = () => {
     if (src === 'esri') return ESRI_WORLD_IMAGERY;
@@ -2441,54 +2480,82 @@ function MapComparison() {
   useEffect(() => {
     const pane = map.getPane('comparePane'); if (!pane) return;
     if (!on) { pane.style.clipPath = ''; pane.style.opacity = '1'; return; }
-    if (mode === 'swipe') { pane.style.opacity = '1'; pane.style.clipPath = `inset(0 ${100 - swipe}% 0 0)`; }
-    else { pane.style.clipPath = ''; pane.style.opacity = String(opacity / 100); }
-  }, [on, mode, swipe, opacity, map, src, rel]);
+    if (mode === 'swipe') {
+      pane.style.opacity = '1';
+      const w = map.getSize().x; const x = dividerX || w / 2;
+      pane.style.clipPath = `inset(0 ${Math.max(0, w - x)}px 0 0)`;
+    } else { pane.style.clipPath = ''; pane.style.opacity = String(opacity / 100); }
+  }, [on, mode, dividerX, opacity, map, src, rel]);
 
+  // frise temporelle Wayback (gauche = ancien, droite = récent)
+  const wbIdx = wb.findIndex((w) => w.rel === rel);
+  const sliderVal = wb.length ? (wb.length - 1 - (wbIdx < 0 ? 0 : wbIdx)) : 0;
   const inp = "w-full bg-(--bg-main) border border-(--border-color) text-(--text-main) rounded-md p-1.5 text-[11px]";
+
   return createPortal(
-    <div ref={ctrlRef} style={{ position: 'absolute', top: 78, right: 10, zIndex: 1000 }}>
-      <button onClick={() => setOpen(o => !o)} title="Comparaison / détection de changement"
-        className="w-9 h-9 bg-white text-gray-800 rounded-md shadow flex items-center justify-center hover:bg-gray-100">
-        <Layers className="w-4 h-4" />
-      </button>
-      {open && (
-        <div className="mt-2 w-64 bg-(--bg-surface) border border-(--border-color) rounded-lg shadow-xl p-3 space-y-2 text-(--text-main)">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold">Détection de changement</span>
-            <label className="flex items-center gap-1 text-[11px] cursor-pointer">
-              <input type="checkbox" checked={on} onChange={e => setOn(e.target.checked)} /> Activer
-            </label>
+    <>
+      {/* barre de swipe glissable */}
+      {on && mode === 'swipe' && (
+        <div style={{ position: 'absolute', top: 0, bottom: 0, left: dividerX, width: 0, zIndex: 900, pointerEvents: 'none' }}>
+          <div style={{ position: 'absolute', top: 0, bottom: 0, left: -1.5, width: 3, background: '#fff', boxShadow: '0 0 6px rgba(0,0,0,.6)' }} />
+          <div onPointerDown={(e) => { dragging.current = true; e.preventDefault(); }}
+            style={{ position: 'absolute', top: '50%', left: -18, marginTop: -18, width: 36, height: 36, borderRadius: '50%', background: '#fff', boxShadow: '0 2px 8px rgba(0,0,0,.45)', cursor: 'ew-resize', pointerEvents: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#166534', fontSize: 16, fontWeight: 700 }}>
+            ⇔
           </div>
-          <p className="text-[10px] text-(--text-muted) leading-tight">Compare la carte actuelle (Google) avec une imagerie de référence ou historique (Wayford daté).</p>
-          <div>
-            <label className="text-[10px] font-semibold text-(--text-muted) uppercase">Couche de comparaison</label>
-            <select value={src} onChange={e => setSrc(e.target.value as any)} className={inp}>
-              <option value="wayback">Esri Wayback (historique daté)</option>
-              <option value="esri">Esri World Imagery</option>
-              <option value="ghybrid">Hybride Google</option>
-              <option value="osm">OpenStreetMap</option>
-            </select>
-          </div>
-          {src === 'wayback' && (
-            <div>
-              <label className="text-[10px] font-semibold text-(--text-muted) uppercase">Date ({wb.length} versions)</label>
-              <select value={rel ?? ''} onChange={e => setRel(Number(e.target.value))} className={inp}>
-                {wb.length === 0 && <option>Chargement…</option>}
-                {wb.map(w => <option key={w.rel} value={w.rel}>{w.date}</option>)}
-              </select>
-            </div>
-          )}
-          <div className="flex gap-1">
-            <button onClick={() => setMode('swipe')} className={`flex-1 py-1 rounded text-[11px] ${mode === 'swipe' ? 'bg-(--brand) text-white' : 'bg-(--bg-main)'}`}>Swipe</button>
-            <button onClick={() => setMode('blend')} className={`flex-1 py-1 rounded text-[11px] ${mode === 'blend' ? 'bg-(--brand) text-white' : 'bg-(--bg-main)'}`}>Fondu</button>
-          </div>
-          {mode === 'swipe'
-            ? <div><label className="text-[10px] text-(--text-muted)">Curseur ({swipe}%)</label><input type="range" min={0} max={100} value={swipe} onChange={e => setSwipe(Number(e.target.value))} className="w-full" /></div>
-            : <div><label className="text-[10px] text-(--text-muted)">Opacité ({opacity}%)</label><input type="range" min={0} max={100} value={opacity} onChange={e => setOpacity(Number(e.target.value))} className="w-full" /></div>}
         </div>
       )}
-    </div>,
+
+      {/* contrôle (bas-gauche, ouvre vers le haut) */}
+      <div ref={ctrlRef} style={{ position: 'absolute', bottom: 30, left: 12, zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {open && (
+          <div className="w-64 bg-(--bg-surface) border border-(--border-color) rounded-xl shadow-2xl p-3 space-y-2.5 text-(--text-main)">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold flex items-center gap-1.5"><Contrast className="w-3.5 h-3.5" /> Détection de changement</span>
+              <label className="flex items-center gap-1 text-[11px] cursor-pointer select-none">
+                <input type="checkbox" checked={on} onChange={e => setOn(e.target.checked)} /> Activer
+              </label>
+            </div>
+            <p className="text-[10px] text-(--text-muted) leading-tight">Compare la carte actuelle (Google) avec une imagerie de référence ou historique (Esri Wayback daté).</p>
+
+            <div>
+              <label className="text-[10px] font-semibold text-(--text-muted) uppercase">Couche de comparaison</label>
+              <select value={src} onChange={e => setSrc(e.target.value as any)} className={inp}>
+                <option value="wayback">Esri Wayback (historique daté)</option>
+                <option value="esri">Esri World Imagery</option>
+                <option value="ghybrid">Hybride Google</option>
+                <option value="osm">OpenStreetMap</option>
+              </select>
+            </div>
+
+            {src === 'wayback' && (
+              <div>
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-semibold text-(--text-muted) uppercase">Frise temporelle</label>
+                  <span className="text-[11px] font-bold text-(--brand)">{wb[wbIdx]?.date ?? '—'}</span>
+                </div>
+                <input type="range" min={0} max={Math.max(0, wb.length - 1)} value={sliderVal}
+                  onChange={e => { const idx = wb.length - 1 - Number(e.target.value); if (wb[idx]) setRel(wb[idx].rel); }}
+                  className="w-full accent-(--brand)" disabled={wb.length === 0} />
+                <div className="flex justify-between text-[9px] text-(--text-muted)"><span>{wb[wb.length - 1]?.date ?? 'ancien'}</span><span>{wb[0]?.date ?? 'récent'}</span></div>
+              </div>
+            )}
+
+            <div className="flex gap-1 p-0.5 bg-(--bg-main) rounded-lg">
+              <button onClick={() => setMode('blend')} className={`flex-1 py-1.5 rounded-md text-[11px] font-semibold transition ${mode === 'blend' ? 'bg-(--brand) text-white shadow' : 'text-(--text-muted)'}`}>Fondu</button>
+              <button onClick={() => setMode('swipe')} className={`flex-1 py-1.5 rounded-md text-[11px] font-semibold transition ${mode === 'swipe' ? 'bg-(--brand) text-white shadow' : 'text-(--text-muted)'}`}>Swipe</button>
+            </div>
+
+            {mode === 'blend'
+              ? <div><div className="flex items-center justify-between"><label className="text-[10px] text-(--text-muted)">Opacité</label><span className="text-[10px] font-semibold">{opacity}%</span></div><input type="range" min={0} max={100} value={opacity} onChange={e => setOpacity(Number(e.target.value))} className="w-full accent-(--brand)" /></div>
+              : <p className="text-[10px] text-(--text-muted) leading-tight">Glissez la poignée <span className="font-bold text-(--text-main)">⇔</span> sur la carte. Gauche = imagerie de comparaison, droite = carte actuelle.</p>}
+          </div>
+        )}
+        <button onClick={() => { setOpen(o => !o); if (!open && !on) setOn(true); }} title="Comparaison / détection de changement"
+          className="w-10 h-10 bg-(--bg-surface) border border-(--border-color) text-(--brand) rounded-lg shadow-lg flex items-center justify-center hover:bg-(--bg-main) self-start">
+          <Contrast className="w-5 h-5" />
+        </button>
+      </div>
+    </>,
     map.getContainer()
   );
 }
