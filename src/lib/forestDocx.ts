@@ -11,9 +11,21 @@
 
 import {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
-  AlignmentType, WidthType, BorderStyle, PageOrientation, VerticalAlign,
+  AlignmentType, WidthType, BorderStyle, PageOrientation, VerticalAlign, ImageRun,
 } from 'docx';
 import { asBlob } from 'html-docx-js-typescript';
+
+// ── Logo ANEF (public/images/logo-anef.png) ──────────────────────────────────
+// Récupéré au runtime puis embarqué dans le .docx (ImageRun). En cas d'échec
+// (offline / fichier absent), on retombe proprement sur l'en-tête texte.
+const LOGO_URL = '/images/logo-anef.png';
+async function fetchLogoBytes(): Promise<Uint8Array | null> {
+  try {
+    const res = await fetch(LOGO_URL);
+    if (!res.ok) return null;
+    return new Uint8Array(await res.arrayBuffer());
+  } catch { return null; }
+}
 
 // ── Helpers de téléchargement ────────────────────────────────────────────────
 function saveBlob(blob: Blob, filename: string) {
@@ -42,7 +54,7 @@ const fr = (text: string, opts: { bold?: boolean; size?: number; align?: any; co
     children: [new TextRun({ text, bold: opts.bold, size: opts.size ?? 18, color: opts.color, font: 'Times New Roman', underline: opts.underline ? {} : undefined })],
   });
 
-const cell = (children: Paragraph[], opts: { width?: number; shade?: string; vAlign?: any } = {}) =>
+const cell = (children: (Paragraph | Table)[], opts: { width?: number; shade?: string; vAlign?: any } = {}) =>
   new TableCell({
     children,
     verticalAlign: opts.vAlign ?? VerticalAlign.CENTER,
@@ -58,14 +70,23 @@ const thinBorders = {
   right: { style: BorderStyle.SINGLE, size: 4, color: '999999' },
 };
 
+const NO_BORDER = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
+const noBorders = { top: NO_BORDER, bottom: NO_BORDER, left: NO_BORDER, right: NO_BORDER, insideHorizontal: NO_BORDER, insideVertical: NO_BORDER };
+
 const A4 = { width: 11906, height: 16838 }; // twips
+const spacer = (after = 60) => new Paragraph({ text: '', spacing: { after } });
 
 // ════════════════════════════════════════════════════════════════════════════
 // 1. ATTESTATION (بطاقة معاينة) — Arabe RTL, A4 portrait
 // ════════════════════════════════════════════════════════════════════════════
 export interface AttestData {
-  nomProprietaire: string; referenceParcel: string; commune: string; qiada: string; omala: string;
-  foret: string; foretAr: string; canton: string; cpf: string; superficieM2: string; dateVisite: string;
+  nomImmeuble: string;          // اسم العقار (NOM de la parcelle du requérant — PAS la forêt)
+  nomProprietaire: string;      // اسم صاحب العقار
+  referenceParcel: string; commune: string; qiada: string; omala: string;
+  foret: string; foretAr: string; canton: string; cantonAr?: string; cpf: string;
+  foretVoisine: string;         // الغابة المجاورة (texte affiché)
+  distanceForet: string;        // أقرب مسافة تفصل العقار عن الغابة المجاورة
+  superficieM2: string; dateVisite: string;
   limiteNord: string; limiteSud: string; limiteEst: string; limiteOuest: string;
   positionDomaine: 'داخل الملك الغابوي' | 'جزئيا داخل الملك الغابوي' | 'خارج الملك الغابوي';
   rapporteurs: string[]; chefCPF: string;
@@ -75,71 +96,121 @@ export interface AttestData {
 export async function exportAttestationDocx(c: AttestData) {
   const date = new Date(c.dateVisite || Date.now());
   const box = (on: boolean) => (on ? '☑' : '☐');
-  const field = (label: string, value: string) =>
+  const logo = await fetchLogoBytes();
+
+  // — étiquette gras + valeur, en une seule fenêtre RTL —
+  const field = (label: string, value: string, o: { valueBold?: boolean; after?: number; size?: number } = {}) =>
     new Paragraph({
-      bidirectional: true, alignment: AlignmentType.RIGHT, spacing: { after: 70 },
+      bidirectional: true, alignment: AlignmentType.RIGHT, spacing: { after: o.after ?? 60, line: 300 },
       children: [
-        new TextRun({ text: label, rightToLeft: true, bold: true, font: 'Arial', size: 20 }),
-        new TextRun({ text: value || '....................', rightToLeft: true, font: 'Arial', size: 20 }),
+        new TextRun({ text: label, rightToLeft: true, bold: true, font: 'Arial', size: o.size ?? 22 }),
+        new TextRun({ text: value || '............', rightToLeft: true, font: 'Arial', size: o.size ?? 22, bold: o.valueBold }),
       ],
     });
 
-  // tableau des coordonnées Lambert
+  // ── En-tête : LOGO ANEF + directions ──────────────────────────────────────
+  const header: Paragraph[] = [];
+  if (logo) {
+    header.push(new Paragraph({
+      alignment: AlignmentType.CENTER, spacing: { after: 40 },
+      children: [new ImageRun({ data: logo, transformation: { width: 150, height: 58 } })],
+    }));
+  } else {
+    header.push(ar('الوكالة الوطنية للمياه والغابات — ANEF', { bold: true, align: AlignmentType.CENTER, size: 18, color: GREEN }));
+  }
+  header.push(
+    ar('المديرية الجهوية للوكالة الوطنية للمياه والغابات طنجة-تطوان-الحسيمة', { bold: true, align: AlignmentType.CENTER, size: 16 }),
+    ar('المديرية الإقليمية للوكالة الوطنية للمياه والغابات لتطوان', { bold: true, align: AlignmentType.CENTER, size: 16 }),
+    ar('مركز حماية الغابات للمضيق-فنيدق', { bold: true, align: AlignmentType.CENTER, size: 16 }),
+  );
+
+  const title = new Paragraph({
+    bidirectional: true, alignment: AlignmentType.CENTER, spacing: { before: 120, after: 160 },
+    children: [new TextRun({ text: 'بطاقة معاينة حول انتفاء الصبغة الغابوية', rightToLeft: true, bold: true, size: 30, font: 'Arial', underline: {} })],
+  });
+
+  // ── Tableau des coordonnées Lambert ───────────────────────────────────────
   const coordRows = [
     new TableRow({ tableHeader: true, children: [
-      cell([ar('النقطة', { bold: true, align: AlignmentType.CENTER })], { shade: 'E8F5E9' }),
-      cell([ar('X', { bold: true, align: AlignmentType.CENTER })], { shade: 'E8F5E9' }),
-      cell([ar('Y', { bold: true, align: AlignmentType.CENTER })], { shade: 'E8F5E9' }),
+      cell([ar('النقطة', { bold: true, align: AlignmentType.CENTER, size: 18 })], { shade: 'E8F5E9' }),
+      cell([ar('X', { bold: true, align: AlignmentType.CENTER, size: 18 })], { shade: 'E8F5E9' }),
+      cell([ar('Y', { bold: true, align: AlignmentType.CENTER, size: 18 })], { shade: 'E8F5E9' }),
     ] }),
     ...c.coordPoints.filter(p => p.x || p.y).map(p => new TableRow({ children: [
-      cell([new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: String(p.num), font: 'Arial', size: 18 })] })]),
-      cell([new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: p.x || '—', font: 'Arial', size: 18 })] })]),
-      cell([new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: p.y || '—', font: 'Arial', size: 18 })] })]),
+      cell([new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'B' + p.num, font: 'Arial', size: 16 })] })]),
+      cell([new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: p.x || '—', font: 'Arial', size: 16 })] })]),
+      cell([new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: p.y || '—', font: 'Arial', size: 16 })] })]),
     ] })),
   ];
+  const coordTable = new Table({ visuallyRightToLeft: true, width: { size: 100, type: WidthType.PERCENTAGE }, borders: thinBorders, rows: coordRows });
 
-  // signatures
-  const sigRow = new TableRow({ children: [
-    cell([ar('رئيس مركز حماية الغابات المضيق - الفنيدق', { bold: true, align: AlignmentType.CENTER, size: 16 })], { shade: 'F4F7F4' }),
-    cell([ar('عناصر الفرقة المتنقلة المضيق-الفنيدق', { bold: true, align: AlignmentType.CENTER, size: 16 })], { shade: 'F4F7F4' }),
+  // ── En-tête 2 colonnes (droite: parcelle / gauche: propriétaire+date+coords) ─
+  const rightCol = [
+    field('اسم العقار: ', c.nomImmeuble, { valueBold: true }),
+    field('المرجع: ', c.referenceParcel || '...... م ح غ / م ف'),
+    field('الجماعة القروية أو الحضارية: ', c.commune),
+    field('قيادة: ', c.qiada),
+    field('عمالة: ', c.omala || 'تطوان'),
+    field('مساحة الأرض: ', `${c.superficieM2 || '—'} متر مربع`),
+  ];
+  const leftCol = [
+    field('اسم صاحب العقار: ', c.nomProprietaire, { valueBold: true }),
+    field('بتاريخ: ', `${date.getDate()} ${date.toLocaleDateString('ar-MA', { month: 'long' })} ${date.getFullYear()}`),
+    coordTable,
+  ];
+  const headerGrid = new Table({
+    visuallyRightToLeft: true, width: { size: 100, type: WidthType.PERCENTAGE }, borders: noBorders, columnWidths: [4800, 4800],
+    rows: [new TableRow({ children: [
+      cell(rightCol, { width: 50, vAlign: VerticalAlign.TOP, borders: noBorders }),
+      cell(leftCol, { width: 50, vAlign: VerticalAlign.TOP, borders: noBorders }),
+    ] })],
+  });
+
+  // ── Tableau de position (3 cases) ─────────────────────────────────────────
+  const posCell = (label: string) => cell([new Paragraph({
+    bidirectional: true, alignment: AlignmentType.CENTER,
+    children: [new TextRun({ text: `${box(c.positionDomaine === label)}  ${label}`, rightToLeft: true, bold: c.positionDomaine === label, size: 18, font: 'Arial', color: c.positionDomaine === label ? GREEN : undefined })],
+  })], { shade: c.positionDomaine === label ? 'EAF5EC' : undefined });
+  const posTable = new Table({ visuallyRightToLeft: true, width: { size: 100, type: WidthType.PERCENTAGE }, borders: thinBorders, rows: [
+    new TableRow({ children: [posCell('خارج الملك الغابوي'), posCell('جزئيا داخل الملك الغابوي'), posCell('داخل الملك الغابوي')] }),
   ] });
-  const sigNames = new TableRow({ children: [
-    cell([ar(c.chefCPF || ' ', { align: AlignmentType.CENTER })], { vAlign: VerticalAlign.TOP }),
-    cell([ar(c.rapporteurs.filter(Boolean).join('  /  ') || ' ', { align: AlignmentType.CENTER })], { vAlign: VerticalAlign.TOP }),
+
+  // ── Signatures ────────────────────────────────────────────────────────────
+  const sigTable = new Table({ visuallyRightToLeft: true, width: { size: 100, type: WidthType.PERCENTAGE }, borders: thinBorders, rows: [
+    new TableRow({ children: [
+      cell([ar('رئيس مركز حماية الغابات المضيق-الفنيدق', { bold: true, align: AlignmentType.CENTER, size: 18 })], { shade: 'F4F7F4' }),
+      cell([ar('عناصر الفرقة المتنقلة المضيق-الفنيدق', { bold: true, align: AlignmentType.CENTER, size: 18 })], { shade: 'F4F7F4' }),
+    ] }),
+    new TableRow({ children: [
+      cell([ar(c.chefCPF || ' ', { align: AlignmentType.CENTER })], { vAlign: VerticalAlign.TOP }),
+      cell([ar(c.rapporteurs.filter(Boolean).join('  /  ') || ' ', { align: AlignmentType.CENTER })], { vAlign: VerticalAlign.TOP }),
+    ] }),
   ] });
 
   const doc = new Document({
+    styles: { default: { document: { run: { font: 'Arial', size: 22, rightToLeft: true } } } },
     sections: [{
-      properties: { page: { size: { width: A4.width, height: A4.height, orientation: PageOrientation.PORTRAIT }, margin: { top: 720, right: 900, bottom: 720, left: 900 } } },
+      properties: { page: { size: { width: A4.width, height: A4.height, orientation: PageOrientation.PORTRAIT }, margin: { top: 700, right: 900, bottom: 600, left: 900 } } },
       children: [
-        ar('المملكة المغربية — الوكالة الوطنية للمياه والغابات (ANEF)', { bold: true, align: AlignmentType.CENTER, size: 18, color: GREEN }),
-        ar('بطاقة معاينة حول إنتفاء الصبغة الغابوية', { bold: true, align: AlignmentType.CENTER, size: 28 }),
-        new Paragraph({ text: '', spacing: { after: 120 } }),
-        field('اسم العقار: ', c.foret),
-        field('المرجع: ', c.referenceParcel || '...... م ح غ / م ف'),
-        field('الجماعة: ', c.commune),
-        field('قيادة: ', c.qiada),
-        field('اسم صاحب العقار: ', c.nomProprietaire),
-        field('بتاريخ: ', `يوم ${date.getDate()} شهر ${date.toLocaleDateString('ar-MA', { month: 'long' })} سنة ${date.getFullYear()}`),
-        field('عمالة: ', c.omala || 'تطوان'),
-        field('مساحة الأرض: ', `${c.superficieM2 || '—'} متر مربع`),
-        ar('الإحداثيات (لامبير):', { bold: true, align: AlignmentType.CENTER }),
-        new Table({ visuallyRightToLeft: true, width: { size: 100, type: WidthType.PERCENTAGE }, borders: thinBorders, rows: coordRows }),
-        new Paragraph({ text: '', spacing: { after: 80 } }),
+        ...header, title, headerGrid, spacer(60),
         ar('حدود العقار كما يلي:', { bold: true }),
         field('الشمال: ', c.limiteNord), field('الجنوب: ', c.limiteSud),
         field('الغرب: ', c.limiteOuest), field('الشرق: ', c.limiteEst),
-        ar('وضعية العقار بالنسبة للملك الغابوي :', { bold: true }),
-        ar(`${box(c.positionDomaine === 'خارج الملك الغابوي')} خارج الملك الغابوي    ${box(c.positionDomaine === 'جزئيا داخل الملك الغابوي')} جزئيا داخل الملك الغابوي    ${box(c.positionDomaine === 'داخل الملك الغابوي')} داخل الملك الغابوي`),
-        new Paragraph({ text: '', spacing: { after: 80 } }),
-        ar('المحدد بموجب مرسوم رقم 2.84321 صادر في 13 محرم 1405 الموافق ل 9 أكتوبر 1984. ويبقى للإدارة حق الرجوع إذا ظهرت قوانين جديدة كما أن هذه الإفادة لا يمكن الاستشهاد بها خارج الإدارة ولا تكسب طالبها حق الملكية لهذا العقار.', { align: AlignmentType.JUSTIFIED, size: 16, color: '555555' }),
-        new Paragraph({ text: '', spacing: { after: 80 } }),
+        spacer(40),
+        field('الغابة المجاورة: ', c.foretVoisine),
+        field('أقرب مسافة تفصل بين العقار المذكور والغابة المجاورة: ', c.distanceForet),
+        spacer(40),
+        ar('تمت المعاينة بناءا على حدود الملك الغابوي حيث أن العقار يتواجد:', { bold: true }),
+        posTable, spacer(60),
+        ar('المحدد بموجب مرسوم رقم 2.84.321 صادر في 13 محرم 1405 الموافق ل 9 أكتوبر 1984. ويبقى للإدارة حق الرجوع إذا ظهرت قوانين جديدة كما أن هذه الإفادة لا يمكن الاستشهاد بها خارج الإدارة ولا تكسب طالبها حق الملكية لهذا العقار.', { align: AlignmentType.JUSTIFIED, size: 16, color: '555555' }),
+        spacer(60),
         ar('إمضاء اللجنة التي عاينت العقار:', { bold: true }),
-        new Table({ visuallyRightToLeft: true, width: { size: 100, type: WidthType.PERCENTAGE }, borders: thinBorders, rows: [sigRow, sigNames] }),
+        sigTable, spacer(80),
+        ar('المرفقات: تصميم توضيحي لموقع العقار بالنسبة لأقرب غابة مخزنية.', { bold: true, size: 18 }),
       ],
     }],
   });
-  saveBlob(await Packer.toBlob(doc), `بطاقة-${c.nomProprietaire || 'عقار'}.docx`);
+  saveBlob(await Packer.toBlob(doc), `بطاقة-معاينة-${c.nomImmeuble || c.nomProprietaire || 'عقار'}.docx`);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -162,10 +233,29 @@ export async function exportFicheDocx(c: FicheData) {
   const avisColor = c.avis === 'DÉFAVORABLE' ? RED : GREEN;
   const secTitle = (t: string) => fr(t, { bold: true, underline: true, size: 18 });
 
-  const leftCol: Paragraph[] = [
-    fr('ROYAUME DU MAROC — ANEF', { bold: true, align: AlignmentType.CENTER, color: GREEN, size: 18 }),
-    fr(`N° ${c.numero || '___'}   |   Le, ${c.date || ''}        Réf : Envoi CPF n° ${c.refEnvoi || '___'}`, { size: 16 }),
-    fr('RÉQUISITION DE LA DÉLIMITATION OU D\'IMMATRICULATION — FICHE DE RECONNAISSANCE', { bold: true, align: AlignmentType.CENTER, underline: true, size: 18 }),
+  // En-tête directionnel (sans logo) — table 2 colonnes sans bordures
+  const ficheHeader = new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: noBorders,
+    columnWidths: [5600, 4000],
+    rows: [new TableRow({ children: [
+      cell([
+        fr('DRANEF : TTH', { bold: true, size: 16 }),
+        fr('DPANEF : Tétouan', { bold: true, size: 16 }),
+        fr("CPF : M'diq-Fnideq", { bold: true, size: 16 }),
+        fr("BM : M'diq-Fnideq", { bold: true, size: 16 }),
+      ], { width: 58, vAlign: VerticalAlign.TOP }),
+      cell([
+        fr(`N° ${c.numero || '___'}`, { align: AlignmentType.RIGHT, size: 16 }),
+        fr(`Le, ${c.date || ''}`, { align: AlignmentType.RIGHT, size: 16 }),
+        fr(`Réf : Envoi CPF n° ${c.refEnvoi || '___'}`, { align: AlignmentType.RIGHT, size: 16 }),
+      ], { width: 42, vAlign: VerticalAlign.TOP }),
+    ] })],
+  });
+
+  const leftCol: (Paragraph | Table)[] = [
+    ficheHeader,
+    fr("RÉQUISITION DE LA DÉLIMITATION OU D'IMMATRICULATION — FICHE DE RECONNAISSANCE", { bold: true, align: AlignmentType.CENTER, underline: true, size: 18 }),
     fr(`L'immeuble foncier dit : ${c.immeubleDit || ''}`, { bold: true }),
     fr(`Objet de la réquisition N° : ${c.objetRequisition || ''}`),
     fr(`Bulletin officiel N° ${c.bulletinOfficielNum || ''} du ${c.bulletinOfficielDate || ''}`),
@@ -192,13 +282,17 @@ export async function exportFicheDocx(c: FicheData) {
   ];
 
   const rightCol: Paragraph[] = [
-    fr('Croquis de situation :', { bold: true, align: AlignmentType.CENTER, underline: true }),
-    fr('[ Insérer le croquis / plan ici ]', { align: AlignmentType.CENTER, color: '999999' }),
+    fr('Croquis de situation à valider :', { bold: true, align: AlignmentType.CENTER, underline: true }),
+    fr('[ Croquis généré via « Capturer Carte » / impression PDF ]', { align: AlignmentType.CENTER, color: '999999', size: 15 }),
     fr('', {}),
-    fr(`N°  /CPF/M'diq-Fnideq      M'diq, Le ${c.signataireDate || ''}`, { size: 15 }),
-    fr('Copie conforme transmise à Mr le Directeur Provincial de l\'ANEF de TETOUAN', { align: AlignmentType.CENTER, size: 15 }),
-    fr(`« Avis ${c.avis} »`, { bold: true, color: avisColor }),
-    fr(`Le Chef de CPF de M'diq - Fnideq : ${c.signataire || ''}`, { align: AlignmentType.RIGHT, size: 15 }),
+    fr('', {}),
+    fr(`N°      /CPF/M'diq-Fnideq          M'diq, Le ${c.signataireDate || c.date || ''}`, { size: 15 }),
+    fr('Copie conforme transmise à', { align: AlignmentType.CENTER, size: 15 }),
+    fr("Mr le Directeur Provincial de l'ANEF de TETOUAN", { align: AlignmentType.CENTER, bold: true, size: 15 }),
+    fr(`« Pour information, en ayant l'honneur de vous informer que cette Zone émet un avis ${c.avis} ».`, { size: 15, color: avisColor }),
+    fr('', {}),
+    fr("Le Chef de CPF de M'diq - Fnideq", { align: AlignmentType.RIGHT, bold: true, size: 15 }),
+    fr(c.signataire || '', { align: AlignmentType.RIGHT, size: 15 }),
   ];
 
   const twoCols = new Table({
