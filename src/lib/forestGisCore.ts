@@ -757,3 +757,39 @@ export async function exportShapefile(geojson: any, name = 'couche', opts: { lam
   } as any)) as Blob;
   downloadBlob(blob, `${safe}_shp${opts.lambert ? '_lambert' : ''}.zip`);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. DÉTECTION AUTO DU CRS (style ArcGIS « on-the-fly ») — Maroc
+//     Teste les CRS marocains courants et garde celui qui place la couche DANS
+//     le Maroc. Aucune question posée : la couche se positionne correctement.
+// ─────────────────────────────────────────────────────────────────────────────
+const MOROCCO = { minLng: -17.5, maxLng: -0.5, minLat: 20.5, maxLat: 36.5 };
+const inMorocco = (lng: number, lat: number) =>
+  lng >= MOROCCO.minLng && lng <= MOROCCO.maxLng && lat >= MOROCCO.minLat && lat <= MOROCCO.maxLat;
+
+export function smartNormalizeToWGS84(geojson: any): { geojson: any; from: string } {
+  let sample: number[] | null = null;
+  try { turf.coordEach(geojson, (c) => { if (!sample) sample = [c[0], c[1]]; }); } catch {}
+  if (!sample) return { geojson, from: 'WGS84 (vide)' };
+  const sx = (sample as number[])[0], sy = (sample as number[])[1];
+
+  // déjà en longitude/latitude et dans le Maroc → rien à faire
+  if (Math.abs(sx) <= 180 && Math.abs(sy) <= 90 && inMorocco(sx, sy)) {
+    return { geojson, from: 'WGS84 (EPSG:4326)' };
+  }
+  // candidats projetés, par probabilité au Maroc
+  const candidates = [
+    { epsg: EPSG.LAMBERT_NORD, label: 'Lambert Nord Maroc (EPSG:26191)' },
+    { epsg: EPSG.LAMBERT_SUD,  label: 'Lambert Sud Maroc (EPSG:26192)' },
+    { epsg: EPSG.UTM_30N,      label: 'UTM 30N (EPSG:32630)' },
+    { epsg: EPSG.UTM_29N,      label: 'UTM 29N (EPSG:32629)' },
+  ];
+  for (const c of candidates) {
+    try {
+      const [lng, lat] = proj4(c.epsg, EPSG.WGS84, [sx, sy]);
+      if (inMorocco(lng, lat)) return { geojson: reprojectGeoJSON(geojson, c.epsg, EPSG.WGS84), from: c.label };
+    } catch {}
+  }
+  // dernier recours : Lambert Nord
+  return { geojson: reprojectGeoJSON(geojson, EPSG.LAMBERT_NORD, EPSG.WGS84), from: 'Lambert Nord (par défaut)' };
+}

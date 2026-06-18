@@ -25,7 +25,7 @@ import type { ChevauchementResult } from './DocumentModals';
 import proj4 from 'proj4';
 import { createPortal } from 'react-dom';
 import {
-  registerProjections, normalizeToWGS84, repairGeometry, hasSelfIntersection,
+  registerProjections, normalizeToWGS84, smartNormalizeToWGS84, repairGeometry, hasSelfIntersection,
   difference, clip, symmetricDifference, unionAll, splitPolygonByLine,
   multiRingBuffer, dissolveAll, convexHullOf, envelopeOf, centroidOf,
   voronoiOf, distanceToBoundary, toKML, toGPX, downloadText,
@@ -1502,10 +1502,10 @@ function RechercheTab({
         <div className="flex gap-2">
           <input type="number" step="any" value={lambertX} onChange={e => setLambertX(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handleCenterLambert(); }}
-            placeholder="X — Est" className={inp} />
+            placeholder="X" className={inp} />
           <input type="number" step="any" value={lambertY} onChange={e => setLambertY(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handleCenterLambert(); }}
-            placeholder="Y — Nord" className={inp} />
+            placeholder="Y" className={inp} />
           <button onClick={handleCenterLambert}
             className="px-3 py-1.5 bg-(--bg-surface) border border-(--border-color) hover:bg-(--bg-main) text-(--text-main) font-bold text-[11px] rounded-lg shadow-sm transition-all active:scale-95 shrink-0">
             GO
@@ -1777,7 +1777,7 @@ function CouchesTab({
 
   // ── addGeoLayer: central function for adding any imported layer ────────────
   const addGeoLayer = (rawGeojson: any, fileName: string, opts: { noPoints?: boolean } = {}) => {
-    const _norm = normalizeToWGS84(rawGeojson);
+    const _norm = smartNormalizeToWGS84(rawGeojson);  // auto-CRS: positionne correctement la couche
     const geojson = repairGeometry(_norm.geojson);
     const id = `imported-${Date.now()}`;
     const color = '#38bdf8';
@@ -1985,12 +1985,16 @@ function CouchesTab({
     const timer = setTimeout(() => {
       if (!officialRefs.current['forest']) {
         const fg = featureGroupRef.current;
-        if (!fg) return;
+        const fmap: L.Map | undefined = (fg as any)?._map;
+        if (!fg || !fmap) return;
+        const paneId = 'official-forest';
+        if (!fmap.getPane(paneId)) { fmap.createPane(paneId); const pp = fmap.getPane(paneId); if (pp) pp.style.zIndex = '395'; }
         fetch('/assets/data/forest_limits.json')
           .then(r => r.json())
           .then(geojson => {
             const style = officialStyles['forest'];
             const layer = L.geoJSON(geojson, {
+              pane: paneId,
               style: { color: style.strokeColor, weight: 2, fillColor: style.strokeColor, fillOpacity: 0.07, opacity: 0.85 },
               onEachFeature: (feature, lyr) => {
                 const p = feature.properties || {};
@@ -1999,7 +2003,7 @@ function CouchesTab({
                 lyr.on('mouseout',  function () { (lyr as L.Path).setStyle({ fillOpacity: 0.07, weight: 2 }); });
               },
             });
-            fg.addLayer(layer);
+            layer.addTo(fmap);
             officialRefs.current['forest'] = layer;
             _officialGeoData['forest'] = geojson;
             setOfficialVisible(p => ({ ...p, forest: true }));
@@ -2622,7 +2626,7 @@ function AttributeTableModal({ layer, onClose }: { layer: any; onClose: () => vo
 }
 
 function GeotoolsTab({ customLayers, setCustomLayers, featureGroupRef }: any) {
-  const [tool, setTool] = useState<string>('buffer');
+  const [tool, setTool] = useState<string>('points_to_polygon');
   const [layer1, setLayer1] = useState<string>('');
   const [layer2, setLayer2] = useState<string>('');
   const [radius, setRadius] = useState<number>(50);
