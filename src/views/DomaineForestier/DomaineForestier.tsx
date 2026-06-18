@@ -1736,28 +1736,41 @@ function CouchesTab({
 
   const toggleOfficial = async (key: string, file: string, color: string, weight: number, tooltip: (p: any) => string) => {
     const fg = featureGroupRef.current;
-    if (!fg) return;
-    if (officialVisible[key]) {
-      const ref = officialRefs.current[key];
-      if (ref) { fg.removeLayer(ref); officialRefs.current[key] = null; }
-      setOfficialVisible(p => ({ ...p, [key]: false }));
+    const map: L.Map | undefined = (fg as any)?._map;
+    if (!fg || !map) return;
+    const paneId = `official-${key}`;
+    if (!map.getPane(paneId)) {
+      map.createPane(paneId);
+      const pp = map.getPane(paneId);
+      if (pp) pp.style.zIndex = '395';   // au-dessus du fond, sous les vecteurs dessinés
+    }
+    // déjà chargée → simple bascule d'affichage (instantané, ne peut pas échouer)
+    if (officialRefs.current[key]) {
+      const willShow = !officialVisible[key];
+      const pp = map.getPane(paneId);
+      if (pp) pp.style.display = willShow ? '' : 'none';
+      setOfficialVisible(p => ({ ...p, [key]: willShow }));
       return;
     }
+    // premier chargement
     try {
       const res = await fetch(file);
       const geojson = await res.json();
       const style = officialStyles[key];
       const layer = L.geoJSON(geojson, {
+        pane: paneId,
         style: { color: style.strokeColor, weight, fillColor: style.strokeColor, fillOpacity: style.fillOpacity, opacity: 0.85 },
         onEachFeature: (feature, lyr) => {
           lyr.bindTooltip(tooltip(feature.properties || {}), { sticky: true });
           lyr.on('mouseover', function () { (lyr as L.Path).setStyle({ fillOpacity: 0.22, weight: weight + 1 }); });
-          lyr.on('mouseout',  function () { (lyr as L.Path).setStyle({ fillOpacity: style.fillOpacity, weight }); });
+          lyr.on('mouseout',  function () { (lyr as L.Path).setStyle({ fillOpacity: officialStyles[key].fillOpacity, weight }); });
         },
       });
-      fg.addLayer(layer);
+      layer.addTo(map);
       officialRefs.current[key] = layer;
       _officialGeoData[key] = geojson;
+      const pp = map.getPane(paneId);
+      if (pp) pp.style.display = '';
       setOfficialVisible(p => ({ ...p, [key]: true }));
     } catch (err) { console.error('[OfficialLayer]', key, err); }
   };
@@ -2479,12 +2492,22 @@ function MapComparison() {
 
   useEffect(() => {
     const pane = map.getPane('comparePane'); if (!pane) return;
-    if (!on) { pane.style.clipPath = ''; pane.style.opacity = '1'; return; }
-    if (mode === 'swipe') {
+    const clearClip = () => { (pane.style as any).clip = ''; pane.style.clipPath = ''; };
+    const update = () => {
+      if (!on) { clearClip(); pane.style.opacity = '1'; return; }
+      if (mode === 'blend') { clearClip(); pane.style.opacity = String(opacity / 100); return; }
+      // SWIPE : clip en coordonnées "layer" pour compenser le transform de Leaflet
       pane.style.opacity = '1';
-      const w = map.getSize().x; const x = dividerX || w / 2;
-      pane.style.clipPath = `inset(0 ${Math.max(0, w - x)}px 0 0)`;
-    } else { pane.style.clipPath = ''; pane.style.opacity = String(opacity / 100); }
+      const size = map.getSize();
+      const x = dividerX || size.x / 2;
+      const nw = map.containerPointToLayerPoint([0, 0]);
+      const se = map.containerPointToLayerPoint([size.x, size.y]);
+      const clipX = nw.x + (se.x - nw.x) * (x / size.x);
+      (pane.style as any).clip = `rect(${nw.y}px, ${clipX}px, ${se.y}px, ${nw.x}px)`;
+    };
+    update();
+    map.on('move zoom resize zoomend moveend viewreset', update);
+    return () => { map.off('move zoom resize zoomend moveend viewreset', update); };
   }, [on, mode, dividerX, opacity, map, src, rel]);
 
   // frise temporelle Wayback (gauche = ancien, droite = récent)
