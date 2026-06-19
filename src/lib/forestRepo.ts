@@ -4,6 +4,12 @@
 // S'appuie sur les RPC de 0001_forest_gis_postgis.sql.
 // ⚠️ Aligner l'import ci-dessous sur VOTRE export réel dans src/lib/supabase.ts
 //    (souvent `export const supabase = createClient(...)`).
+//
+// NOUVEAU (v2 — ربط حقيقي مع قسم المنازعات):
+//   • saveParcelForTarget(): يسجّل القطعة ويربطها بملف/محضر قضائي عبر props.
+//   • parcelsByCase()/parcelsByPV(): جلب القطع المرتبطة بملف/محضر.
+//   • أعلام الربط تُخزَّن داخل props: linked_case_id / linked_pv_id / case_ref.
+//     لا يتطلب تغيير المخطّط (props jsonb موجود أصلاً).
 // ════════════════════════════════════════════════════════════════════════════
 
 import { supabase } from './supabase';
@@ -117,4 +123,70 @@ export async function cacheOverlap(parcelId: string, r: OverlapServerResult): Pr
     total_area: r.total_area, inside_area: r.inside_area, outside_area: r.outside_area,
     total_percentage: r.total_percentage, hits: r.hits,
   });
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── RÉEL : liaison parcelle ⇄ dossier/PV contentieux ────────────────────────
+//   On stocke les clés de liaison dans props (jsonb) sans toucher au schéma.
+//   id déterministe : "CTX-CASE-<caseId>" / "CTX-PV-<pvId>" ⇒ upsert idempotent
+//   (re-dessiner la même parcelle d'un dossier MET À JOUR au lieu de dupliquer).
+// ════════════════════════════════════════════════════════════════════════════
+
+export interface ParcelLinkTarget {
+  kind: 'case' | 'pv';
+  id: string;            // id du dossier (contentieux_cases) ou du PV (pv_records)
+  ref?: string;          // mahakimId / linkedFileNumber / pvCourtRef (affichage)
+}
+
+/**
+ * Enregistre la parcelle ET la lie à un dossier/PV contentieux.
+ * Retourne l'id de la parcelle (déterministe) pour traçabilité.
+ */
+export async function saveParcelForTarget(input: {
+  target: ParcelLinkTarget;
+  name?: string;
+  source?: string;
+  geojson: any;
+  province?: string | null;
+  overlap?: any;          // résultat de chevauchement (calculé côté carte ou serveur)
+  area_m2?: number;
+  extraProps?: Record<string, any>;
+}): Promise<string | null> {
+  const { target } = input;
+  const parcelId = target.kind === 'case' ? `CTX-CASE-${target.id}` : `CTX-PV-${target.id}`;
+  const props: Record<string, any> = {
+    ...(input.extraProps || {}),
+    linked_case_id: target.kind === 'case' ? target.id : undefined,
+    linked_pv_id:   target.kind === 'pv'   ? target.id : undefined,
+    case_ref: target.ref || undefined,
+    overlap: input.overlap ?? undefined,
+    area_m2: input.area_m2 ?? undefined,
+    linked_at: new Date().toISOString(),
+  };
+  return saveParcel({
+    id: parcelId,
+    name: input.name || `قطعة الملف ${target.ref || target.id}`,
+    source: input.source || 'drawn',
+    props,
+    geojson: input.geojson,
+    province: input.province ?? null,
+  });
+}
+
+/** Récupère la (les) parcelle(s) liée(s) à un dossier contentieux. */
+export async function parcelsByCase(caseId: string): Promise<ParcelRecord[]> {
+  const all = await listParcels();
+  return all.filter(p => p?.props?.linked_case_id === caseId || p.id === `CTX-CASE-${caseId}`);
+}
+
+/** Récupère la (les) parcelle(s) liée(s) à un PV. */
+export async function parcelsByPV(pvId: string): Promise<ParcelRecord[]> {
+  const all = await listParcels();
+  return all.filter(p => p?.props?.linked_pv_id === pvId || p.id === `CTX-PV-${pvId}`);
+}
+
+/** Toutes les parcelles RATTACHÉES à un dossier/PV (pour affichage en couche dédiée). */
+export async function listLinkedParcels(): Promise<ParcelRecord[]> {
+  const all = await listParcels();
+  return all.filter(p => p?.props?.linked_case_id || p?.props?.linked_pv_id);
 }

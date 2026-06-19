@@ -33,7 +33,7 @@ import {
   buildScaledPlanSVG, printPlan, polygonFromLambertBornes, exportShapefile,
 } from '../../lib/forestGisCore';
 import { ESRI_WORLD_IMAGERY, fetchWaybackReleases, type WaybackRelease } from '../../lib/forestMaps';
-import { analyzeOverlapServer } from '../../lib/forestRepo';
+import { analyzeOverlapServer, saveParcelForTarget } from '../../lib/forestRepo';
 
 registerProjections();
 
@@ -558,8 +558,70 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     setPickingForCase(false);
   };
 
-  /** يبني بطاقة تموقع القطعة (هندسة + مساحة + مركز + لامبير + إقليم + تداخل) ويُسلّمها لملف القضية. */
-  const attachParcelToCase = () => {
+  // ── عرض قطعة ملف قضائي قادمة من قسم المنازعات (anef_show_parcel) ──
+  /** تحويل GeoJSON (Polygon/MultiPolygon/Feature) إلى إحداثيات Leaflet [lat,lng] للحلقة الخارجية. */
+  const geojsonToAreaCoords = (geojson: any): [number, number][] | null => {
+    try {
+      const f = geojson?.type === 'FeatureCollection'
+        ? (geojson.features.find((x: any) => x?.geometry) || geojson.features[0])
+        : geojson;
+      const geom = f?.type === 'Feature' ? f.geometry : f;
+      if (!geom) return null;
+      let ring: number[][] | null = null;
+      if (geom.type === 'Polygon') ring = geom.coordinates?.[0] || null;
+      else if (geom.type === 'MultiPolygon') ring = geom.coordinates?.[0]?.[0] || null;
+      if (!ring) return null;
+      return ring.map((c: number[]) => [c[1], c[0]] as [number, number]); // [lng,lat] → [lat,lng]
+    } catch { return null; }
+  };
+
+  /** يرسم قطعة ملف قضائي على الخريطة (طبقة مرجعية حمراء) ويُحلّق إليها ويحسب تداخلها. */
+  const showLinkedParcel = useCallback((req: { geojson: any; openFiche?: boolean; ref?: string }) => {
+    if (!req?.geojson) return;
+    const areaCoords = geojsonToAreaCoords(req.geojson);
+    if (!areaCoords || areaCoords.length < 3) { addToast({ type: 'warning', title: 'تعذّر رسم القطعة', msg: 'هندسة غير صالحة' }); return; }
+    const id = 'linked-parcel';
+    const label = req.ref ? `قطعة الملف ${req.ref}` : 'قطعة الملف القضائي';
+    setCustomLayers((curr: any[]) => {
+      const without = curr.filter((l: any) => l.id !== id);
+      return [...without, {
+        id, name: label, type: 'static_polygon', areaCoords,
+        color: '#dc2626', visible: true, opacity: 1,
+      }];
+    });
+    // تحليل التداخل + تغذية اللوحة الجانبية
+    try { handleLayerImported(id, label, req.geojson); } catch {}
+    // التحليق إلى مركز القطعة
+    try {
+      const feat = req.geojson.type === 'Feature'
+        ? req.geojson
+        : { type: 'Feature', geometry: (req.geojson.type === 'FeatureCollection' ? req.geojson.features[0].geometry : req.geojson), properties: {} };
+      const c = turf.centroid(feat as any);
+      const [lng, lat] = c.geometry.coordinates as [number, number];
+      setMapTargetCenter([lat, lng]);
+    } catch {}
+    addToast({ type: 'info', title: 'معاينة قطعة الملف', msg: 'عُرضت القطعة على الخريطة بالأحمر' });
+    // handleLayerImported يُستدعى داخل الجسم بعد الرندر؛ لا نضعه في التبعيات (مُعرَّف لاحقاً)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addToast]);
+
+  // عند التحميل + عند كل طلب فتح خريطة: استهلك طلب «معاينة القطعة» إن وُجد.
+  useEffect(() => {
+    const consume = () => {
+      try {
+        const raw = sessionStorage.getItem('anef_show_parcel');
+        if (!raw) return;
+        sessionStorage.removeItem('anef_show_parcel');
+        showLinkedParcel(JSON.parse(raw));
+      } catch {}
+    };
+    consume();
+    window.addEventListener('anef:open-map', consume);
+    return () => window.removeEventListener('anef:open-map', consume);
+  }, [showLinkedParcel]);
+
+  /** يبني بطاقة تموقع القطعة، يحفظها في domaine.parcels مربوطةً بالملف/المحضر، ثم يُسلّمها لقسم المنازعات. */
+  const attachParcelToCase = async () => {
     const layer = lastImportedLayer;
     if (!layer || !layer.geojson) { addToast({ type: 'warning', title: 'لا توجد قطعة محدّدة', msg: 'ارسم القطعة على الخريطة أولاً' }); return; }
     try {
@@ -573,18 +635,41 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       let perimeterKm = 0; try { perimeterKm = turf.length(feat, { units: 'kilometers' }); } catch {}
       const lam = calcLambert(lat, lng);
       const chev = layer.chevauchement;
+      const overlap = chev ? {
+        globalPosition: chev.globalPosition,
+        totalPercentage: chev.totalPercentage,
+        totalIntersectionArea: chev.totalIntersectionArea,
+        hits: chev.hits.map(h => ({ foret: h.foret, foretAr: h.foretAr, canton: h.canton, intersectionArea: h.intersectionArea, percentage: h.percentage, position: h.position })),
+      } : null;
+
+      // هدف الربط القادم من قسم المنازعات (ملف/محضر)
+      let target: { kind: 'case' | 'pv'; id: string; ref?: string } | null = null;
+      try { const raw = sessionStorage.getItem('anef_parcel_target'); if (raw) target = JSON.parse(raw); } catch {}
+
+      // حفظ حقيقي في domaine.parcels (idempotent: CTX-CASE-<id> / CTX-PV-<id>)
+      let parcelId: string | null = null;
+      if (target?.id) {
+        try {
+          parcelId = await saveParcelForTarget({
+            target,
+            name: `قطعة الملف ${target.ref || target.id}`,
+            source: String(layer.id || '').startsWith('imported') ? 'imported' : 'drawn',
+            geojson: feat,
+            province: layer.province || null,
+            overlap,
+            area_m2: areaM2,
+          });
+        } catch (e) { console.warn('[attachParcelToCase] saveParcelForTarget', e); }
+      }
+
       const location = {
         geojson: feat,
         centroidLat: lat, centroidLng: lng,
         lambertX: parseFloat(lam.x), lambertY: parseFloat(lam.y),
         areaM2, perimeterKm,
         province: layer.province || null,
-        overlap: chev ? {
-          globalPosition: chev.globalPosition,
-          totalPercentage: chev.totalPercentage,
-          totalIntersectionArea: chev.totalIntersectionArea,
-          hits: chev.hits.map(h => ({ foret: h.foret, foretAr: h.foretAr, canton: h.canton, intersectionArea: h.intersectionArea, percentage: h.percentage, position: h.position })),
-        } : null,
+        overlap,
+        parcelId: parcelId || undefined,
         capturedAt: new Date().toISOString(),
       };
       try { (window as any).__anefParcelPicking = false; } catch {}
@@ -592,7 +677,11 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       window.dispatchEvent(new CustomEvent('parcel:delivered', { detail: location }));
       window.dispatchEvent(new CustomEvent('anef:return-from-map'));
       setPickingForCase(false);
-      addToast({ type: 'success', title: 'أُرفقت القطعة بالملف ✓', msg: 'عُد إلى قسم المنازعات لإكمال الملف' });
+      addToast({
+        type: 'success',
+        title: parcelId ? 'سُجِّلت القطعة وأُرفقت بالملف ✓' : 'أُرفقت القطعة بالملف ✓',
+        msg: parcelId ? 'محفوظة في قاعدة الملك الغابوي ومربوطة بالملف' : 'عُد إلى قسم المنازعات لإكمال الملف',
+      });
     } catch (e) { addToast({ type: 'error', title: 'تعذّر الإرفاق', msg: String((e as Error)?.message || e) }); }
   };
 

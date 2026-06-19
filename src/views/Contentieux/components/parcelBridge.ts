@@ -1,20 +1,15 @@
 // ════════════════════════════════════════════════════════════════
-// parcelBridge.ts — جسر مشترك بين «قسم المنازعات» و«خريطة الملك الغابوي»
+// parcelBridge.ts — جسر النقل المشترك بين «قسم المنازعات» و«خريطة الملك الغابوي»
 //
-// الهدف (النقطة 1): تحديد تموقع العقار موضوع الدعوى/المحضر على الخريطة،
-// وحساب تداخله مع الملك الغابوي، ثم إرفاق النتيجة بالملف القضائي.
+// v2 — ربط حقيقي ثنائي الاتجاه:
+//   اتجاه 1 (التقاط):  منازعات → دومين: requestPick(target) يفعّل وضع الرسم
+//                       ويمرّر هدف الربط (ملف/محضر) عبر sessionStorage('anef_parcel_target').
+//   اتجاه 2 (تسليم):   دومين → منازعات: deliver(location) يعيد التموقع المحسوب.
+//   اتجاه 3 (عرض):     منازعات → دومين: showParcel(geojson) لإظهار قطعة ملف على الخريطة.
 //
-// الطرفان عرضان (views) في نفس التطبيق، فلا حاجة لـ iframe ولا postMessage
-// عابر للأصل — نستعمل نمطاً بسيطاً: مفرد (singleton) + أحداث window.
-//
-// التدفّق:
-//   1) CaseWizard.requestPick()  → يفعّل وضع الالتقاط ويُطلِق 'anef:open-map'.
-//   2) المستخدم يفتح قسم الملك الغابوي، يرسم القطعة (يُحسب التداخل تلقائياً).
-//   3) DomaineForestier يعرض زر «إرفاق بالملف» → deliver(location).
-//   4) deliver يُطلق 'parcel:delivered'، فيلتقطه CaseWizard ويملأ الحقول.
-//
-// ملاحظة تنقّل: الأحداث 'anef:open-map' و'anef:return-from-map' يلتقطها
-// هيكل التطبيق (App) ليبدّل العرض — انظر تعليمات الدمج في آخر الملف.
+// الطرفان عرضان (views) في نفس التطبيق ⇒ نقل عبر أحداث window + sessionStorage
+// (يصمد عبر تبديل العرض الذي يُلغي تحميل المكوّن). الحفظ الفعلي في القاعدة يتم
+// جهة الدومين عبر forestRepo (لأنها مالكة الرسم وحساب التداخل).
 // ════════════════════════════════════════════════════════════════
 
 export interface ParcelOverlapHit {
@@ -43,13 +38,33 @@ export interface ParcelLocation {
   perimeterKm: number;
   province?: string | null;
   overlap?: ParcelOverlap | null;
+  parcelId?: string;       // معرف القطعة في domaine.parcels بعد الحفظ (للتتبّع)
   capturedAt: string;      // ISO
+}
+
+/** هدف الربط: ملف قضائي أو محضر ضابطة قضائية. */
+export interface ParcelTarget {
+  kind: 'case' | 'pv';
+  id: string;
+  ref?: string;            // mahakimId / pvCourtRef للعرض
+}
+
+/** طلب إظهار قطعة على الخريطة (من المنازعات للدومين). */
+export interface ParcelShowRequest {
+  geojson: any;
+  openFiche?: boolean;
+  ref?: string;
 }
 
 type Listener = () => void;
 
 const _subs = new Set<Listener>();
-// علم الالتقاط مخزَّن على window كي يُشارَك بين العرضين حتى لو اختلفت نسخ الوحدة.
+
+// مفاتيح sessionStorage — مصدر الحقيقة الذي يصمد عبر تبديل العرض.
+const K_TARGET  = 'anef_parcel_target';   // { kind, id, ref }
+const K_PENDING = 'anef_parcel_pending';  // ParcelLocation (التموقع المُسلَّم)
+const K_SHOW    = 'anef_show_parcel';      // ParcelShowRequest
+
 function getPicking(): boolean { try { return !!(window as any).__anefParcelPicking; } catch { return false; } }
 function setPicking(v: boolean) { try { (window as any).__anefParcelPicking = v; } catch {} }
 
@@ -57,34 +72,72 @@ function emit() { _subs.forEach((fn) => { try { fn(); } catch (_) {} }); }
 function fire(name: string, detail?: any) {
   try { window.dispatchEvent(new CustomEvent(name, { detail })); } catch (_) {}
 }
+function ssSet(k: string, v: any) { try { sessionStorage.setItem(k, JSON.stringify(v)); } catch {} }
+function ssGet<T>(k: string): T | null { try { const r = sessionStorage.getItem(k); return r ? JSON.parse(r) as T : null; } catch { return null; } }
+function ssDel(k: string) { try { sessionStorage.removeItem(k); } catch {} }
 
 export const parcelBridge = {
-  /** يبدأ وضع التقاط قطعة لملف قضائي، ويطلب فتح الخريطة. */
-  requestPick() {
+  // ── اتجاه 1: التقاط قطعة لملف/محضر ─────────────────────────────
+  /**
+   * يبدأ وضع التقاط قطعة، ويخزّن هدف الربط، ويطلب فتح الخريطة.
+   * إن استُدعيت بدون target فالمستدعي مسؤول عن ضبط anef_parcel_target مسبقاً
+   * (متوافق مع النداءات القديمة).
+   */
+  requestPick(target?: ParcelTarget) {
+    if (target) ssSet(K_TARGET, target);
     setPicking(true);
     emit();
     fire('parcel:pick-requested');
-    fire('anef:open-map'); // ليلتقطه هيكل التطبيق ويبدّل للعرض الخرائطي
+    fire('anef:open-map'); // ليلتقطه هيكل التطبيق (App) ويبدّل للعرض الخرائطي
   },
 
   /** إلغاء وضع الالتقاط. */
   cancel() {
     setPicking(false);
+    ssDel(K_TARGET);
     emit();
     fire('parcel:pick-cancelled');
   },
 
   isPicking() { return getPicking(); },
 
-  /** يُستدعى من خريطة الملك الغابوي لتسليم التموقع المحسوب. */
+  /** الهدف الحالي للالتقاط (تقرؤه جهة الدومين عند الإرفاق لربط القطعة بالملف). */
+  getTarget(): ParcelTarget | null { return ssGet<ParcelTarget>(K_TARGET); },
+  clearTarget() { ssDel(K_TARGET); },
+
+  // ── اتجاه 2: تسليم التموقع المحسوب ─────────────────────────────
+  /** يُستدعى من خريطة الملك الغابوي لتسليم التموقع المحسوب لملف القضية. */
   deliver(location: ParcelLocation) {
     setPicking(false);
+    ssSet(K_PENDING, location);           // يصمد عبر تبديل العرض
     emit();
     fire('parcel:delivered', location);
-    fire('anef:return-from-map'); // ليعود هيكل التطبيق للعرض السابق
+    fire('anef:return-from-map');          // ليعود هيكل التطبيق للعرض السابق
   },
 
-  /** اشتراك تفاعلي لتغيّر حالة الالتقاط (للمكوّنات). يُعيد دالة إلغاء الاشتراك. */
+  /** يلتقط أي تموقع مُسلَّم محفوظ (حالة إعادة تحميل المكوّن بعد تبديل العرض). */
+  consumePending(): ParcelLocation | null {
+    const loc = ssGet<ParcelLocation>(K_PENDING);
+    if (loc) ssDel(K_PENDING);
+    return loc;
+  },
+
+  // ── اتجاه 3: عرض قطعة ملف على الخريطة ──────────────────────────
+  /** يطلب إظهار قطعة (من تفاصيل ملف/محضر) على خريطة الملك الغابوي. */
+  showParcel(req: ParcelShowRequest) {
+    ssSet(K_SHOW, req);
+    fire('anef:open-map');
+  },
+
+  /** تقرؤه جهة الدومين عند التحميل لرسم القطعة المطلوبة. */
+  consumeShowRequest(): ParcelShowRequest | null {
+    const req = ssGet<ParcelShowRequest>(K_SHOW);
+    if (req) ssDel(K_SHOW);
+    return req;
+  },
+
+  // ── اشتراك تفاعلي ──────────────────────────────────────────────
+  /** يُعيد دالة إلغاء الاشتراك. */
   subscribe(fn: Listener): () => void {
     _subs.add(fn);
     const onEvt = () => fn();
@@ -121,17 +174,7 @@ export function formatOverlapSummary(loc: ParcelLocation): string {
 }
 
 // ════════════════════════════════════════════════════════════════
-// تعليمات الدمج في هيكل التطبيق (App) — سطران فقط:
-//
-//   useEffect(() => {
-//     const toMap  = () => setCurrentView('domaine');     // عرض خريطة الملك الغابوي لديكم
-//     const toBack = () => setCurrentView('contentieux');  // عرض قسم المنازعات لديكم
-//     window.addEventListener('anef:open-map', toMap);
-//     window.addEventListener('anef:return-from-map', toBack);
-//     return () => { window.removeEventListener('anef:open-map', toMap);
-//                    window.removeEventListener('anef:return-from-map', toBack); };
-//   }, []);
-//
-// استبدلوا 'domaine' و'contentieux' بقيم ViewState الفعلية في مشروعكم.
-// إن لم تُضَف هذه الأسطر، يبقى نقل البيانات يعمل، لكن يبدّل المستخدم العرض يدوياً.
+// تكامل هيكل التطبيق (App) — موجود لديكم بالفعل في App.tsx:
+//   window.addEventListener('anef:open-map',  () => setCurrentView('domaine'));
+//   window.addEventListener('anef:return-from-map', () => setCurrentView('contentieux'));
 // ════════════════════════════════════════════════════════════════
