@@ -19,6 +19,7 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
 import {
   FicheModal, AttestationModal, ExpertiseModal, ChevauchementModal,
+  PVReconnaissanceModal,
   runChevauchementAnalysis, FORET_AR,
 } from './DocumentModals';
 import type { ChevauchementResult } from './DocumentModals';
@@ -1155,6 +1156,13 @@ function RapportsTab({ lastImportedLayer, forestData, communesData, chevauchemen
 
       <div className="space-y-2.5">
         <ReportCard
+          title="PV de Reconnaissance de Site"
+          subtitle="OTDF · Carrière · Mobilisation · Commission régionale"
+          desc="Fiche de reconnaissance — occupation temporaire / échange immobilier"
+          color="#0ea5e9" icon={FileText}
+          onClick={() => setActiveReport("PV Reconnaissance")}
+        />
+        <ReportCard
           title="Rapport d'Expertise"
           subtitle="Woqof · Procès-verbal"
           desc="محضر التصريحات — وقوف على المكان"
@@ -1193,6 +1201,9 @@ function RapportsTab({ lastImportedLayer, forestData, communesData, chevauchemen
         />
       </div>
 
+      {activeReport === "PV Reconnaissance" && (
+        <PVReconnaissanceModal onClose={() => setActiveReport(null)} importedLayer={lastImportedLayer} forestData={forestData} communesData={communesData} />
+      )}
       {activeReport === "Fiche Technique Réquisition" && (
         <FicheModal onClose={() => setActiveReport(null)} forestData={forestData} communesData={communesData} importedLayer={lastImportedLayer} />
       )}

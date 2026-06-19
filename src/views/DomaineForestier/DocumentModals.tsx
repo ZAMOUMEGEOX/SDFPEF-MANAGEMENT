@@ -2107,6 +2107,616 @@ export function ExpertiseModal({ onClose, importedLayer, forestData }: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PVReconnaissanceModal — PV de reconnaissance de site (OTDF / mobilisation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Listes de choix (selects) — adaptées aux deux PV modèles
+const PV_OBJETS = [
+  "Occupation Temporaire du Domaine Forestier (OTDF) — Carrière",
+  "Occupation Temporaire du Domaine Forestier (OTDF)",
+  "Mobilisation du domaine forestier (échange immobilier)",
+  "Réalisation d'une zone d'accélération industrielle",
+  "Renouvellement d'autorisation d'OTDF",
+  "Autre (préciser)",
+];
+const PV_ROLES = [
+  "Chef du SDFPEF à la DRANEF-TTA",
+  "Chef du SREA à la DRANEF-TTA",
+  "Chef de service du domaine forestier et la police des Eaux et Forêts DRANEF-TTA",
+  "Chef de service des études, de l'aménagement et de la planification DRANEF-TTA",
+  "Directeur Provincial de l'ANEF",
+  "Chef de la ZDTF",
+  "Chef du CPF",
+];
+const PV_BOUNDS = ["Domaine forestier", "Terrain privé", "Piste forestière", "Route goudronnée", "Oued", "Habitations", "Terres de culture", "Autre"];
+const PV_PEUPLEMENT = ["Matorral", "Forêt naturelle", "Reboisement", "Palmier nain (Doum)", "Arbres fruitiers", "Matorral + Arbres fruitiers", "Sol nu", "Mixte"];
+const PV_DENSITE = ["Néant", "Faible", "Moyenne", "Forte"];
+const PV_EXPO = ["—", "Nord", "Sud", "Est", "Ouest", "Nord-Est", "Nord-Ouest", "Sud-Est", "Sud-Ouest", "Variée"];
+const PV_SUBSTRAT = ["Sablonneux", "Argileux", "Sablonneux-Argileux", "Rocheux", "Calcaire", "Limoneux"];
+const PV_PROFONDEUR = ["Peu profond", "Moyenne", "Profond"];
+const PV_EROSION = ["Faible", "Moyen", "Fort"];
+const PV_VOCATION = ["Parcours", "Production", "Protection", "Récréative", "Autre"];
+const PV_DELIM = ["Définitive homologuée", "En cours de délimitation", "Néant"];
+const PV_AVIS = [
+  "Favorable",
+  "Favorable sous conditions",
+  "Défavorable",
+  "Projet assujetti à l'étude d'impact sur l'environnement (EIES)",
+  "Propose la mobilisation dans le cadre d'un échange immobilier",
+];
+
+interface PVMember { name: string; role: string }
+interface PVCoord { x: string; y: string }
+
+export interface PVConfig {
+  commissionType: 'locale' | 'regionale';
+  projectTitle: string;
+  demandeur: string; dateDemande: string; objet: string; objetAutre: string; dateSortie: string;
+  members: PVMember[];
+  // Situation administrative
+  lieuDit: string; commune: string; caidat: string; cercle: string; province: string;
+  // Situation forestière
+  dranef: string; dpanef: string; dfp: string; zdtf: string; bm: string; cpf: string;
+  foretDomaniale: string; cantonsJuridique: string; titreFoncier: string;
+  delimitation: string; delimRefs: string; litige: string;
+  // Description parcelle
+  bNord: string; bSud: string; bEst: string; bOuest: string;
+  superHa: string; superA: string; superCa: string;
+  coords: PVCoord[];
+  // Occupation du sol
+  peuplement: string; espece: string; densite: string; nbArbres: string; degat: string;
+  // Topographie
+  pente: string; exposition: string; substrat: string; profondeur: string;
+  // Autres informations
+  erosion: string; distanceInfra: string; impact: string; vocation: string;
+  amenagement: string; urbanisme: string; alternatives: string; carrieresExistantes: string;
+  observations: string;
+  // Avis
+  avisCommission: string; avisCommentaire: string; avisDR: string;
+}
+
+const PV_DEFAULTS: PVConfig = {
+  commissionType: 'locale',
+  projectTitle: '',
+  demandeur: '', dateDemande: '', objet: PV_OBJETS[0], objetAutre: '', dateSortie: '',
+  members: [{ name: '', role: PV_ROLES[0] }],
+  lieuDit: '', commune: '', caidat: '', cercle: '', province: '',
+  dranef: 'Tanger-Tétouan-Al Hoceima', dpanef: '', dfp: '', zdtf: '', bm: '', cpf: '',
+  foretDomaniale: '', cantonsJuridique: '', titreFoncier: '',
+  delimitation: 'Néant', delimRefs: '', litige: 'Néant',
+  bNord: 'Domaine forestier', bSud: 'Domaine forestier', bEst: 'Domaine forestier', bOuest: 'Domaine forestier',
+  superHa: '', superA: '', superCa: '',
+  coords: [],
+  peuplement: 'Matorral', espece: '', densite: 'Néant', nbArbres: 'Néant', degat: 'Non',
+  pente: '', exposition: '—', substrat: 'Sablonneux-Argileux', profondeur: 'Moyenne',
+  erosion: 'Moyen', distanceInfra: '', impact: "Projet assujetti à l'étude d'impact sur l'environnement (EIES)",
+  vocation: 'Parcours', amenagement: 'Néant', urbanisme: '-', alternatives: 'Néant', carrieresExistantes: '',
+  observations: '',
+  avisCommission: 'Favorable sous conditions', avisCommentaire: '', avisDR: '',
+};
+
+const PV_CSS = `
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Times New Roman',serif;font-size:11pt;color:#111;line-height:1.5;background:#fff}
+  .page{width:210mm;min-height:297mm;padding:1.4cm 1.8cm 1.2cm;margin:auto}
+  .hdr{width:100%;border-collapse:collapse;margin-bottom:6px}
+  .hdr td{vertical-align:top;font-size:8.5pt;line-height:1.4;font-weight:bold;color:#0f5132}
+  .hdr td.r{text-align:right}
+  .logo-wrap{text-align:center;margin:4px 0 8px}
+  .logo-wrap img{height:58px}
+  .logo-fallback{display:inline-flex;width:56px;height:56px;border:2px solid #166534;border-radius:50%;align-items:center;justify-content:center;font-size:7pt;font-weight:bold;color:#166534}
+  .proj-title{font-size:12pt;font-weight:bold;text-align:center;text-transform:uppercase;margin:6px 0 2px;line-height:1.4}
+  .doc-title{font-size:13pt;font-weight:bold;text-align:center;text-decoration:underline;margin:4px 0 12px;color:#0f5132}
+  .sec{margin:9px 0 4px}
+  .sec-title{font-weight:bold;font-size:11pt;color:#0f5132;border-bottom:1.5px solid #0f5132;padding-bottom:2px;margin-bottom:5px}
+  .row{margin:2px 0;font-size:10.5pt}
+  .row .k{font-weight:bold}
+  .two{display:flex;gap:18px}.two>div{flex:1}
+  .members{margin:3px 0}
+  .members li{margin:2px 0;font-size:10.5pt;list-style:none}
+  .members li::before{content:"• ";color:#0f5132;font-weight:bold}
+  .coord-tbl{border-collapse:collapse;margin:4px 0;font-size:10pt}
+  .coord-tbl th,.coord-tbl td{border:1px solid #888;padding:2px 12px;text-align:center}
+  .coord-tbl th{background:#e8f1ea;font-weight:bold}
+  .bounds-tbl{width:100%;border-collapse:collapse;margin:4px 0;font-size:10.5pt}
+  .bounds-tbl td{border:1px solid #bbb;padding:4px 8px;width:50%}
+  .avis-box{border:1.5px solid #0f5132;border-radius:4px;padding:8px 12px;margin:6px 0;background:#f6faf7;font-size:10.5pt;min-height:48px}
+  .avis-badge{display:inline-block;font-weight:bold;padding:2px 12px;border-radius:3px;font-size:11pt}
+  .sig-tbl{width:100%;border-collapse:collapse;margin-top:10px}
+  .sig-tbl td{border:1px solid #555;padding:6px;text-align:center;height:70px;vertical-align:top;font-size:9.5pt}
+  .sig-head{background:#e8f1ea;font-weight:bold;height:auto!important;padding:4px!important}
+  .map-wrap{margin:10px 0;text-align:center}
+  .map-wrap svg{max-width:100%;border:1px solid #cbd5e1;border-radius:4px}
+  .photos{margin-top:12px}
+  .photos-title{font-weight:bold;text-align:center;text-decoration:underline;color:#0f5132;margin-bottom:8px}
+  .photos-grid{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+  .photos-grid img{max-width:46%;max-height:260px;border:1.5px solid #166534;border-radius:4px}
+  @media print{@page{size:A4;margin:0}body{margin:0}.page{min-height:auto}.sec,.avis-box,.sig-tbl,.photos-grid img{page-break-inside:avoid}}
+`;
+
+function buildPVHTML(d: PVConfig, croquisSvg?: string, photos: string[] = []): string {
+  const isReg = d.commissionType === 'regionale';
+  const docTitle = isReg
+    ? 'PROCÈS-VERBAL DE LA COMMISSION RÉGIONALE DE RECONNAISSANCE DU SITE'
+    : 'PV DE RECONNAISSANCE DE SITE';
+  const objet = d.objet === 'Autre (préciser)' ? (esc(d.objetAutre) || '...') : esc(d.objet);
+  const row = (k: string, v: string) => `<div class="row"><span class="k">${k} :</span> ${v || '...'}</div>`;
+  const members = d.members.filter(m => m.name || m.role);
+  const membersList = members.length
+    ? `<ul class="members">${members.map(m => `<li><strong>${esc(m.name) || '...'}</strong>${m.role ? ' : ' + esc(m.role) : ''}</li>`).join('')}</ul>`
+    : '<div class="row" style="color:#999">— (à compléter) —</div>';
+
+  const coordsTable = d.coords.length
+    ? `<table class="coord-tbl"><tr><th>Point</th><th>X</th><th>Y</th></tr>${d.coords.map((c, i) => `<tr><td>Zone ${i + 1}</td><td>${esc(c.x) || '—'}</td><td>${esc(c.y) || '—'}</td></tr>`).join('')}</table>`
+    : '<div class="row" style="color:#999">— coordonnées à générer —</div>';
+
+  const superficie = `${esc(d.superHa) || '00'} ha ${esc(d.superA) || '00'} a ${esc(d.superCa) || '00'} ca`;
+
+  // Avis couleur
+  const avisColor = /Défavorable/i.test(d.avisCommission) ? '#dc2626'
+    : /sous conditions|impact|EIES|échange/i.test(d.avisCommission) ? '#ca8a04' : '#166534';
+
+  const sigCells = (members.length ? members : [{ name: '', role: '' }])
+    .map(m => `<td class="sig-head">S/ ${esc(m.name) || '...'}</td>`).join('');
+
+  const photosPart = photos.length
+    ? `<div class="photos"><div class="photos-title">Illustrations photographiques</div><div class="photos-grid">${photos.map(p => `<img src="${p}" alt="photo"/>`).join('')}</div></div>`
+    : '';
+
+  const croquisPart = croquisSvg ? `<div class="map-wrap">${croquisSvg}</div>` : '';
+
+  // Section juridique (regionale) ou forestière détaillée (locale)
+  const juridique = isReg
+    ? `<div class="sec"><div class="sec-title">Situation juridique</div>
+        ${row('Domaine', 'Domaine forestier' + (d.foretDomaniale ? `, forêt de ${esc(d.foretDomaniale)}` : ''))}
+        ${d.cantonsJuridique ? row('Cantons', esc(d.cantonsJuridique)) : ''}
+        ${d.titreFoncier ? row('Titre Foncier', esc(d.titreFoncier)) : ''}
+        ${row('Délimitation', esc(d.delimitation) + (d.delimRefs ? ` — ${esc(d.delimRefs)}` : ''))}
+        ${row('Litige', esc(d.litige))}
+      </div>`
+    : '';
+
+  return `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+<title>PV de reconnaissance — ${esc(d.demandeur) || 'site'}</title>
+<style>${PV_CSS}</style></head><body><div class="page">
+<table class="hdr"><tr>
+  <td>Royaume du Maroc<br/>Direction Régionale de l'ANEF<br/>du ${esc(d.dranef) || 'Tanger-Tétouan-Al Hoceima'}</td>
+  <td class="r">${d.dpanef ? `Direction Provinciale de l'ANEF de ${esc(d.dpanef)}` : ''}${d.cpf ? `<br/>CPF : ${esc(d.cpf)}` : ''}${d.bm ? `<br/>BM : ${esc(d.bm)}` : ''}</td>
+</tr></table>
+<div class="logo-wrap">
+  <img src="/images/logo-anef.png" alt="ANEF" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex'"/>
+  <span class="logo-fallback" style="display:none">ANEF</span>
+</div>
+${d.projectTitle ? `<div class="proj-title">${esc(d.projectTitle)}</div>` : ''}
+<div class="doc-title">${docTitle}</div>
+
+<div class="sec"><div class="sec-title">1. Informations générales</div>
+  ${row('Demandeur', esc(d.demandeur))}
+  ${row('Date de la demande', esc(d.dateDemande))}
+  ${row('Objet de la demande', objet)}
+  ${row('Date de la sortie de la commission', esc(d.dateSortie))}
+  <div class="row"><span class="k">Membres de la commission :</span></div>
+  ${membersList}
+</div>
+
+<div class="sec"><div class="sec-title">2. Situation administrative</div>
+  ${d.lieuDit ? row('Lieu-dit', esc(d.lieuDit)) : ''}
+  ${row('Commune', esc(d.commune))}
+  ${d.caidat ? row('Caïdat', esc(d.caidat)) : ''}
+  ${d.cercle ? row('Cercle', esc(d.cercle)) : ''}
+  ${row('Province', esc(d.province))}
+</div>
+
+<div class="sec"><div class="sec-title">3. Situation forestière</div>
+  ${d.dfp ? row('DFP', esc(d.dfp)) : ''}
+  ${d.zdtf ? row('ZDTF', esc(d.zdtf)) : ''}
+  ${d.bm ? row('BM', esc(d.bm)) : ''}
+  ${d.cpf ? row('CPF', esc(d.cpf)) : ''}
+  ${row('DPANEF', esc(d.dpanef))}
+  ${row('DRANEF', esc(d.dranef))}
+  ${row('Forêt domaniale', esc(d.foretDomaniale))}
+  ${!isReg ? row('Délimitation', esc(d.delimitation) + (d.delimRefs ? ` — ${esc(d.delimRefs)}` : '')) : ''}
+  ${!isReg ? row('Litige avec', esc(d.litige)) : ''}
+</div>
+
+${juridique}
+
+<div class="sec"><div class="sec-title">${isReg ? '5' : '4'}. Description de la parcelle <span style="font-weight:normal;font-size:9pt">(plan de situation ci-joint)</span></div>
+  <table class="bounds-tbl">
+    <tr><td><span class="k">Nord :</span> ${esc(d.bNord)}</td><td><span class="k">Sud :</span> ${esc(d.bSud)}</td></tr>
+    <tr><td><span class="k">Est :</span> ${esc(d.bEst)}</td><td><span class="k">Ouest :</span> ${esc(d.bOuest)}</td></tr>
+  </table>
+  ${row('Superficie', superficie)}
+  <div class="row"><span class="k">Coordonnées Lambert :</span></div>
+  ${coordsTable}
+</div>
+
+<div class="sec"><div class="sec-title">${isReg ? '6' : '5'}. Occupation du sol</div>
+  ${row('État du peuplement', esc(d.peuplement))}
+  ${d.espece ? row('Espèce végétale', esc(d.espece)) : ''}
+  ${row('Densité', esc(d.densite))}
+  ${!isReg ? row("Nombre d'arbres susceptibles d'être défrichés", esc(d.nbArbres)) : ''}
+  ${isReg ? row('Dégât', esc(d.degat)) : ''}
+</div>
+
+<div class="sec"><div class="sec-title">${isReg ? '7' : '6'}. Topographie</div>
+  ${row('Pente', esc(d.pente))}
+  ${row('Exposition', esc(d.exposition))}
+  ${row('Substrat', esc(d.substrat))}
+  ${row('Profondeur du sol', esc(d.profondeur))}
+</div>
+
+<div class="sec"><div class="sec-title">${isReg ? '8' : '7'}. Autres informations</div>
+  ${!isReg ? row("Risque d'érosion", esc(d.erosion)) : ''}
+  ${d.distanceInfra ? row('Distance par rapport aux infrastructures', esc(d.distanceInfra)) : ''}
+  ${row("Impact potentiel sur l'environnement", esc(d.impact))}
+  ${!isReg ? row('Vocation de la parcelle', esc(d.vocation)) : ''}
+  ${!isReg && d.amenagement ? row('Prévision aménagement (SIBE, Parc, Zone de protection)', esc(d.amenagement)) : ''}
+  ${!isReg && d.urbanisme ? row("Orientation des documents d'urbanisme", esc(d.urbanisme)) : ''}
+  ${row('Alternatives offertes en dehors du Domaine forestier', esc(d.alternatives))}
+  ${!isReg && d.carrieresExistantes ? row('Situation des carrières existantes dans la zone', esc(d.carrieresExistantes)) : ''}
+</div>
+
+${d.observations ? `<div class="sec"><div class="sec-title">${isReg ? '9' : '8'}. Observations générales</div>
+  ${d.observations.split('\n').filter(Boolean).map(o => `<div class="row">• ${esc(o)}</div>`).join('')}
+</div>` : ''}
+
+${croquisPart}
+
+<div class="sec"><div class="sec-title">${isReg ? '10' : '8'}. Avis ${isReg ? 'motivé ' : ''}de la commission</div>
+  <div class="avis-box">
+    <span class="avis-badge" style="border:1.5px solid ${avisColor};color:${avisColor}">${esc(d.avisCommission)}</span>
+    ${d.avisCommentaire ? `<div style="margin-top:6px">${esc(d.avisCommentaire)}</div>` : ''}
+  </div>
+</div>
+
+<div style="font-weight:bold;text-align:center;margin:10px 0 4px">Signatures</div>
+<table class="sig-tbl"><tr>${sigCells}</tr><tr>${(members.length ? members : [{}]).map(() => '<td></td>').join('')}</tr></table>
+
+<div class="sec" style="margin-top:14px"><div class="sec-title">Avis du Directeur Régional de l'ANEF du ${esc(d.dranef) || 'Tanger-Tétouan-Al Hoceima'}</div>
+  <div class="avis-box">${esc(d.avisDR) || '&nbsp;'}</div>
+</div>
+
+${photosPart}
+</div></body></html>`;
+}
+
+export function PVReconnaissanceModal({ onClose, importedLayer, forestData, communesData }: {
+  onClose: () => void;
+  importedLayer?: ImportedLayerInfo | null;
+  forestData?: any; communesData?: any;
+}) {
+  const [c, setC] = useState<PVConfig>(PV_DEFAULTS);
+  const [croquisSvg, setCroquisSvg] = useState<string | null>(null);
+  const [photos, setPhotos] = useState<string[]>([]);
+  const [tab, setTab] = useState('demande');
+  const set = <K extends keyof PVConfig>(k: K) => (v: PVConfig[K]) => setC(p => ({ ...p, [k]: v }));
+
+  const forets: string[] = forestData?.features
+    ? [...new Set<string>(forestData.features.map((f: any) => f.properties?.FORET || '').filter(Boolean))].sort()
+    : [];
+  const communes: string[] = communesData?.features
+    ? [...new Set<string>(communesData.features.map((f: any) => f.properties?.NomFr || '').filter(Boolean))].sort()
+    : [];
+
+  // Auto-remplissage depuis la couche / la carte
+  useEffect(() => {
+    if (!importedLayer?.geojson) return;
+    setC(prev => {
+      const next = { ...prev };
+      try {
+        const area = turf.area(importedLayer.geojson);
+        next.superHa = next.superHa || String(Math.floor(area / 10000));
+        next.superA = next.superA || String(Math.floor((area % 10000) / 100)).padStart(2, '0');
+        next.superCa = next.superCa || String(Math.round(area % 100)).padStart(2, '0');
+      } catch (_) {}
+      if (!next.coords.length) {
+        try {
+          const pts = extractLambertCoords(importedLayer.geojson, 6);
+          if (pts.length) next.coords = pts.map(p => ({ x: p.x, y: p.y }));
+        } catch (_) {}
+      }
+      const chev = importedLayer.chevauchement;
+      if (chev?.hits?.length) {
+        const h0 = chev.hits[0];
+        next.foretDomaniale = next.foretDomaniale || (h0.foretAr ? `${h0.foret} (${h0.foretAr})` : h0.foret);
+        next.cantonsJuridique = next.cantonsJuridique || h0.canton || '';
+      }
+      // Commune par intersection (nom FR)
+      if (communesData?.features && !next.commune) {
+        try {
+          const imp = importedLayer.geojson.type === 'FeatureCollection' ? importedLayer.geojson.features[0] : importedLayer.geojson;
+          let best = '', bestA = 0;
+          for (const f of communesData.features) {
+            if (!f.geometry) continue;
+            try { const it = turf.intersect(turf.featureCollection([imp, f])); if (it) { const a = turf.area(it); if (a > bestA) { bestA = a; best = f.properties?.NomFr || ''; } } } catch (_) {}
+          }
+          if (best) next.commune = best;
+        } catch (_) {}
+      }
+      return next;
+    });
+  }, [importedLayer, communesData]);
+
+  const generateCroquis = () => {
+    if (!importedLayer?.geojson) { alert('Importez une couche pour générer le plan de situation.'); return; }
+    const feats = (forestData?.features || []).slice(0, 80);
+    setCroquisSvg(buildMiniMapSVG(importedLayer.geojson, feats));
+  };
+
+  const onPhotos = (files?: FileList | null) => {
+    if (!files) return;
+    Array.from(files).slice(0, 6).forEach(file => {
+      const r = new FileReader();
+      r.onload = () => setPhotos(p => (typeof r.result === 'string' ? [...p, r.result] : p));
+      r.readAsDataURL(file);
+    });
+  };
+
+  // Members helpers
+  const addMember = () => setC(p => ({ ...p, members: [...p.members, { name: '', role: PV_ROLES[0] }] }));
+  const rmMember = (i: number) => setC(p => ({ ...p, members: p.members.filter((_, j) => j !== i) }));
+  const setMember = (i: number, k: keyof PVMember, v: string) =>
+    setC(p => ({ ...p, members: p.members.map((m, j) => j === i ? { ...m, [k]: v } : m) }));
+  // Coords helpers
+  const addCoord = () => setC(p => ({ ...p, coords: [...p.coords, { x: '', y: '' }] }));
+  const rmCoord = (i: number) => setC(p => ({ ...p, coords: p.coords.filter((_, j) => j !== i) }));
+  const setCoord = (i: number, k: keyof PVCoord, v: string) =>
+    setC(p => ({ ...p, coords: p.coords.map((cc, j) => j === i ? { ...cc, [k]: v } : cc) }));
+
+  const getHTML = () => buildPVHTML(c, croquisSvg || undefined, photos);
+  const filename = () => `PV-reconnaissance-${(c.demandeur || c.commune || 'site').replace(/\s+/g, '-')}.doc`;
+
+  const TABS = [
+    { id: 'demande', label: 'Demande' },
+    { id: 'situation', label: 'Situation' },
+    { id: 'parcelle', label: 'Parcelle' },
+    { id: 'terrain', label: 'Terrain' },
+    { id: 'avis', label: 'Avis & Annexes' },
+  ];
+
+  const SelectField = ({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: string[] }) => (
+    <div>
+      <label className={lbl}>{label}</label>
+      <select value={value} onChange={e => onChange(e.target.value)} className={sel}>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+
+  const tabContent: Record<string, React.ReactNode> = {
+    demande: (
+      <div className="space-y-3">
+        <div>
+          <label className={lbl}>Type de commission</label>
+          <div className="flex gap-2">
+            {(['locale', 'regionale'] as const).map(v => (
+              <button key={v} onClick={() => set('commissionType')(v)}
+                className={`flex-1 py-2 rounded-lg text-[12px] font-bold border-2 transition-all ${c.commissionType === v ? 'bg-(--brand) text-white border-(--brand)' : 'border-(--border-color) text-(--text-muted) hover:border-(--brand)'}`}>
+                {v === 'locale' ? 'Commission locale' : 'Commission régionale'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <Field label="Titre du projet" value={c.projectTitle} onChange={set('projectTitle')}
+          placeholder="OUVERTURE D'UNE CARRIÈRE POUR L'EXPLOITATION DES REMBLAIS ROCHEUX À LA CT …" />
+        <Field label="Demandeur" value={c.demandeur} onChange={set('demandeur')} placeholder="Société … / Ministère …" />
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Date de la demande" value={c.dateDemande} onChange={set('dateDemande')} placeholder="14/04/2026" />
+          <Field label="Date de la sortie" value={c.dateSortie} onChange={set('dateSortie')} placeholder="26/04/2026" />
+        </div>
+        <SelectField label="Objet de la demande" value={c.objet} onChange={set('objet')} options={PV_OBJETS} />
+        {c.objet === 'Autre (préciser)' && (
+          <Field label="Préciser l'objet" value={c.objetAutre} onChange={set('objetAutre')} />
+        )}
+        <div className="pt-2 border-t border-(--border-color)">
+          <div className="flex items-center justify-between mb-2">
+            <label className={lbl}>Membres de la commission</label>
+            <button onClick={addMember} className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-(--brand) text-white text-[10px] font-bold">
+              <Plus className="w-3 h-3" /> Ajouter
+            </button>
+          </div>
+          <div className="space-y-2">
+            {c.members.map((m, i) => (
+              <div key={i} className="rounded-lg border border-(--border-color) p-2 space-y-1.5 bg-(--bg-main)">
+                <div className="flex gap-2 items-center">
+                  <input value={m.name} onChange={e => setMember(i, 'name', e.target.value)} className={inp} placeholder="Nom & Prénom (ex.)" />
+                  <button onClick={() => rmMember(i)} className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg shrink-0"><Minus className="w-3.5 h-3.5" /></button>
+                </div>
+                <input value={m.role} onChange={e => setMember(i, 'role', e.target.value)} className={inp} placeholder="Fonction" list="pv-roles" />
+              </div>
+            ))}
+            <datalist id="pv-roles">{PV_ROLES.map(r => <option key={r} value={r} />)}</datalist>
+          </div>
+        </div>
+      </div>
+    ),
+    situation: (
+      <div className="space-y-3">
+        <p className="text-[10px] font-bold text-(--text-muted) uppercase tracking-wider">Situation administrative</p>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Lieu-dit" value={c.lieuDit} onChange={set('lieuDit')} />
+          <div>
+            <label className={lbl}>Commune</label>
+            {communes.length
+              ? <select value={c.commune} onChange={e => set('commune')(e.target.value)} className={sel}><option value="">—</option>{communes.map(v => <option key={v}>{v}</option>)}</select>
+              : <input value={c.commune} onChange={e => set('commune')(e.target.value)} className={inp} />}
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <Field label="Caïdat" value={c.caidat} onChange={set('caidat')} />
+          <Field label="Cercle" value={c.cercle} onChange={set('cercle')} />
+          <Field label="Province" value={c.province} onChange={set('province')} />
+        </div>
+        <p className="text-[10px] font-bold text-(--text-muted) uppercase tracking-wider pt-2 border-t border-(--border-color)">Situation forestière</p>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="DRANEF" value={c.dranef} onChange={set('dranef')} />
+          <Field label="DPANEF" value={c.dpanef} onChange={set('dpanef')} />
+          <Field label="DFP" value={c.dfp} onChange={set('dfp')} />
+          <Field label="ZDTF" value={c.zdtf} onChange={set('zdtf')} />
+          <Field label="BM" value={c.bm} onChange={set('bm')} />
+          <Field label="CPF" value={c.cpf} onChange={set('cpf')} />
+        </div>
+        <div>
+          <label className={lbl}>Forêt domaniale</label>
+          {forets.length
+            ? <input value={c.foretDomaniale} onChange={e => set('foretDomaniale')(e.target.value)} className={inp} list="pv-forets" />
+            : <input value={c.foretDomaniale} onChange={e => set('foretDomaniale')(e.target.value)} className={inp} />}
+          <datalist id="pv-forets">{forets.map(f => <option key={f} value={f} />)}</datalist>
+        </div>
+        <SelectField label="Délimitation" value={c.delimitation} onChange={set('delimitation')} options={PV_DELIM} />
+        <Field label="Références des décrets (délimitation / homologation)" value={c.delimRefs} onChange={set('delimRefs')} placeholder="Décret n° … du …" />
+        {c.commissionType === 'regionale' && (
+          <>
+            <Field label="Cantons (situation juridique)" value={c.cantonsJuridique} onChange={set('cantonsJuridique')} placeholder="Jbel Ghabri, Jbel Mkhaled, îlot El Gara" />
+            <Field label="Titre Foncier" value={c.titreFoncier} onChange={set('titreFoncier')} placeholder="49510/19" />
+          </>
+        )}
+        <Field label="Litige avec" value={c.litige} onChange={set('litige')} placeholder="Néant" />
+      </div>
+    ),
+    parcelle: (
+      <div className="space-y-3">
+        <p className="text-[10px] font-bold text-(--text-muted) uppercase tracking-wider">Limites de la parcelle</p>
+        <div className="grid grid-cols-2 gap-2">
+          <SelectField label="Nord" value={c.bNord} onChange={set('bNord')} options={PV_BOUNDS} />
+          <SelectField label="Sud" value={c.bSud} onChange={set('bSud')} options={PV_BOUNDS} />
+          <SelectField label="Est" value={c.bEst} onChange={set('bEst')} options={PV_BOUNDS} />
+          <SelectField label="Ouest" value={c.bOuest} onChange={set('bOuest')} options={PV_BOUNDS} />
+        </div>
+        <div>
+          <label className={lbl}>Superficie (auto depuis la couche)</label>
+          <div className="flex items-center gap-2">
+            <input value={c.superHa} onChange={e => set('superHa')(e.target.value)} className={`${inp} text-center font-mono`} placeholder="ha" />
+            <span className="text-[10px] font-bold text-(--text-muted)">ha</span>
+            <input value={c.superA} onChange={e => set('superA')(e.target.value)} className={`${inp} text-center font-mono`} placeholder="a" />
+            <span className="text-[10px] font-bold text-(--text-muted)">a</span>
+            <input value={c.superCa} onChange={e => set('superCa')(e.target.value)} className={`${inp} text-center font-mono`} placeholder="ca" />
+            <span className="text-[10px] font-bold text-(--text-muted)">ca</span>
+          </div>
+        </div>
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label className={lbl}>Coordonnées Lambert (auto)</label>
+            <button onClick={addCoord} className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-(--brand) text-white text-[10px] font-bold"><Plus className="w-3 h-3" /> Point</button>
+          </div>
+          <div className="space-y-1.5">
+            {c.coords.length === 0 && <p className="text-[10px] text-(--text-muted)">Importez une couche → extraction automatique des points.</p>}
+            {c.coords.map((cc, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <span className="text-[10px] font-bold text-(--text-muted) w-12">Zone {i + 1}</span>
+                <input value={cc.x} onChange={e => setCoord(i, 'x', e.target.value)} className={`${inp} font-mono`} placeholder="X" />
+                <input value={cc.y} onChange={e => setCoord(i, 'y', e.target.value)} className={`${inp} font-mono`} placeholder="Y" />
+                <button onClick={() => rmCoord(i)} className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg shrink-0"><Minus className="w-3.5 h-3.5" /></button>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="pt-2 border-t border-(--border-color)">
+          <div className="flex items-center justify-between mb-2">
+            <label className={lbl}>Plan de situation · CROQUIS</label>
+            <button onClick={generateCroquis} disabled={!importedLayer?.geojson}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-(--brand) text-white text-[11px] font-bold disabled:opacity-40">
+              <RefreshCw size={12} /> Générer
+            </button>
+          </div>
+          {croquisSvg
+            ? <div className="p-2 bg-(--bg-surface) rounded-xl border border-(--border-color)" dangerouslySetInnerHTML={{ __html: croquisSvg }} />
+            : <div className="h-20 flex items-center justify-center text-(--text-muted) text-xs bg-(--bg-main) rounded-xl border border-dashed border-(--border-color)">Cliquez « Générer » pour le plan de situation</div>}
+        </div>
+      </div>
+    ),
+    terrain: (
+      <div className="space-y-3">
+        <p className="text-[10px] font-bold text-(--text-muted) uppercase tracking-wider">Occupation du sol</p>
+        <SelectField label="État du peuplement" value={c.peuplement} onChange={set('peuplement')} options={PV_PEUPLEMENT} />
+        <Field label="Espèce végétale" value={c.espece} onChange={set('espece')} placeholder="Doums, figuiers (plus de 15 ans), espèces secondaires" />
+        <div className="grid grid-cols-2 gap-2">
+          <SelectField label="Densité" value={c.densite} onChange={set('densite')} options={PV_DENSITE} />
+          {c.commissionType === 'regionale'
+            ? <SelectField label="Dégât" value={c.degat} onChange={set('degat')} options={['Non', 'Oui']} />
+            : <Field label="Arbres à défricher" value={c.nbArbres} onChange={set('nbArbres')} placeholder="Néant" />}
+        </div>
+        <p className="text-[10px] font-bold text-(--text-muted) uppercase tracking-wider pt-2 border-t border-(--border-color)">Topographie</p>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Pente" value={c.pente} onChange={set('pente')} placeholder="15 % / 5 à 15 %" />
+          <SelectField label="Exposition" value={c.exposition} onChange={set('exposition')} options={PV_EXPO} />
+          <SelectField label="Substrat" value={c.substrat} onChange={set('substrat')} options={PV_SUBSTRAT} />
+          <SelectField label="Profondeur du sol" value={c.profondeur} onChange={set('profondeur')} options={PV_PROFONDEUR} />
+        </div>
+      </div>
+    ),
+    avis: (
+      <div className="space-y-3">
+        <p className="text-[10px] font-bold text-(--text-muted) uppercase tracking-wider">Autres informations</p>
+        {c.commissionType === 'locale' && <SelectField label="Risque d'érosion" value={c.erosion} onChange={set('erosion')} options={PV_EROSION} />}
+        <Field label="Distance / infrastructures" value={c.distanceInfra} onChange={set('distanceInfra')} placeholder="≈ 100 m de la piste, 10 m de la route goudronnée" />
+        <div>
+          <label className={lbl}>Impact potentiel sur l'environnement</label>
+          <textarea value={c.impact} onChange={e => set('impact')(e.target.value)} rows={2} className={`${inp} resize-none`} />
+        </div>
+        {c.commissionType === 'locale' && (
+          <>
+            <SelectField label="Vocation de la parcelle" value={c.vocation} onChange={set('vocation')} options={PV_VOCATION} />
+            <Field label="Prévision d'aménagement (SIBE, Parc, Zone de protection)" value={c.amenagement} onChange={set('amenagement')} placeholder="Néant" />
+            <Field label="Situation des carrières existantes" value={c.carrieresExistantes} onChange={set('carrieresExistantes')} />
+          </>
+        )}
+        <Field label="Alternatives hors Domaine forestier" value={c.alternatives} onChange={set('alternatives')} placeholder="Néant / Terrains privés hors site" />
+        <div>
+          <label className={lbl}>Observations générales (une par ligne)</label>
+          <textarea value={c.observations} onChange={e => set('observations')(e.target.value)} rows={3} className={`${inp} resize-none`}
+            placeholder={"Piste forestière traversant le site\nLigne électrique traversant le site\nOccupations illégales au Nord-Est…"} />
+        </div>
+        <div className="pt-2 border-t border-(--border-color)">
+          <SelectField label="Avis de la commission" value={c.avisCommission} onChange={set('avisCommission')} options={PV_AVIS} />
+          <div className="mt-2">
+            <label className={lbl}>Commentaire / motivation de l'avis</label>
+            <textarea value={c.avisCommentaire} onChange={e => set('avisCommentaire')(e.target.value)} rows={2} className={`${inp} resize-none`} />
+          </div>
+          <div className="mt-2">
+            <label className={lbl}>Avis du Directeur Régional</label>
+            <textarea value={c.avisDR} onChange={e => set('avisDR')(e.target.value)} rows={2} className={`${inp} resize-none`} />
+          </div>
+        </div>
+        <div className="pt-2 border-t border-(--border-color)">
+          <label className={lbl}>Illustrations photographiques</label>
+          <div className="rounded-xl border-2 border-dashed border-(--border-color) p-3">
+            {photos.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2">
+                {photos.map((p, i) => (
+                  <div key={i} className="relative">
+                    <img src={p} alt="" className="h-16 w-16 object-cover rounded-lg border border-(--border-color)" />
+                    <button onClick={() => setPhotos(ph => ph.filter((_, j) => j !== i))}
+                      className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center text-[9px]">×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <label className="cursor-pointer flex items-center justify-center gap-2 py-2 text-(--text-muted) text-[11px] font-bold">
+              <Download className="w-4 h-4" /> Ajouter des photos (jusqu'à 6)
+              <input type="file" accept="image/*" multiple className="hidden" onChange={e => onPhotos(e.target.files)} />
+            </label>
+          </div>
+        </div>
+      </div>
+    ),
+  };
+
+  return (
+    <ModalWrap title="PV de Reconnaissance de Site" subtitle="ANEF · Commission de reconnaissance · OTDF / Mobilisation" onClose={onClose} wide>
+      <TabNav tabs={TABS} active={tab} onChange={setTab} />
+      <div className="flex-1 overflow-y-auto px-4 py-4">{tabContent[tab]}</div>
+      <ActionBar>
+        <BtnPrimary onClick={() => printHtml(getHTML())} icon={Printer}>Imprimer / PDF</BtnPrimary>
+        <BtnSecondary onClick={() => htmlToDocx(getHTML(), filename())} icon={FileDown}>Word (.docx)</BtnSecondary>
+        <BtnSecondary onClick={() => navigator.clipboard.writeText(`PV ${c.demandeur} | ${c.commune} | ${c.avisCommission}`).catch(() => {})} icon={Copy} title="Copier" />
+      </ActionBar>
+    </ModalWrap>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ChevauchementModal — professional full-screen report (multi-layer support)
 // ─────────────────────────────────────────────────────────────────────────────
 
