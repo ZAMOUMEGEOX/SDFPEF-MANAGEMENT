@@ -42,6 +42,15 @@ const CONF_COLOR: Record<string, string> = {
   highest: '#7f1d1d', high: '#ef4444', medium: '#f97316', low: '#eab308',
 };
 
+// Options anti-flicker pour les tuiles GEE : garde l'ancien niveau visible
+// pendant le chargement du nouveau, et ne recharge qu'à l'arrêt du zoom/pan.
+const TILE_PERF = {
+  keepBuffer: 6,
+  updateWhenZooming: false,
+  updateWhenIdle: true,
+  crossOrigin: true as const,
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Sous-composants UI
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,7 +181,7 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
   if (!paneReady || !toggles.s2Split || !geeAfterUrl) return null;
 
   return (
-    <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" attribution="© GEE / Copernicus S2 (après)" />
+    <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" keepBuffer={6} updateWhenZooming={false} updateWhenIdle={true} attribution="© GEE / Copernicus S2 (après)" />
   );
 }
 
@@ -395,12 +404,38 @@ export function Teledetection() {
   const displayTop = highConfOnly
     ? topPolys.filter(f => ['high', 'highest'].includes(f.properties?.confidence)) : topPolys;
 
-  // ── Zoom vers un polygone ─────────────────────────────────────────────────
+  // ── Sélection de polygone SANS reconstruction de la couche (anti-flicker) ──
+  const polyLayerRef = useRef<any>(null);          // référence vers la couche GeoJSON Leaflet
+  const selectedLayerRef = useRef<any>(null);      // sous-couche actuellement sélectionnée
+
+  const applySelection = (layer: any) => {
+    // remet l'ancien à son style normal
+    if (selectedLayerRef.current && selectedLayerRef.current !== layer) {
+      const pf = selectedLayerRef.current.feature?.properties;
+      const pc = CONF_COLOR[pf?.confidence] ?? '#eab308';
+      selectedLayerRef.current.setStyle({ color: pc, weight: 1.8, fillColor: pc, fillOpacity: 0.25 });
+    }
+    if (layer) {
+      const c = CONF_COLOR[layer.feature?.properties?.confidence] ?? '#eab308';
+      layer.setStyle({ color: c, weight: 3.5, fillColor: c, fillOpacity: 0.5 });
+      layer.bringToFront?.();
+      selectedLayerRef.current = layer;
+      setSelectedPolyId(layer.feature?.properties?.id ?? null);
+    }
+  };
+
+  // ── Zoom vers un polygone (depuis la liste Top) ───────────────────────────
   const flyToPolygon = (f: PolygonFeature) => {
     try {
-      const layer = L.geoJSON(f as any);
-      mapRef.current?.fitBounds(layer.getBounds(), { maxZoom: 16, padding: [40, 40] });
-      setSelectedPolyId(f.properties.id);
+      const b = L.geoJSON(f as any).getBounds();
+      mapRef.current?.fitBounds(b, { maxZoom: 16, padding: [40, 40] });
+      // retrouve la sous-couche correspondante et la sélectionne sans rebuild
+      let target: any = null;
+      polyLayerRef.current?.eachLayer?.((lyr: any) => {
+        if (lyr.feature?.properties?.id === f.properties.id) target = lyr;
+      });
+      if (target) applySelection(target);
+      else setSelectedPolyId(f.properties.id);
     } catch { /* noop */ }
   };
 
@@ -417,23 +452,24 @@ export function Teledetection() {
   const anomaly = phenologyData
     ? (ANOMALY_CONFIG[phenologyData.anomaly_label as AnomalyLabel] ?? ANOMALY_CONFIG.unknown) : null;
 
+  // Style de base (statique — la sélection se gère via setStyle, pas via re-render)
   const polyStyle = (f: any) => {
     const c = CONF_COLOR[f.properties?.confidence] ?? '#eab308';
-    const sel = f.properties?.id === selectedPolyId;
-    return { color: c, weight: sel ? 3.5 : 1.8, fillColor: c, fillOpacity: sel ? 0.45 : 0.25 };
+    return { color: c, weight: 1.8, fillColor: c, fillOpacity: 0.25 };
   };
   const onEachPoly = (f: any, layer: any) => {
     const p = f.properties ?? {};
     layer.bindPopup(
       `<div style="font-size:11px;line-height:1.7;min-width:170px">
-        <strong>#${p.id} — ${p.confidence}</strong> (score ${Number(p.conf_score ?? 0).toFixed(1)}/4)<br/>
+        <strong>#${p.id} — ${p.confidence}</strong> (score ${Number(p.conf_score ?? 0).toFixed(1)}/${p.n_scenes != null ? 5 : 4})<br/>
         Aire: <strong>${Number(p.area_ha ?? 0).toFixed(3)} ha</strong> (${Math.round(p.area_m2 ?? 0)} m²)<br/>
         NDVI Δ: ${Number(p.ndvi_change ?? 0).toFixed(3)}<br/>
         NBR Δ: ${Number(p.nbr_change ?? 0).toFixed(3)}<br/>
+        ${p.n_scenes != null ? `Scènes confirmées: ${Math.round(p.n_scenes)}<br/>` : ''}
         ${p.hansen_year ? `Hansen: ${p.hansen_year}<br/>` : ''}
       </div>`
     );
-    layer.on('click', () => setSelectedPolyId(p.id));
+    layer.on('click', () => applySelection(layer));
   };
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -444,7 +480,8 @@ export function Teledetection() {
       <div className="relative h-[35vh] md:h-full md:flex-1 bg-[#121214] border-b md:border-b-0 md:border-r border-[var(--border-color)] shrink-0 z-10 md:shrink overflow-hidden">
 
         <MapContainer center={[35.5785, -5.3684]} zoom={11}
-          style={{ height: '100%', width: '100%' }} zoomControl={false}>
+          preferCanvas={true} zoomControl={false} zoomAnimation={true}
+          style={{ height: '100%', width: '100%' }}>
 
           <MapRefSetter onReady={(m) => { mapRef.current = m; setMapReady(true); }} />
 
@@ -457,7 +494,7 @@ export function Teledetection() {
             </LayersControl.BaseLayer>
           </LayersControl>
 
-          <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" />
+          <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" keepBuffer={6} updateWhenZooming={false} updateWhenIdle={true} />
 
           <FeatureGroup>
             <EditControl position="topleft" draw={{ rectangle: true, polygon: true, circle: false, circlemarker: false, marker: false, polyline: false }} />
@@ -465,7 +502,7 @@ export function Teledetection() {
 
           {/* S2 AVANT — couche pleine (côté gauche du slider) — FIX swipe */}
           {toggles.s2Split && beforeTileUrl && (
-            <TileLayer key={`before-${beforeTileUrl}`} url={beforeTileUrl} attribution="© GEE / Copernicus S2 (avant)" />
+            <TileLayer key={`before-${beforeTileUrl}`} url={beforeTileUrl} {...TILE_PERF} attribution="© GEE / Copernicus S2 (avant)" />
           )}
 
           {/* S2 APRÈS — pane droite clippée */}
@@ -473,25 +510,25 @@ export function Teledetection() {
 
           {/* Couches raster */}
           {toggles.disturbance && distTileUrl && (
-            <TileLayer key={distTileUrl} url={distTileUrl} opacity={opacity.alertes} attribution="GEE Confiance" />
+            <TileLayer key={distTileUrl} url={distTileUrl} opacity={opacity.alertes} {...TILE_PERF} attribution="GEE Confiance" />
           )}
           {toggles.ndviDelta && ndviTileUrl && (
-            <TileLayer key={ndviTileUrl} url={ndviTileUrl} opacity={opacity.ndvi} attribution="GEE NDVI Δ" />
+            <TileLayer key={ndviTileUrl} url={ndviTileUrl} opacity={opacity.ndvi} {...TILE_PERF} attribution="GEE NDVI Δ" />
           )}
           {toggles.forestWatch && hansenTileUrl && (
-            <TileLayer key={hansenTileUrl} url={hansenTileUrl} opacity={opacity.hansen} attribution="UMD Hansen GFC" />
+            <TileLayer key={hansenTileUrl} url={hansenTileUrl} opacity={opacity.hansen} {...TILE_PERF} attribution="UMD Hansen GFC" />
           )}
           {toggles.forestWatch && distAlertTileUrl && (
-            <TileLayer key={distAlertTileUrl} url={distAlertTileUrl} opacity={opacity.hansen} attribution="OPERA DIST-ALERT" />
+            <TileLayer key={distAlertTileUrl} url={distAlertTileUrl} opacity={opacity.hansen} {...TILE_PERF} attribution="OPERA DIST-ALERT" />
           )}
           {toggles.sentinel1 && s1TileUrl && (
-            <TileLayer key={s1TileUrl} url={s1TileUrl} opacity={opacity.s1} attribution="GEE Sentinel-1 SAR" />
+            <TileLayer key={s1TileUrl} url={s1TileUrl} opacity={opacity.s1} {...TILE_PERF} attribution="GEE Sentinel-1 SAR" />
           )}
           {toggles.phenology && phenologyTileUrl && (
-            <TileLayer key={phenologyTileUrl} url={phenologyTileUrl} opacity={opacity.pheno} attribution="GEE Phénologie" />
+            <TileLayer key={phenologyTileUrl} url={phenologyTileUrl} opacity={opacity.pheno} {...TILE_PERF} attribution="GEE Phénologie" />
           )}
           {multiScene && multisceneTileUrl && (
-            <TileLayer key={multisceneTileUrl} url={multisceneTileUrl} opacity={opacity.multiscene} attribution="GEE Multi-scène S2" />
+            <TileLayer key={multisceneTileUrl} url={multisceneTileUrl} opacity={opacity.multiscene} {...TILE_PERF} attribution="GEE Multi-scène S2" />
           )}
           {showAnefLimit && forestBoundary && (
             <GeoJSON key="forest-boundary" data={forestBoundary}
@@ -504,10 +541,11 @@ export function Teledetection() {
               style={() => ({ color: '#fbbf24', weight: 2.5, fillColor: '#fbbf24', fillOpacity: 0.04 })} />
           )}
 
-          {/* POLYGONES de perturbation (vecteurs réels) */}
+          {/* POLYGONES de perturbation (vecteurs réels) — rendu canvas, pas de rebuild à la sélection */}
           {toggles.polygons && displayPolygons.length > 0 && (
             <GeoJSON
-              key={`polys-${selectedZone}-${displayPolygons.length}-${highConfOnly}-${selectedPolyId ?? 0}`}
+              key={`polys-${selectedZone}-${displayPolygons.length}-${highConfOnly}`}
+              ref={(r: any) => { polyLayerRef.current = r; }}
               data={{ type: 'FeatureCollection', features: displayPolygons } as any}
               style={polyStyle}
               onEachFeature={onEachPoly}
