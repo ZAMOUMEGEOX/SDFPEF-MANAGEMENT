@@ -2566,6 +2566,9 @@ export interface PVRecord {
   geoOverlap?: string;     // ملخّص نصّي للتداخل
   geoPosition?: string;    // داخل / جزئيا داخل / خارج الملك الغابوي
   geoOverlapPct?: number;
+
+  /** ★ محضر غير موجود في البوابة بعد (خانة محجوزة في الترتيب السنوي) */
+  notInPortal?: boolean;
 }
 
 
@@ -3045,7 +3048,15 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
   cases: Case[];
 }) {
   const [pvSearch, setPvSearch] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  // تقسيم "رقم/سنة"
+  const parseYN = (s: string): { num: number; year: string } | null => {
+    const m = (s || '').match(/^\s*(\d+)\s*\/\s*(\d{4})/);
+    return m ? { num: parseInt(m[1], 10), year: m[2] } : null;
+  };
+
+  // فلترة نصية (للبحث فقط)
   const filtered = useMemo(() => {
     if (!pvSearch.trim()) return pvRecords;
     const q = pvSearch.toLowerCase();
@@ -3058,6 +3069,73 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
       p.parties.some(pt => pt.name.includes(q))
     );
   }, [pvRecords, pvSearch]);
+
+  type Slot = { kind: 'record'; pv: PVRecord } | { kind: 'gap'; year: string; num: number };
+
+  // ترتيب سنوي تصاعدي داخل كل سنة مع حجز الخانات الفارغة (غير متوفرة بعد)
+  const slots = useMemo<Slot[]>(() => {
+    const real = filtered.filter(p => !p.notInPortal);
+    const byYear = new Map<string, Map<number, PVRecord>>();
+    const noNum: PVRecord[] = [];
+    for (const p of filtered) {
+      const yn = parseYN(p.pvInputNumber);
+      if (!yn) { if (!p.notInPortal) noNum.push(p); continue; }
+      if (!byYear.has(yn.year)) byYear.set(yn.year, new Map());
+      // لا نطمس محضراً حقيقياً بخانة فارغة لها نفس الرقم
+      const slot = byYear.get(yn.year)!;
+      const prev = slot.get(yn.num);
+      if (!prev || (prev.notInPortal && !p.notInPortal)) slot.set(yn.num, p);
+    }
+    const out: Slot[] = [];
+    const years = [...byYear.keys()].sort((a, b) => +b - +a); // أحدث سنة أولاً
+    for (const year of years) {
+      const map = byYear.get(year)!;
+      const max = Math.max(...map.keys());
+      for (let n = 1; n <= max; n++) {
+        const rec = map.get(n);
+        if (rec && !rec.notInPortal) out.push({ kind: 'record', pv: rec });
+        else out.push({ kind: 'gap', year, num: n });
+      }
+    }
+    for (const p of noNum) out.push({ kind: 'record', pv: p });
+    // أثناء البحث النصّي نعرض المطابقات فقط (سطح مسطّح بلا خانات فارغة)
+    if (pvSearch.trim()) return real.map(pv => ({ kind: 'record', pv } as Slot));
+    return out;
+  }, [filtered, pvSearch]);
+
+  const realRows = useMemo(() => slots.filter((s): s is { kind:'record'; pv: PVRecord } => s.kind === 'record'), [slots]);
+  const allSelected = realRows.length > 0 && realRows.every(s => selected.has(s.pv.id));
+  const toggleAll = () => setSelected(prev => allSelected ? new Set() : new Set(realRows.map(s => s.pv.id)));
+  const toggleOne = (id: string) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const exportExcel = (onlySelected: boolean) => {
+    const rows = realRows.map(s => s.pv).filter(p => !onlySelected || selected.has(p.id));
+    if (!rows.length) { alert('لا توجد محاضر للتصدير.'); return; }
+    const data = rows.map(p => ({
+      'رقم المحضر': p.pvInputNumber || p.pvCourtRef || '',
+      'رقم بالمحكمة': p.pvCourtRef || '',
+      'التاريخ': p.pvDate || '',
+      'النوع': p.pvType || '',
+      'الموضوع/المخالفة': p.pvSubject || p.pvOffense || '',
+      'الجهة': p.pvAgency || '',
+      'الملف الجنحي': p.linkedFileNumber || '',
+      'المحكمة': p.court || '',
+      'الوضعية إزاء الملك الغابوي': p.geoPosition || '',
+      'نسبة التداخل %': p.geoOverlapPct != null ? p.geoOverlapPct.toFixed(1) : '',
+      'الأطراف': (p.parties || []).map(x => `${x.role}: ${x.name}`).join(' | '),
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'محاضر الضابطة');
+    XLSX.writeFile(wb, `محاضر_الضابطة_${new Date().toISOString().slice(0,10)}.xlsx`);
+  };
+
+  const deleteSelected = () => {
+    if (!selected.size) return;
+    if (!confirm(`حذف ${selected.size} محضراً محدّداً؟`)) return;
+    selected.forEach(id => onDelete(id));
+    setSelected(new Set());
+  };
 
   return (
     <div className="space-y-4">
@@ -3099,11 +3177,37 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
             {pvSearch && <button onClick={() => setPvSearch('')} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600"><X className="size-4"/></button>}
           </div>
 
+          {/* شريط الأدوات: تحديد / تصدير / حذف */}
+          <div className="flex flex-wrap items-center gap-2 bg-white border border-stone-200 rounded-xl px-3 py-2">
+            <label className="flex items-center gap-2 text-xs font-bold text-stone-600 cursor-pointer select-none">
+              <input type="checkbox" checked={allSelected} onChange={toggleAll}
+                className="size-4 accent-blue-600 rounded"/>
+              تحديد الكل
+            </label>
+            {selected.size > 0 && (
+              <span className="text-[11px] font-bold text-blue-700 bg-blue-50 px-2 py-1 rounded-lg">
+                {selected.size} محدّد
+              </span>
+            )}
+            <div className="flex-1" />
+            <button onClick={() => exportExcel(selected.size > 0)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-colors">
+              <Download className="size-3.5"/> تصدير Excel{selected.size > 0 ? ' (المحدّد)' : ''}
+            </button>
+            <button onClick={deleteSelected} disabled={!selected.size}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-red-50 text-red-600 hover:bg-red-100 border border-red-200">
+              <Trash2 className="size-3.5"/> حذف المحدّد
+            </button>
+          </div>
+
           {/* الجدول */}
           <div className="bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
             <table className="w-full text-sm text-right">
               <thead className="bg-blue-50 text-blue-800 border-b border-blue-200">
                 <tr>
+                  <th className="px-3 py-3 font-bold w-10">
+                    <input type="checkbox" checked={allSelected} onChange={toggleAll} className="size-4 accent-blue-600 rounded"/>
+                  </th>
                   <th className="px-4 py-3 font-bold">#</th>
                   <th className="px-4 py-3 font-bold">رقم المحضر</th>
                   <th className="px-4 py-3 font-bold">الموضوع / المخالفة</th>
@@ -3114,21 +3218,50 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100">
-                {filtered.map((pv, idx) => {
+                {slots.map((slot, idx) => {
+                  // خانة سنة فارغة (محضر غير متوفر في البوابة بعد)
+                  if (slot.kind === 'gap') {
+                    return (
+                      <tr key={`gap-${slot.year}-${slot.num}`} className="bg-stone-50/60">
+                        <td className="px-3 py-3"></td>
+                        <td className="px-4 py-3 text-stone-300 text-xs">{idx+1}</td>
+                        <td className="px-4 py-3">
+                          <span className="font-mono font-bold text-stone-400 bg-stone-100 px-2 py-1 rounded-lg text-xs">
+                            {slot.num}/{slot.year}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3" colSpan={5}>
+                          <span className="text-[11px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-2 py-1 rounded-lg inline-flex items-center gap-1">
+                            <AlertCircle className="size-3"/> غير متوفر في البوابة بعد
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  }
+                  const pv = slot.pv;
                   const relCase = cases.find(c => c.id === pv.linkedCaseId || c.mahakimId === pv.linkedFileNumber);
+                  const isSel = selected.has(pv.id);
                   return (
                     <tr key={pv.id} onClick={() => onSelect(pv)}
-                      className="hover:bg-blue-50/50 cursor-pointer transition-colors group">
+                      className={`cursor-pointer transition-colors group ${isSel ? 'bg-blue-50' : 'hover:bg-blue-50/50'}`}>
+                      <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                        <input type="checkbox" checked={isSel} onChange={() => toggleOne(pv.id)}
+                          className="size-4 accent-blue-600 rounded"/>
+                      </td>
                       <td className="px-4 py-3 text-stone-400 text-xs">{idx+1}</td>
                       <td className="px-4 py-3">
                         <span className="font-mono font-bold text-blue-700 bg-blue-50 px-2 py-1 rounded-lg text-xs">
-                          {pv.pvCourtRef || pv.pvInputNumber || '—'}
+                          {pv.pvInputNumber || pv.pvCourtRef || '—'}
                         </span>
+                        {pv.pvCourtRef && pv.pvCourtRef !== pv.pvInputNumber && (
+                          <p className="text-[10px] text-stone-400 font-mono mt-0.5">بالمحكمة: {pv.pvCourtRef}</p>
+                        )}
                         {pv.pvDate && <p className="text-[10px] text-stone-400 font-mono mt-0.5">{pv.pvDate}</p>}
                       </td>
                       <td className="px-4 py-3 max-w-[180px]">
                         <p className="font-bold text-stone-800 truncate text-sm">{pv.pvSubject || pv.pvOffense || '—'}</p>
                         {pv.pvType && <p className="text-[10px] text-emerald-600 font-bold mt-0.5">{pv.pvType}</p>}
+                        {pv.geoPosition && <p className="text-[10px] text-teal-600 font-bold mt-0.5 flex items-center gap-1"><MapPin className="size-2.5"/>{pv.geoPosition}{pv.geoOverlapPct!=null?` (${pv.geoOverlapPct.toFixed(0)}%)`:''}</p>}
                       </td>
                       <td className="px-4 py-3 max-w-[140px]">
                         <p className="text-xs text-stone-600 truncate">{pv.pvAgency || '—'}</p>
@@ -3163,13 +3296,16 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
                     </tr>
                   );
                 })}
-                {filtered.length === 0 && (
-                  <tr><td colSpan={7} className="px-6 py-10 text-center text-stone-400 text-sm">لا توجد نتائج مطابقة</td></tr>
+                {slots.length === 0 && (
+                  <tr><td colSpan={8} className="px-6 py-10 text-center text-stone-400 text-sm">لا توجد نتائج مطابقة</td></tr>
                 )}
               </tbody>
             </table>
-            <div className="px-4 py-2 border-t border-stone-100 bg-stone-50 text-xs text-stone-500">
-              {filtered.length} محضر{filtered.length !== pvRecords.length ? ` (من أصل ${pvRecords.length})` : ''}
+            <div className="px-4 py-2 border-t border-stone-100 bg-stone-50 text-xs text-stone-500 flex items-center justify-between">
+              <span>{realRows.length} محضر{realRows.length !== pvRecords.filter(p=>!p.notInPortal).length ? ` (من أصل ${pvRecords.filter(p=>!p.notInPortal).length})` : ''}</span>
+              {!pvSearch.trim() && slots.some(s => s.kind === 'gap') && (
+                <span className="text-amber-600 font-bold">{slots.filter(s => s.kind === 'gap').length} خانة غير متوفرة بعد</span>
+              )}
             </div>
           </div>
         </div>
@@ -3502,6 +3638,8 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
 
   // -- قاعدة بيانات المحاضر المحلية --
   const [pvRecords, setPvRecords]           = useState<PVRecord[]>([]);
+  const pvRecordsRef = useRef<PVRecord[]>([]);
+  useEffect(() => { pvRecordsRef.current = pvRecords; }, [pvRecords]);
   const [pvDbLoading, setPvDbLoading]       = useState(true);
   const [selectedPV, setSelectedPV]         = useState<PVRecord | null>(null);
   const [pvDbView, setPvDbView]             = useState<'search'|'list'|'detail'>('search');
@@ -3853,7 +3991,32 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
       const pv = await searchPVOnce(String(n));
       const hasData = !!(pv && (pv.pvCourtRef || pv.linkedFileNumber || (pv.parties && pv.parties.length)));
       if (!hasData) {
-        setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'لا نتيجة' }]);
+        // ★ المحضر غير موجود في البوابة بعد: نحجز خانته في القاعدة (placeholder)
+        const year = pvYear.trim();
+        const placeholder: PVRecord = {
+          id: `PV-${n}-${year}-EMPTY`,
+          pvInputNumber: `${n}/${year}`,
+          pvCourtRef: '', pvDate: '', pvType: '', pvSubject: '', pvAgency: '',
+          pvAgentType: '', pvOffense: '', pvAction: '', court: pvCourt,
+          linkedFileNumber: '', fileNum: '', fileMark: '', fileYear: '',
+          linkedFile: { fileNumber: '', fileType: '', court: '', section: '', date: '', status: '', judge: '', nextSession: '' },
+          parties: [], procedures: [],
+          rawText: '', createdAt: new Date().toISOString(), lastSyncedAt: new Date().toISOString(),
+          notInPortal: true,
+        };
+        try {
+          // لا نطمس محضراً حقيقياً إن وُجد سابقاً بنفس الرقم/السنة
+          const exists = pvRecordsRef.current?.find?.(p => p.pvInputNumber === placeholder.pvInputNumber && !p.notInPortal);
+          if (!exists) {
+            await savePVRecordDB(placeholder);
+            setPvRecords(prev => {
+              const others = prev.filter(p => p.pvInputNumber !== placeholder.pvInputNumber);
+              return [placeholder, ...others];
+            });
+            onSavePV?.(placeholder);
+          }
+        } catch {}
+        setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'غير متوفر في البوابة — خانة محجوزة' }]);
       } else {
         try {
           const st = await autoSavePV(pv!);
