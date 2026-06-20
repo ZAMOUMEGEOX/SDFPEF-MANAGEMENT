@@ -75,12 +75,12 @@ export function Sidebar({ currentView, setCurrentView, layout = 'sidebar' }: Sid
       </button>
 
       {/* Logo */}
-      <div className={cn("flex items-center justify-center border-b border-white/10 transition-all", isCollapsed ? "p-3" : "p-5")}>
+      <div className={cn("flex items-center justify-center border-b border-white/10 transition-all", isCollapsed ? "p-3" : "p-4")}>
         <button 
           onClick={() => setCurrentView('dashboard')}
           className={cn(
-            "bg-white rounded-2xl flex items-center justify-center hover:bg-white/95 hover:scale-[1.02] transition-all shadow-lg",
-            isCollapsed ? "size-12 p-1.5" : "w-full h-20 p-3"
+            "flex items-center justify-center hover:scale-[1.03] transition-all",
+            isCollapsed ? "size-12" : "w-full h-28"
           )}
         >
            <img 
