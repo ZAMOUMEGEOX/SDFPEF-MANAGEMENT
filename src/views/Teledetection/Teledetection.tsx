@@ -119,10 +119,18 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
   const [paneCreated, setPaneCreated] = useState(false);
 
   useEffect(() => {
-    if (!map.getPane('splitPaneRight')) {
-      const pane = map.createPane('splitPaneRight');
+    // ── FIX SWIPE : le pane doit couvrir toute la carte pour que les
+    //   pourcentages de clip-path soient calculés sur la bonne référence.
+    //   Sans width/height explicites, le pane fait 0×0 (les tuiles Leaflet
+    //   sont positionnées via transform et ne contribuent pas au flux CSS),
+    //   ce qui rend clip-path polygon(50% …) = polygon(0px …) = RIEN visible.
+    let pane = map.getPane('splitPaneRight');
+    if (!pane) {
+      pane = map.createPane('splitPaneRight');
       pane.style.zIndex = '450';
     }
+    pane.style.width  = '100%';   // ← critique : couvrire toute la carte
+    pane.style.height = '100%';   // ← critique : couvrire toute la carte
     setPaneCreated(true);
   }, [map]);
 
@@ -434,7 +442,9 @@ export function Teledetection() {
                 let p = ((ev.clientX - rect.left) / rect.width) * 100;
                 p = Math.max(0, Math.min(p, 100));
                 slider.style.left = `calc(${p}% - 24px)`;
-                const pane = document.querySelector('.leaflet-splitPaneRight-pane') as HTMLElement;
+                // Utiliser mapRef.current.getPane plutôt que document.querySelector
+                // pour cibler précisément le pane de cette carte
+                const pane = mapRef.current?.getPane('splitPaneRight') as HTMLElement | undefined;
                 if (pane) pane.style.clipPath = `polygon(${p}% 0, 100% 0, 100% 100%, ${p}% 100%)`;
               };
               const onUp = (ev: MouseEvent) => {
@@ -455,7 +465,7 @@ export function Teledetection() {
               let p = ((e.touches[0].clientX - rect.left) / rect.width) * 100;
               p = Math.max(0, Math.min(p, 100));
               e.currentTarget.style.left = `calc(${p}% - 24px)`;
-              const pane = document.querySelector('.leaflet-splitPaneRight-pane') as HTMLElement;
+              const pane = mapRef.current?.getPane('splitPaneRight') as HTMLElement | undefined;
               if (pane) pane.style.clipPath = `polygon(${p}% 0, 100% 0, 100% 100%, ${p}% 100%)`;
             }}
             onTouchEnd={(e) => {
