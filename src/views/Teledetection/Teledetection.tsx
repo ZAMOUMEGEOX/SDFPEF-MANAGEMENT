@@ -42,6 +42,12 @@ const CONF_COLOR: Record<string, string> = {
   highest: '#7f1d1d', high: '#ef4444', medium: '#f97316', low: '#eab308',
 };
 
+// Centre/zoom de secours (avant que la limite forêt ANEF ne soit chargée) :
+// zone de Tétouan (Tétouan Ouest), PAS Tanger. Dès que forest_limits.json
+// répond, la carte recadre automatiquement sur les vrais contours du massif.
+const DEFAULT_MAP_CENTER: [number, number] = [35.62, -5.55];
+const DEFAULT_MAP_ZOOM = 11;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Sous-composants UI
 // ─────────────────────────────────────────────────────────────────────────────
@@ -227,6 +233,7 @@ export function Teledetection() {
   const [isPhenologyExpanded, setIsPhenologyExpanded] = useState(false);
 
   const mapRef = useRef<L.Map|null>(null);
+  const hasFitBoundaryRef = useRef(false);
 
   useEffect(() => {
     checkGeeHealth().then(d => setGeeStatus(d?.gee ? 'ready' : 'error')).catch(() => setGeeStatus('error'));
@@ -235,6 +242,20 @@ export function Teledetection() {
   useEffect(() => {
     fetch('/assets/data/forest_limits.json').then(r => r.json()).then(setForestBoundary).catch(() => {});
   }, []);
+
+  // Recadrage automatique (une seule fois) sur les vraies limites du massif
+  // forestier (forest_limits.json) dès qu'elles sont disponibles — c'est ce
+  // qui garantit l'ouverture sur la zone de Tétouan et plus sur Tanger.
+  useEffect(() => {
+    if (!forestBoundary || !mapRef.current || hasFitBoundaryRef.current) return;
+    try {
+      const bounds = L.geoJSON(forestBoundary).getBounds();
+      if (bounds.isValid()) {
+        hasFitBoundaryRef.current = true;
+        mapRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 });
+      }
+    } catch { /* noop */ }
+  }, [forestBoundary]);
 
   useEffect(() => {
     setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
@@ -265,7 +286,17 @@ export function Teledetection() {
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
   };
 
-  const resetMap = () => mapRef.current?.setView([35.7595, -5.8340], 12);
+  // Bouton "recentrer" : revient sur les limites du massif forestier si on
+  // les a (cas normal), sinon sur le centre de secours côté Tétouan.
+  const resetMap = () => {
+    if (forestBoundary && mapRef.current) {
+      try {
+        const bounds = L.geoJSON(forestBoundary).getBounds();
+        if (bounds.isValid()) { mapRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 }); return; }
+      } catch { /* noop */ }
+    }
+    mapRef.current?.setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM);
+  };
 
   // ── Analyse principale ────────────────────────────────────────────────────
   const handleAnalyze = async () => {
@@ -373,7 +404,7 @@ export function Teledetection() {
       {/* ── CARTE ─────────────────────────────────────────────────────────── */}
       <div className="relative h-[35vh] md:h-full md:flex-1 bg-[#121214] border-b md:border-b-0 md:border-r border-[var(--border-color)] shrink-0 z-10 md:shrink overflow-hidden">
 
-        <MapContainer center={[35.7595, -5.8340]} zoom={12}
+        <MapContainer center={DEFAULT_MAP_CENTER} zoom={DEFAULT_MAP_ZOOM}
           style={{ height: '100%', width: '100%' }} zoomControl={false}>
 
           <MapRefSetter onReady={(m) => { mapRef.current = m; }} />
