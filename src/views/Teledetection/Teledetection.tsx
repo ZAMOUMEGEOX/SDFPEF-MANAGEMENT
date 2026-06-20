@@ -15,7 +15,6 @@ import 'leaflet-draw/dist/leaflet.draw.css';
 import {
   checkGeeHealth,
   runAnalyze,
-  fetchTopPolygons,
   fetchForestWatchLayer,
   fetchSentinel1Change,
   fetchPhenology,
@@ -202,18 +201,23 @@ export function Teledetection() {
   const [isStatsExpanded, setIsStatsExpanded]               = useState(false);
   const [isExportExpanded, setIsExportExpanded]             = useState(false);
   const [isTopExpanded, setIsTopExpanded]                   = useState(false);
-  const [selectedZone, setSelectedZone]   = useState('tetouan_ouest');
+  const [selectedZone, setSelectedZone]   = useState('mdiq');
 
   const [toggles, setToggles] = useState({
-    s2Split: true, disturbance: true, polygons: true, foretApef: true,
+    s2Split: true, disturbance: true, polygons: true,
     ndviDelta: false, forestWatch: false, sentinel1: false, phenology: false,
   });
+  // Multi-scène (S2) — détection répétée sur plusieurs scènes réelles. OFF par défaut, indépendante.
+  const [multiScene, setMultiScene] = useState(false);
+  const [minScenes, setMinScenes]   = useState(2);
+  // Couches affichables via boutons sur la carte (gestion de couches, pas de cases)
+  const [showAnefLimit, setShowAnefLimit] = useState(true);
   // Triple confirmation : ON par défaut (essentiel à toute analyse rigoureuse)
   const [tripleConf, setTripleConf] = useState(true);
   // Filtre "Haute confiance" : rattaché à la couche Alertes (raster + polygones)
   const [highConfOnly, setHighConfOnly] = useState(false);
   // Opacités réglables des couches raster (gain de place, pas de cartes séparées)
-  const [opacity, setOpacity] = useState({ alertes: 0.78, ndvi: 0.72, hansen: 0.80, s1: 0.70, pheno: 0.68 });
+  const [opacity, setOpacity] = useState({ alertes: 0.78, ndvi: 0.72, hansen: 0.80, s1: 0.70, pheno: 0.68, multiscene: 0.80 });
   const setLayerOpacity = (k: keyof typeof opacity, v: number) => setOpacity(o => ({ ...o, [k]: v }));
 
   const zones = [
@@ -231,6 +235,7 @@ export function Teledetection() {
   const [distAlertTileUrl, setDistAlertTileUrl] = useState<string|null>(null);
   const [s1TileUrl, setS1TileUrl]           = useState<string|null>(null);
   const [phenologyTileUrl, setPhenologyTileUrl] = useState<string|null>(null);
+  const [multisceneTileUrl, setMultisceneTileUrl] = useState<string|null>(null);
   const [polygons, setPolygons]             = useState<PolygonFeature[]>([]);
   const [beforeLabel, setBeforeLabel]       = useState<string>('Sentinel-2 (avant)');
   const [afterLabel, setAfterLabel]         = useState<string>('Sentinel-2 (après)');
@@ -277,7 +282,7 @@ export function Teledetection() {
 
   useEffect(() => {
     setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
-    setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null);
+    setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null); setMultisceneTileUrl(null);
     setPolygons([]); setTopPolys([]); setSelectedPolyId(null); setPolyError(null);
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
   }, [selectedZone]);
@@ -300,13 +305,14 @@ export function Teledetection() {
     useTemporal: tripleConf,
     useSeasonal: tripleConf || toggles.phenology,
     useExternal: true, // Hansen peu coûteux -> toujours actif
+    useMultiscene: multiScene, minScenes,
   });
 
   const resetParams = () => {
     setCloudMax(30); setNdviThreshold(0.15); setNbrThreshold(0.15);
     setNdmiThreshold(0.12); setMinSurface(500); setMinConfidence(2);
     setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
-    setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null);
+    setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null); setMultisceneTileUrl(null);
     setPolygons([]); setTopPolys([]); setSelectedPolyId(null); setPolyError(null);
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
   };
@@ -336,11 +342,11 @@ export function Teledetection() {
       if (result.beforeLabel) setBeforeLabel(result.beforeLabel);
       if (result.afterLabel) setAfterLabel(result.afterLabel);
       setPolyError(result.poly_error ?? null);
+      setMultisceneTileUrl(result.multisceneTileUrl ?? null);
 
-      // Top-N polygones les plus dangereux
-      fetchTopPolygons(params, 20)
-        .then(fc => setTopPolys(fc.features))
-        .catch(e => console.warn('[Top]', e));
+      // Top-N : pris directement des polygones (déjà triés par aire) -> 0 requête en plus
+      const allPolys = result.polygons?.features ?? [];
+      setTopPolys(allPolys.slice(0, 20));
 
       // Forest Watch (Hansen / DIST-ALERT)
       if (toggles.forestWatch) {
@@ -484,7 +490,10 @@ export function Teledetection() {
           {toggles.phenology && phenologyTileUrl && (
             <TileLayer key={phenologyTileUrl} url={phenologyTileUrl} opacity={opacity.pheno} attribution="GEE Phénologie" />
           )}
-          {toggles.foretApef && forestBoundary && (
+          {multiScene && multisceneTileUrl && (
+            <TileLayer key={multisceneTileUrl} url={multisceneTileUrl} opacity={opacity.multiscene} attribution="GEE Multi-scène S2" />
+          )}
+          {showAnefLimit && forestBoundary && (
             <GeoJSON key="forest-boundary" data={forestBoundary}
               style={() => ({ color: '#34d399', weight: 2, dashArray: '8 5', fillColor: '#34d399', fillOpacity: 0.05 })} />
           )}
@@ -509,7 +518,7 @@ export function Teledetection() {
         </MapContainer>
 
         {/* Slider swipe */}
-        {toggles.s2Split && beforeTileUrl && afterTileUrl && (
+        {toggles.s2Split && (
           <div id="split-slider-container"
             className="absolute top-0 bottom-0 w-12 cursor-ew-resize z-[500] flex items-center justify-center group pointer-events-auto"
             style={{ left: `calc(${splitPos}% - 24px)` }}
@@ -592,13 +601,31 @@ export function Teledetection() {
         <div className="absolute top-2 md:top-4 inset-x-2 md:inset-x-4 flex justify-between items-start z-[500] pointer-events-none">
           <div />
           <div className="flex flex-col gap-2 pointer-events-auto">
-            <button onClick={resetMap} className="w-8 h-8 md:w-10 md:h-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white hover:scale-110 hover:bg-white/20 transition-all shadow-lg">
+            <button onClick={resetMap} title="Recentrer sur la zone" className="w-8 h-8 md:w-10 md:h-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white hover:scale-110 hover:bg-white/20 transition-all shadow-lg">
               <MapIcon className="w-4 h-4 md:w-5 md:h-5" />
             </button>
-            <button className="w-8 h-8 md:w-10 md:h-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white hover:scale-110 hover:bg-[var(--brand)] hover:border-transparent transition-all">
+            <button title="Localiser" className="w-8 h-8 md:w-10 md:h-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white hover:scale-110 hover:bg-[var(--brand)] hover:border-transparent transition-all">
               <Crosshair className="w-4 h-4 md:w-5 md:h-5" />
             </button>
           </div>
+        </div>
+
+        {/* Gestion des couches — boutons compacts en bas à droite, à côté de la légende */}
+        <div className="absolute bottom-10 right-2 md:bottom-14 md:right-4 z-[500] pointer-events-auto flex flex-col gap-1.5 items-end">
+          {/* High confidence only — bascule la couche Alertes vers score >= 3 uniquement */}
+          {(toggles.disturbance || toggles.polygons) && polygons.length > 0 && (
+            <button onClick={() => setHighConfOnly(v => !v)} title="Afficher uniquement la haute confiance"
+              className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold shadow-lg backdrop-blur-md border transition-all",
+                highConfOnly ? "bg-[#7f1d1d] text-white border-red-400/40" : "bg-black/65 text-white/90 border-white/10 hover:bg-black/80")}>
+              <ShieldAlert className="w-3.5 h-3.5" /> {highConfOnly ? 'Haute conf. ✓' : 'High only'}
+            </button>
+          )}
+          {/* Limite domaine ANEF — afficher / masquer */}
+          <button onClick={() => setShowAnefLimit(v => !v)} title="Limite du domaine forestier ANEF"
+            className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold shadow-lg backdrop-blur-md border transition-all",
+              showAnefLimit ? "bg-emerald-600/90 text-white border-emerald-300/40" : "bg-black/65 text-white/70 border-white/10 hover:bg-black/80")}>
+            <TreePine className="w-3.5 h-3.5" /> Limite ANEF
+          </button>
         </div>
 
         {/* Légende — 4 niveaux de confiance */}
@@ -787,19 +814,50 @@ export function Teledetection() {
                     </button>
                   </div>
 
+                  {/* Multi-scène (S2) — preuve indépendante, ne tourne que si activée */}
+                  <div className={cn("p-2.5 rounded-xl border-2 mb-2 transition-all",
+                    multiScene ? "border-orange-500/70 bg-orange-500/10" : "border-[var(--border-color)] bg-[var(--bg-main)]")}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Layers className={cn("w-4 h-4 shrink-0", multiScene ? "text-orange-500" : "text-[var(--text-muted)]")} />
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-bold text-[var(--text-main)] leading-tight">Détection multi-scène</p>
+                          <p className="text-[8px] text-[var(--text-muted)] font-mono truncate">changement répété sur ≥ N scènes S2 réelles</p>
+                        </div>
+                      </div>
+                      <button onClick={() => setMultiScene(v => !v)}
+                        className={cn("w-11 h-6 rounded-full relative transition-colors shrink-0", multiScene ? "bg-orange-500" : "bg-black/20 dark:bg-white/20")}>
+                        <div className={cn("absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform shadow-sm", multiScene ? "translate-x-5" : "translate-x-0")} />
+                      </button>
+                    </div>
+                    {multiScene && (
+                      <div className="mt-2.5 pt-2.5 border-t border-orange-500/20 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[9px] font-bold uppercase tracking-wider text-[var(--text-muted)]">Scènes min. confirmant</span>
+                          <span className="text-xs font-mono font-bold text-orange-500">≥ {minScenes}</span>
+                        </div>
+                        <input type="range" min={2} max={5} step={1} value={minScenes}
+                          onChange={e => setMinScenes(Number(e.target.value))}
+                          className="w-full h-1.5 cursor-pointer" style={{ accentColor: '#f97316' }} />
+                        <p className="text-[8px] text-orange-400 font-mono leading-relaxed">
+                          🟠 Ajoute +1 au score de confiance là où le changement apparaît dans ≥{minScenes} scènes distinctes. Couche dédiée affichable.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
                   <div className="grid grid-cols-2 gap-1.5">
                     <ToggleCard label="S2 Split"     icon={SplitSquareHorizontal} checked={toggles.s2Split}     onChange={() => handleToggle('s2Split')}     activeColor="#3b82f6" />
                     <ToggleCard label="Alertes"      icon={FileWarning}           checked={toggles.disturbance} onChange={() => handleToggle('disturbance')} activeColor="#eab308" />
                     <ToggleCard label="Polygones"    icon={ShieldAlert}           checked={toggles.polygons}    onChange={() => handleToggle('polygons')}    activeColor="#ef4444" />
                     <ToggleCard label="NDVI Δ"       icon={CloudRain}             checked={toggles.ndviDelta}   onChange={() => handleToggle('ndviDelta')}   activeColor="#10b981" />
-                    <ToggleCard label="Forêt ANEF"   icon={TreePine}              checked={toggles.foretApef}   onChange={() => handleToggle('foretApef')}   activeColor="#14b8a6" />
                     <ToggleCard label="Forest Watch" icon={Globe}                 checked={toggles.forestWatch} onChange={() => handleToggle('forestWatch')} activeColor="#d946ef" />
                     <ToggleCard label="Sentinel-1"   icon={Waves}                 checked={toggles.sentinel1}   onChange={() => handleToggle('sentinel1')}   activeColor="#8b5cf6" />
                     <ToggleCard label="Phénologie"   icon={TrendingUp}            checked={toggles.phenology}   onChange={() => handleToggle('phenology')}   activeColor="#f59e0b" />
                   </div>
 
                   {/* Opacités fines des couches actives (pas de cartes séparées) */}
-                  {(toggles.disturbance || toggles.ndviDelta || toggles.forestWatch || toggles.sentinel1 || toggles.phenology) && (
+                  {(toggles.disturbance || toggles.ndviDelta || toggles.forestWatch || toggles.sentinel1 || toggles.phenology || (multiScene && multisceneTileUrl)) && (
                     <div className="mt-2 bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)] space-y-2">
                       <p className="text-[8px] font-bold uppercase tracking-widest text-[var(--text-muted)]">Opacité des couches</p>
                       {toggles.disturbance && <OpacityRow label="Alertes" color="#eab308" value={opacity.alertes} onChange={(v:number)=>setLayerOpacity('alertes',v)} />}
@@ -807,6 +865,7 @@ export function Teledetection() {
                       {toggles.forestWatch && <OpacityRow label="Hansen"  color="#d946ef" value={opacity.hansen}  onChange={(v:number)=>setLayerOpacity('hansen',v)} />}
                       {toggles.sentinel1   && <OpacityRow label="SAR S1"  color="#8b5cf6" value={opacity.s1}      onChange={(v:number)=>setLayerOpacity('s1',v)} />}
                       {toggles.phenology   && <OpacityRow label="Phéno."  color="#f59e0b" value={opacity.pheno}   onChange={(v:number)=>setLayerOpacity('pheno',v)} />}
+                      {multiScene && multisceneTileUrl && <OpacityRow label="Multi-sc." color="#ec7014" value={opacity.multiscene} onChange={(v:number)=>setLayerOpacity('multiscene',v)} />}
                     </div>
                   )}
 
@@ -824,43 +883,26 @@ export function Teledetection() {
                 </div>
               </section>
 
-              {/* Contrôle de la couche Alertes — filtre Haute confiance intégré */}
-              {(toggles.disturbance || toggles.polygons) && (
+              {/* Répartition par niveau de confiance (le filtre High se fait sur la carte) */}
+              {(toggles.disturbance || toggles.polygons) && realStats && (
                 <section className="border-b border-stone-200/50 dark:border-stone-800/50 pb-3 mb-3">
-                  <div className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 flex items-center gap-2">
-                    <FileWarning className="w-4 h-4 text-amber-500" /> Couche Alertes
+                  <div className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 flex items-center justify-between">
+                    <span className="flex items-center gap-2"><FileWarning className="w-4 h-4 text-amber-500" /> Niveaux d'alerte</span>
+                    {highConfOnly && <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-[#7f1d1d] text-white font-bold">HC seul</span>}
                   </div>
-                  <div className="bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)] space-y-2.5">
-                    {/* Sélecteur Tous / Haute confiance — segmenté, pro */}
-                    <div className="flex items-center bg-[var(--bg-surface)] rounded-lg p-0.5 border border-[var(--border-color)]">
-                      <button onClick={() => setHighConfOnly(false)}
-                        className={cn("flex-1 text-[10px] font-bold py-1.5 rounded-md transition-all",
-                          !highConfOnly ? "bg-[var(--brand)] text-[var(--bg-main)] shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
-                        Toutes les alertes
-                      </button>
-                      <button onClick={() => setHighConfOnly(true)}
-                        className={cn("flex-1 text-[10px] font-bold py-1.5 rounded-md transition-all flex items-center justify-center gap-1",
-                          highConfOnly ? "bg-[#7f1d1d] text-white shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
-                        <ShieldAlert className="w-3 h-3" /> Haute confiance
-                      </button>
+                  <div className="bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)]">
+                    <div className="flex items-center gap-1 text-center">
+                      {[['#eab308', realStats.low_ha, 'Faible'], ['#f97316', realStats.medium_ha, 'Moy.'], ['#ef4444', realStats.high_ha, 'Haute'], ['#7f1d1d', realStats.highest_ha, 'T.H.']].map(([c, v, l], i) => (
+                        <div key={i} className="flex-1 rounded p-1 bg-[var(--bg-surface)] border border-[var(--border-color)]">
+                          <div className="w-full h-1 rounded-full mb-1" style={{ backgroundColor: c as string }} />
+                          <p className="text-[9px] font-bold text-[var(--text-main)]">{Number(v ?? 0).toFixed(1)}</p>
+                          <p className="text-[7px] text-[var(--text-muted)]">{l as string}</p>
+                        </div>
+                      ))}
                     </div>
-                    <p className="text-[9px] text-[var(--text-muted)] font-mono leading-relaxed">
-                      {highConfOnly
-                        ? '🔴 Affiche uniquement High + Très haute (score ≥ 3).'
-                        : '🟡 Affiche tous les changements selon les paramètres réglés.'}
+                    <p className="text-[8px] text-[var(--text-muted)] font-mono mt-2 leading-relaxed">
+                      💡 Bouton « High only » sur la carte pour n'afficher que la haute confiance (score ≥ 3).
                     </p>
-                    {/* Répartition rapide par niveau */}
-                    {realStats && (
-                      <div className="flex items-center gap-1 text-center pt-0.5">
-                        {[['#eab308', realStats.low_ha], ['#f97316', realStats.medium_ha], ['#ef4444', realStats.high_ha], ['#7f1d1d', realStats.highest_ha]].map(([c, v], i) => (
-                          <div key={i} className="flex-1 rounded p-1 bg-[var(--bg-surface)] border border-[var(--border-color)]">
-                            <div className="w-full h-1 rounded-full mb-1" style={{ backgroundColor: c as string }} />
-                            <p className="text-[9px] font-bold text-[var(--text-main)]">{Number(v ?? 0).toFixed(1)}</p>
-                            <p className="text-[7px] text-[var(--text-muted)]">ha</p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
                   </div>
                 </section>
               )}

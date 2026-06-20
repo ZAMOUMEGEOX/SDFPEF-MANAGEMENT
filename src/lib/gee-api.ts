@@ -23,9 +23,10 @@ export interface AnalyzeParams {
   date2Start: string; date2End: string;
   cloud?: number;
   sensitivity?: number; nbr?: number; ndmi?: number; vv?: number;
-  minScore?: number;     // 1..4
+  minScore?: number;     // 1..5
   minArea?: number;      // m²
   useRadar?: boolean; useTemporal?: boolean; useSeasonal?: boolean; useExternal?: boolean;
+  useMultiscene?: boolean; minScenes?: number;
 }
 
 export interface AnalyzeStats {
@@ -39,6 +40,7 @@ export interface PolygonProps {
   conf_score: number; confidence: "low" | "medium" | "high" | "highest";
   ndvi_change: number; nbr_change: number; ndmi_change: number;
   hansen_year: number | null;
+  lng?: number; lat?: number; n_scenes?: number | null;
 }
 export interface PolygonFeature {
   type: "Feature";
@@ -51,6 +53,7 @@ export interface AnalyzeResult {
   success: boolean; zone: string;
   beforeTileUrl: string | null; afterTileUrl: string | null;
   distTileUrl: string | null; ndviTileUrl: string | null;
+  multisceneTileUrl?: string | null; max_score?: number;
   beforeLabel: string; afterLabel: string;
   period1: string; period2: string;
   polygons: PolygonFC; count: number; stats: AnalyzeStats;
@@ -93,6 +96,7 @@ function buildBody(p: AnalyzeParams): Record<string, unknown> {
     // Defaut LEGER (rapide) — les preuves lourdes ne tournent que si activees via les toggles
     useRadar: p.useRadar ?? false, useTemporal: p.useTemporal ?? false,
     useSeasonal: p.useSeasonal ?? false, useExternal: p.useExternal ?? false,
+    useMultiscene: p.useMultiscene ?? false, minScenes: p.minScenes ?? 2,
   };
 }
 
@@ -184,13 +188,26 @@ export function exportPolygonsShp(p: AnalyzeParams): Promise<void> {
 // CSV genere cote client a partir des polygones deja charges
 export function exportPolygonsCsv(features: PolygonFeature[], zone: string): void {
   const BOM = "\uFEFF";
-  const header = "ID,Confiance,Score,Aire_ha,Aire_m2,NDVI_Delta,NBR_Delta,NDMI_Delta,Hansen_Annee\n";
+  const header = "ID,Confiance,Score,Aire_ha,Aire_m2,Lng_X,Lat_Y,NDVI_Delta,NBR_Delta,N_Scenes,Hansen_Annee\n";
+  const centroid = (f: PolygonFeature): [number, number] => {
+    if (f.properties.lng != null && f.properties.lat != null) return [f.properties.lng, f.properties.lat];
+    // fallback : moyenne des sommets
+    try {
+      const g: any = f.geometry;
+      const ring = g.type === "MultiPolygon" ? g.coordinates[0][0] : g.coordinates[0];
+      let sx = 0, sy = 0;
+      ring.forEach((c: number[]) => { sx += c[0]; sy += c[1]; });
+      return [sx / ring.length, sy / ring.length];
+    } catch { return [0, 0]; }
+  };
   const rows = features.map((f) => {
     const p = f.properties;
+    const [lng, lat] = centroid(f);
     return [p.id, p.confidence, (p.conf_score ?? 0).toFixed(1),
       (p.area_ha ?? 0).toFixed(4), Math.round(p.area_m2 ?? 0),
+      lng.toFixed(6), lat.toFixed(6),
       (p.ndvi_change ?? 0).toFixed(4), (p.nbr_change ?? 0).toFixed(4),
-      (p.ndmi_change ?? 0).toFixed(4), p.hansen_year ?? ""].join(",");
+      p.n_scenes ?? "", p.hansen_year ?? ""].join(",");
   });
   const blob = new Blob([BOM + header + rows.join("\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
