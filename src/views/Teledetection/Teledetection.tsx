@@ -42,12 +42,6 @@ const CONF_COLOR: Record<string, string> = {
   highest: '#7f1d1d', high: '#ef4444', medium: '#f97316', low: '#eab308',
 };
 
-// Centre/zoom de secours (avant que la limite forêt ANEF ne soit chargée) :
-// zone de Tétouan (Tétouan Ouest), PAS Tanger. Dès que forest_limits.json
-// répond, la carte recadre automatiquement sur les vrais contours du massif.
-const DEFAULT_MAP_CENTER: [number, number] = [35.62, -5.55];
-const DEFAULT_MAP_ZOOM = 11;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Sous-composants UI
 // ─────────────────────────────────────────────────────────────────────────────
@@ -141,9 +135,7 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
     if (!pane) return;
 
     const applyClip = () => {
-      // Pas de couche "après" (analyse pas encore lancée) → on masque la pane :
-      // le fond satellite par défaut reste visible des deux côtés du slider.
-      if (!toggles.s2Split || !geeAfterUrl) {
+      if (!toggles.s2Split) {
         pane.style.display = 'none';
         return;
       }
@@ -164,13 +156,12 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
     };
   }, [splitPos, toggles.s2Split, paneReady, map, geeAfterUrl]);
 
-  // Tant que l'analyse GEE n'a pas fourni d'image Sentinel-2 "après",
-  // on n'affiche AUCUNE couche de remplacement (plus de fallback topo) :
-  // la carte satellite d'origine reste visible sur toute la largeur.
-  if (!paneReady || !toggles.s2Split || !geeAfterUrl) return null;
+  if (!paneReady || !toggles.s2Split) return null;
 
-  return (
+  return geeAfterUrl ? (
     <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" attribution="© GEE / Copernicus S2 (après)" />
+  ) : (
+    <TileLayer key="split-topo-fallback" url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}" pane="splitPaneRight" className="sepia-[.3] contrast-125" />
   );
 }
 
@@ -233,7 +224,6 @@ export function Teledetection() {
   const [isPhenologyExpanded, setIsPhenologyExpanded] = useState(false);
 
   const mapRef = useRef<L.Map|null>(null);
-  const hasFitBoundaryRef = useRef(false);
 
   useEffect(() => {
     checkGeeHealth().then(d => setGeeStatus(d?.gee ? 'ready' : 'error')).catch(() => setGeeStatus('error'));
@@ -242,20 +232,6 @@ export function Teledetection() {
   useEffect(() => {
     fetch('/assets/data/forest_limits.json').then(r => r.json()).then(setForestBoundary).catch(() => {});
   }, []);
-
-  // Recadrage automatique (une seule fois) sur les vraies limites du massif
-  // forestier (forest_limits.json) dès qu'elles sont disponibles — c'est ce
-  // qui garantit l'ouverture sur la zone de Tétouan et plus sur Tanger.
-  useEffect(() => {
-    if (!forestBoundary || !mapRef.current || hasFitBoundaryRef.current) return;
-    try {
-      const bounds = L.geoJSON(forestBoundary).getBounds();
-      if (bounds.isValid()) {
-        hasFitBoundaryRef.current = true;
-        mapRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 });
-      }
-    } catch { /* noop */ }
-  }, [forestBoundary]);
 
   useEffect(() => {
     setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
@@ -286,17 +262,7 @@ export function Teledetection() {
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
   };
 
-  // Bouton "recentrer" : revient sur les limites du massif forestier si on
-  // les a (cas normal), sinon sur le centre de secours côté Tétouan.
-  const resetMap = () => {
-    if (forestBoundary && mapRef.current) {
-      try {
-        const bounds = L.geoJSON(forestBoundary).getBounds();
-        if (bounds.isValid()) { mapRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 }); return; }
-      } catch { /* noop */ }
-    }
-    mapRef.current?.setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM);
-  };
+  const resetMap = () => mapRef.current?.setView([35.7595, -5.8340], 12);
 
   // ── Analyse principale ────────────────────────────────────────────────────
   const handleAnalyze = async () => {
@@ -340,7 +306,7 @@ export function Teledetection() {
       }
     } catch (err: any) {
       const msg = err.message || 'Erreur GEE';
-      if (err.name === 'AbortError' || msg.includes('abort')) setErrorMsg('Connexion interrompue avec le serveur GEE. Vérifier la connexion et réessayer.');
+      if (err.name === 'AbortError' || msg.includes('abort')) setErrorMsg('Délai dépassé (3 min). Réduire la zone ou augmenter cloudMax.');
       else if (msg.includes('GEE non disponible')) setErrorMsg('GEE hors-ligne côté serveur.');
       else if (msg.includes('date')) setErrorMsg(`Dates invalides: ${msg}`);
       else setErrorMsg(msg);
@@ -404,7 +370,7 @@ export function Teledetection() {
       {/* ── CARTE ─────────────────────────────────────────────────────────── */}
       <div className="relative h-[35vh] md:h-full md:flex-1 bg-[#121214] border-b md:border-b-0 md:border-r border-[var(--border-color)] shrink-0 z-10 md:shrink overflow-hidden">
 
-        <MapContainer center={DEFAULT_MAP_CENTER} zoom={DEFAULT_MAP_ZOOM}
+        <MapContainer center={[35.7595, -5.8340]} zoom={12}
           style={{ height: '100%', width: '100%' }} zoomControl={false}>
 
           <MapRefSetter onReady={(m) => { mapRef.current = m; }} />
@@ -612,9 +578,9 @@ export function Teledetection() {
           )}
         </div>
 
-        {toggles.s2Split && afterTileUrl && (
+        {toggles.s2Split && (
           <div className="absolute top-2 md:top-4 right-[3.5rem] md:right-[4.5rem] bg-amber-500 text-black px-2 py-1 md:px-3 md:py-1.5 rounded-lg text-[9px] md:text-xs font-bold shadow-lg z-[500]">
-            S2 AVANT | APRÈS
+            {afterTileUrl ? 'S2 AVANT | APRÈS' : 'S2 APRÈS (TOPO)'}
           </div>
         )}
 
