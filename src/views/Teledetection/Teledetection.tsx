@@ -26,6 +26,7 @@ import {
   type PolygonFeature,
   type AnalyzeParams,
   type AnomalyLabel,
+  toFlaskZone,
 } from '../../lib/gee-api';
 
 const ANOMALY_CONFIG: Record<AnomalyLabel, { color: string; label: string; emoji: string }> = {
@@ -156,12 +157,11 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
     };
   }, [splitPos, toggles.s2Split, paneReady, map, geeAfterUrl]);
 
-  if (!paneReady || !toggles.s2Split) return null;
+  // Pas de couche droite tant que l'analyse n'a pas renvoyé l'image S2 APRÈS (aucun fallback topo)
+  if (!paneReady || !toggles.s2Split || !geeAfterUrl) return null;
 
-  return geeAfterUrl ? (
+  return (
     <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" attribution="© GEE / Copernicus S2 (après)" />
-  ) : (
-    <TileLayer key="split-topo-fallback" url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}" pane="splitPaneRight" className="sepia-[.3] contrast-125" />
   );
 }
 
@@ -225,6 +225,8 @@ export function Teledetection() {
   const [phenologyData, setPhenologyData]   = useState<any>(null);
   const [errorMsg, setErrorMsg]             = useState<string|null>(null);
   const [forestBoundary, setForestBoundary] = useState<any>(null);
+  const [zoneBoundary, setZoneBoundary]     = useState<any>(null);
+  const [mapReady, setMapReady]             = useState(false);
   const [isPhenologyExpanded, setIsPhenologyExpanded] = useState(false);
 
   const mapRef = useRef<L.Map|null>(null);
@@ -236,6 +238,24 @@ export function Teledetection() {
   useEffect(() => {
     fetch('/assets/data/forest_limits.json').then(r => r.json()).then(setForestBoundary).catch(() => {});
   }, []);
+
+  // Centrer la carte sur les limites du domaine forestier de la zone sélectionnée
+  useEffect(() => {
+    if (!mapReady) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/gee/zone-boundary?zone=${toFlaskZone(selectedZone)}`);
+        const data = await res.json();
+        if (cancelled || !data?.geojson) return;
+        setZoneBoundary(data.geojson);
+        const layer = L.geoJSON(data.geojson);
+        const b = layer.getBounds();
+        if (b.isValid()) mapRef.current?.fitBounds(b, { padding: [30, 30], maxZoom: 13 });
+      } catch { /* garde la vue par défaut */ }
+    })();
+    return () => { cancelled = true; };
+  }, [mapReady, selectedZone]);
 
   useEffect(() => {
     setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
@@ -275,7 +295,13 @@ export function Teledetection() {
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
   };
 
-  const resetMap = () => mapRef.current?.setView([35.7595, -5.8340], 12);
+  const resetMap = () => {
+    if (zoneBoundary) {
+      const b = L.geoJSON(zoneBoundary).getBounds();
+      if (b.isValid()) { mapRef.current?.fitBounds(b, { padding: [30, 30], maxZoom: 13 }); return; }
+    }
+    mapRef.current?.setView([35.5785, -5.3684], 11); // Tétouan
+  };
 
   // ── Analyse principale ────────────────────────────────────────────────────
   const handleAnalyze = async () => {
@@ -386,10 +412,10 @@ export function Teledetection() {
       {/* ── CARTE ─────────────────────────────────────────────────────────── */}
       <div className="relative h-[35vh] md:h-full md:flex-1 bg-[#121214] border-b md:border-b-0 md:border-r border-[var(--border-color)] shrink-0 z-10 md:shrink overflow-hidden">
 
-        <MapContainer center={[35.7595, -5.8340]} zoom={12}
+        <MapContainer center={[35.5785, -5.3684]} zoom={11}
           style={{ height: '100%', width: '100%' }} zoomControl={false}>
 
-          <MapRefSetter onReady={(m) => { mapRef.current = m; }} />
+          <MapRefSetter onReady={(m) => { mapRef.current = m; setMapReady(true); }} />
 
           <LayersControl position="topright">
             <LayersControl.BaseLayer checked name="Hybride + Satellite">
@@ -438,6 +464,12 @@ export function Teledetection() {
               style={() => ({ color: '#34d399', weight: 2, dashArray: '8 5', fillColor: '#34d399', fillOpacity: 0.05 })} />
           )}
 
+          {/* Limite du domaine de la zone sélectionnée — toujours visible */}
+          {zoneBoundary && (
+            <GeoJSON key={`zone-${selectedZone}`} data={zoneBoundary}
+              style={() => ({ color: '#fbbf24', weight: 2.5, fillColor: '#fbbf24', fillOpacity: 0.04 })} />
+          )}
+
           {/* POLYGONES de perturbation (vecteurs réels) */}
           {toggles.polygons && polygons.length > 0 && (
             <GeoJSON
@@ -452,7 +484,7 @@ export function Teledetection() {
         </MapContainer>
 
         {/* Slider swipe */}
-        {toggles.s2Split && (
+        {toggles.s2Split && beforeTileUrl && afterTileUrl && (
           <div id="split-slider-container"
             className="absolute top-0 bottom-0 w-12 cursor-ew-resize z-[500] flex items-center justify-center group pointer-events-auto"
             style={{ left: `calc(${splitPos}% - 24px)` }}
@@ -607,8 +639,8 @@ export function Teledetection() {
           </>
         )}
         {toggles.s2Split && !beforeTileUrl && (
-          <div className="absolute top-2 md:top-4 right-[3.5rem] md:right-[4.5rem] bg-amber-500 text-black px-2 py-1 md:px-3 md:py-1.5 rounded-lg text-[9px] md:text-xs font-bold shadow-lg z-[500]">
-            S2 APRÈS (TOPO) — lancez l'analyse
+          <div className="absolute top-2 md:top-4 left-1/2 -translate-x-1/2 bg-black/70 backdrop-blur-md text-white/90 px-3 py-1.5 rounded-lg text-[9px] md:text-xs font-semibold shadow-lg z-[500] pointer-events-none">
+            ↓ Lancez l'analyse pour comparer Sentinel-2 (avant / après)
           </div>
         )}
 
