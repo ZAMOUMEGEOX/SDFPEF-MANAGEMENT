@@ -75,29 +75,19 @@ export function Sidebar({ currentView, setCurrentView, layout = 'sidebar' }: Sid
       </button>
 
       {/* Logo */}
-      <div className={cn("flex items-center border-b border-white/10 transition-all", isCollapsed ? "p-3 justify-center" : "p-6 gap-3")}>
+      <div className={cn("flex items-center justify-center border-b border-white/10 transition-all", isCollapsed ? "p-3" : "p-5")}>
         <button 
           onClick={() => setCurrentView('dashboard')}
-          className={cn("bg-white/10 rounded-xl relative overflow-hidden backdrop-blur-sm flex items-center justify-center hover:bg-white/20 transition-all text-left", isCollapsed ? "size-10" : "h-12 px-3 py-1 flex-1")}
+          className={cn(
+            "bg-white rounded-2xl flex items-center justify-center hover:bg-white/95 hover:scale-[1.02] transition-all shadow-lg",
+            isCollapsed ? "size-12 p-1.5" : "w-full h-20 p-3"
+          )}
         >
            <img 
              src="/images/logo-anef2.png" 
              alt="ANEF Logo" 
-             className={cn("h-full w-auto object-contain drop-shadow transition-all", isCollapsed ? "scale-150" : "")}
-             onError={(e) => {
-               e.currentTarget.style.display = 'none';
-               e.currentTarget.nextElementSibling?.classList.remove('hidden');
-             }} 
+             className="h-full w-full object-contain"
            />
-           <div className={cn("hidden w-full h-full flex items-center justify-center gap-2", isCollapsed ? "" : "flex")}>
-             <Leaf className="w-6 h-6 text-white shrink-0" />
-             {!isCollapsed && (
-               <div className="text-left w-full overflow-hidden">
-                 <h1 className="text-sm font-black leading-tight tracking-[0.1em] text-white/90">ANEF</h1>
-                 <p className="text-[10px] opacity-70 tracking-widest uppercase mt-0.5 font-medium whitespace-nowrap overflow-hidden text-ellipsis">Eaux et Forêts</p>
-               </div>
-             )}
-           </div>
         </button>
       </div>
 
