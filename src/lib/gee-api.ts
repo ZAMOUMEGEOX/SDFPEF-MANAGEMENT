@@ -1,496 +1,203 @@
 // src/lib/gee-api.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// Client library — tous les appels passent par server.ts proxy
-// Route: /api/gee/* → https://ZAMOUMEGEO.pythonanywhere.com/*
+// Client GEE v12 — polygones reels, swipe before/after, exports backend (GeoJSON/KML/SHP)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const API_BASE = "/api/gee";
 
-// ── Zone ID Normalisation ─────────────────────────────────────────────────────
-// UI utilise 'mdiq', Flask attend 'df_mdiq'
 const ZONE_MAP: Record<string, string> = {
   mdiq: "df_mdiq",
   tetouan_est: "tetouan_est",
   tetouan_ouest: "tetouan_ouest",
 };
+export const toFlaskZone = (z: string): string => ZONE_MAP[z] ?? z;
 
-export const toFlaskZone = (zone: string): string =>
-  ZONE_MAP[zone] ?? zone;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ── Types ────────────────────────────────────────────────────────────────────
 export interface GeeHealthStatus {
-  gee: boolean;
-  version: string;
-  status: "ok" | "degraded";
-  gee_error?: string | null;
+  gee: boolean; version: string; status: "ok" | "degraded"; gee_error?: string | null;
 }
 
 export interface AnalyzeParams {
-  zone: string;          // ID zone UI ('mdiq' | 'tetouan_est' | 'tetouan_ouest')
-  date1Start: string;    // Référence début (YYYY-MM-DD)
-  date1End: string;      // Référence fin
-  date2Start: string;    // Actuelle début
-  date2End: string;      // Actuelle fin
-  cloud?: number;        // Max cloud % (default 30)
-  sensitivity?: number;  // NDVI threshold (default 0.15)
-  nbr?: number;          // NBR threshold  (default 0.15)
-  ndmi?: number;         // NDMI threshold (default 0.12)
-  minScore?: number;     // Confidence min 1-3 (default 1)
+  zone: string;
+  date1Start: string; date1End: string;
+  date2Start: string; date2End: string;
+  cloud?: number;
+  sensitivity?: number; nbr?: number; ndmi?: number; vv?: number;
+  minScore?: number;     // 1..4
+  minArea?: number;      // m²
+  useRadar?: boolean; useTemporal?: boolean; useSeasonal?: boolean; useExternal?: boolean;
 }
 
 export interface AnalyzeStats {
-  high_ha: number;
-  medium_ha: number;
-  low_ha: number;
-  total_ha: number;
-  alert_level: "CRITIQUE" | "ELEVE" | "MOYEN" | "FAIBLE";
+  low_ha: number; medium_ha: number; high_ha: number; highest_ha: number;
+  total_ha: number; alert_level: "CRITIQUE" | "ELEVE" | "MOYEN" | "FAIBLE";
 }
 
-export interface AlertFeature {
+export interface PolygonProps {
+  id: number; poly_id: number;
+  area_m2: number; area_ha: number;
+  conf_score: number; confidence: "low" | "medium" | "high" | "highest";
+  ndvi_change: number; nbr_change: number; ndmi_change: number;
+  hansen_year: number | null;
+}
+export interface PolygonFeature {
   type: "Feature";
-  geometry: { type: "Point"; coordinates: [number, number] };
-  properties: {
-    id: number;
-    area_ha: number;
-    confidence: "high" | "medium" | "low";
-    conf_score: number;
-    ndvi_change: number;
-    nbr_change: number;
-    ndmi_change: number;
-    hansen_year: number | null;
-    period1: string;
-    period2: string;
-    radius_m: number;
-    triple_confirmed?: boolean;
-    alert_type?: string;
+  geometry: { type: "Polygon" | "MultiPolygon"; coordinates: any };
+  properties: PolygonProps;
+}
+export interface PolygonFC { type: "FeatureCollection"; features: PolygonFeature[]; }
+
+export interface AnalyzeResult {
+  success: boolean; zone: string;
+  beforeTileUrl: string | null; afterTileUrl: string | null;
+  distTileUrl: string | null; ndviTileUrl: string | null;
+  beforeLabel: string; afterLabel: string;
+  period1: string; period2: string;
+  polygons: PolygonFC; count: number; stats: AnalyzeStats;
+  algorithm: string; error?: string;
+}
+
+export interface Sentinel1Result {
+  success: boolean; tileUrl: string | null; zone: string;
+  loss_ha: number; period1: string; period2: string;
+  dVV_stats: { mean: number; stdDev: number; min: number; max: number };
+}
+
+export type AnomalyLabel =
+  | "severe_deficit" | "moderate_deficit" | "slight_deficit"
+  | "normal" | "above_average" | "unknown";
+
+export interface PhenologyResult {
+  success: boolean; period_current: string; baseline_years: number[];
+  baseline_ndvi: number | null; current_ndvi: number;
+  ndvi_anomaly: number | null; anomaly_label: AnomalyLabel;
+  tileUrl: string | null; zone: string;
+}
+
+export interface ForestWatchResult {
+  success: boolean; zone: string;
+  hansenTileUrl: string | null; distAlertTileUrl: string | null;
+  hansen_ha: number; note: string;
+}
+
+// ── Helpers HTTP ─────────────────────────────────────────────────────────────
+function buildBody(p: AnalyzeParams): Record<string, unknown> {
+  return {
+    zone: toFlaskZone(p.zone),
+    date1Start: p.date1Start, date1End: p.date1End,
+    date2Start: p.date2Start, date2End: p.date2End,
+    cloud: p.cloud ?? 30,
+    sensitivity: p.sensitivity ?? 0.15,
+    nbr: p.nbr ?? 0.15, ndmi: p.ndmi ?? 0.12, vv: p.vv ?? 2.0,
+    minScore: p.minScore ?? 2, minArea: p.minArea ?? 500,
+    useRadar: p.useRadar ?? true, useTemporal: p.useTemporal ?? true,
+    useSeasonal: p.useSeasonal ?? true, useExternal: p.useExternal ?? true,
   };
 }
 
-export interface AnalyzeResult {
-  success: boolean;
-  zone: string;
-  beforeTileUrl: string | null;
-  afterTileUrl: string | null;
-  distTileUrl: string | null;
-  ndviTileUrl: string | null;
-  beforeLabel: string;
-  afterLabel: string;
-  period1: string;
-  period2: string;
-  features: AlertFeature[];
-  count: number;
-  stats: AnalyzeStats;
-  sample_warn: string | null;
-  algorithm: string;
-  error?: string;
-}
-
-export interface GladResult {
-  success: boolean;
-  tileUrl: string | null;
-  area_ha: number;
-  zone: string;
-  error?: string;
-}
-
-export interface NdviData {
-  date_start: string;
-  date_end: string;
-  ndvi_mean: number;
-  ndvi_min: number;
-  ndvi_max: number;
-  health_status: "good" | "warning" | "critical";
-  zone: string;
-}
-
-export interface DomainStats {
-  nombre_parcelles: number;
-  superficie_totale_ha: number;
-  nombre_forets: number;
-  forets: string[];
-  cantons: string[];
-  region: string;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper interne — POST avec timeout (GEE peut être lent)
-// ─────────────────────────────────────────────────────────────────────────────
-async function geePost<T>(
-  path: string,
-  body: Record<string, unknown>,
-  timeoutMs = 150_000
-): Promise<T> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
+async function geePost<T>(path: string, body: Record<string, unknown>, timeoutMs = 180_000): Promise<T> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(`${API_BASE}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body), signal: ctrl.signal,
     });
-
     const data = await res.json();
-
-    if (!res.ok || data.success === false) {
-      throw new Error(data.error ?? `HTTP ${res.status}`);
-    }
+    if (!res.ok || data.success === false) throw new Error(data.error ?? `HTTP ${res.status}`);
     return data as T;
-  } finally {
-    clearTimeout(timer);
-  }
+  } finally { clearTimeout(t); }
 }
 
-async function geeGet<T>(
-  path: string,
-  params?: Record<string, string>
-): Promise<T> {
-  const qs = params
-    ? "?" +
-      Object.entries(params)
-        .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
-        .join("&")
-    : "";
-
+async function geeGet<T>(path: string, params?: Record<string, string>): Promise<T> {
+  const qs = params ? "?" + Object.entries(params)
+    .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&") : "";
   const res = await fetch(`${API_BASE}${path}${qs}`);
   const data = await res.json();
-
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
   return data as T;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// API Publique
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Vérifie si GEE est en ligne */
-export async function checkGeeHealth(): Promise<GeeHealthStatus | null> {
-  try {
-    return await geeGet<GeeHealthStatus>("/health");
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Analyse complète : disturbance + alerts + tile URLs
- * Retourne beforeTileUrl, afterTileUrl, distTileUrl, ndviTileUrl + features + stats
- */
-export async function runAnalyze(params: AnalyzeParams): Promise<AnalyzeResult> {
-  return geePost<AnalyzeResult>("/gee/analyze", {
-    zone:        toFlaskZone(params.zone),
-    date1Start:  params.date1Start,
-    date1End:    params.date1End,
-    date2Start:  params.date2Start,
-    date2End:    params.date2End,
-    cloud:       params.cloud       ?? 30,
-    sensitivity: params.sensitivity ?? 0.15,
-    nbr:         params.nbr         ?? 0.15,
-    ndmi:        params.ndmi        ?? 0.12,
-    minScore:    params.minScore    ?? 1,
+// Telecharge un fichier produit par un endpoint POST (geojson/kml/shp)
+async function downloadFile(path: string, body: Record<string, unknown>, filename: string): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
-}
-
-/**
- * Triple confirmation (P1 → P2 → P3)
- * Auto-dérive P1 = période de référence décalée -1 an
- */
-export async function runTripleAnalyze(
-  params: AnalyzeParams
-): Promise<{ features: AlertFeature[]; triple_ha: number; error?: string }> {
-  const shiftYear = (d: string, delta: number): string => {
-    const dt = new Date(d);
-    dt.setFullYear(dt.getFullYear() + delta);
-    return dt.toISOString().split("T")[0];
-  };
-
-  try {
-    const data = await geePost<any>("/gee/alerts-triple", {
-      zone:       toFlaskZone(params.zone),
-      date1Start: shiftYear(params.date1Start, -1),
-      date1End:   shiftYear(params.date1End,   -1),
-      date2Start: params.date1Start,
-      date2End:   params.date1End,
-      date3Start: params.date2Start,
-      date3End:   params.date2End,
-      cloud:       params.cloud       ?? 30,
-      sensitivity: params.sensitivity ?? 0.15,
-      nbr:         params.nbr         ?? 0.15,
-      ndmi:        params.ndmi        ?? 0.12,
-    });
-
-    return {
-      features:  (data.features ?? []) as AlertFeature[],
-      triple_ha: data.triple_ha ?? 0,
-    };
-  } catch (e: any) {
-    return { features: [], triple_ha: 0, error: String(e.message) };
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { const j = await res.json(); msg = j.error ?? msg; } catch { /* binary */ }
+    throw new Error(msg);
   }
-}
-
-/** GLAD / RADD deforestation alerts */
-export async function fetchGladAlerts(zone: string): Promise<GladResult> {
-  try {
-    return await geePost<GladResult>("/gee/glad-alerts", {
-      zone: toFlaskZone(zone),
-    });
-  } catch (e: any) {
-    return { success: false, tileUrl: null, area_ha: 0, zone, error: e.message };
-  }
-}
-
-/** Stats NDVI de la période actuelle */
-export async function fetchNdvi(
-  zone: string,
-  dateStart?: string,
-  dateEnd?: string,
-  cloud = 30
-): Promise<NdviData | null> {
-  try {
-    return await geePost<NdviData>("/ndvi/latest", {
-      zone:      toFlaskZone(zone),
-      dateStart: dateStart ?? "",
-      dateEnd:   dateEnd   ?? "",
-      cloud,
-    });
-  } catch {
-    return null;
-  }
-}
-
-/** Stats domaine forestier (superficie totale, parcelles, forêts...) */
-export async function fetchDomainStats(): Promise<DomainStats | null> {
-  try {
-    return await geeGet<DomainStats>("/domaine/stats");
-  } catch {
-    return null;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Export Utilitaires (côté client — pas d'appel API)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Télécharge les perturbations détectées comme GeoJSON depuis Flask
- * (résolution 200m — réduction de la taille)
- */
-export async function exportDisturbanceGeoJson(params: AnalyzeParams): Promise<void> {
-  const body = {
-    zone:        toFlaskZone(params.zone),
-    date1Start:  params.date1Start,
-    date1End:    params.date1End,
-    date2Start:  params.date2Start,
-    date2End:    params.date2End,
-    cloud:       params.cloud       ?? 30,
-    sensitivity: params.sensitivity ?? 0.15,
-    nbr:         params.nbr         ?? 0.15,
-    ndmi:        params.ndmi        ?? 0.12,
-    minScore:    params.minScore    ?? 2,
-    scale:       200,
-  };
-
-  const res = await fetch(`${API_BASE}/gee/export-disturbance`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) throw new Error("Export GeoJSON échoué");
-
   const blob = await res.blob();
-  const url  = URL.createObjectURL(blob);
-  const a    = Object.assign(document.createElement("a"), {
-    href:     url,
-    download: `perturbations_${params.zone}_${params.date2Start}.geojson`,
-  });
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), { href: url, download: filename });
   a.click();
   URL.revokeObjectURL(url);
 }
 
-/** Génère un fichier KML depuis les features d'alertes */
-export function exportAlertsKml(features: AlertFeature[], zone: string): void {
-  const colorMap: Record<string, string> = {
-    high:   "ff0000ff",
-    medium: "ff0088ff",
-    low:    "ff00ddff",
-  };
-
-  const placemarks = features
-    .map((f) => {
-      const [lng, lat] = f.geometry.coordinates;
-      const p          = f.properties;
-      return `  <Placemark>
-    <name>Alerte #${p.id} — ${p.confidence}</name>
-    <description><![CDATA[
-      Confiance: ${p.confidence} (score: ${p.conf_score?.toFixed(1)})<br/>
-      NDVI Δ: ${p.ndvi_change?.toFixed(3)}<br/>
-      NBR Δ: ${p.nbr_change?.toFixed(3)}<br/>
-      NDMI Δ: ${p.ndmi_change?.toFixed(3)}<br/>
-      Surface estimée: ${p.area_ha?.toFixed(2)} ha<br/>
-      ${p.hansen_year ? `Hansen: ${p.hansen_year}<br/>` : ""}
-      ${p.triple_confirmed ? "✅ Triple confirmée<br/>" : ""}
-      Période: ${p.period2}
-    ]]></description>
-    <Style>
-      <IconStyle>
-        <color>${colorMap[p.confidence] ?? "ffff0000"}</color>
-        <scale>0.9</scale>
-      </IconStyle>
-    </Style>
-    <Point><coordinates>${lng},${lat},0</coordinates></Point>
-  </Placemark>`;
-    })
-    .join("\n");
-
-  const kml = `<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-  <Document>
-    <name>AtlasForest — Perturbations ${zone}</name>
-    <description>Généré le ${new Date().toISOString().split("T")[0]}</description>
-${placemarks}
-  </Document>
-</kml>`;
-
-  const blob = new Blob([kml], {
-    type: "application/vnd.google-earth.kml+xml",
-  });
-  const url  = URL.createObjectURL(blob);
-  const a    = Object.assign(document.createElement("a"), {
-    href:     url,
-    download: `alertes_${zone}_${new Date().toISOString().split("T")[0]}.kml`,
-  });
-  a.click();
-  URL.revokeObjectURL(url);
+// ── API publique ─────────────────────────────────────────────────────────────
+export async function checkGeeHealth(): Promise<GeeHealthStatus | null> {
+  try { return await geeGet<GeeHealthStatus>("/health"); } catch { return null; }
 }
 
-/** Génère un CSV Excel-compatible depuis les features d'alertes */
-export function exportAlertsCsv(features: AlertFeature[], zone: string): void {
-  const BOM    = "\uFEFF"; // UTF-8 BOM pour Excel
-  const header = "ID,Latitude,Longitude,Confiance,Score,NDVI_Delta,NBR_Delta,NDMI_Delta,Surface_ha,Hansen_Annee,Triple_Confirmee,Periode1,Periode2\n";
-
-  const rows = features.map((f) => {
-    const [lng, lat] = f.geometry.coordinates;
-    const p          = f.properties;
-    return [
-      p.id, lat.toFixed(6), lng.toFixed(6),
-      p.confidence, p.conf_score?.toFixed(2),
-      p.ndvi_change?.toFixed(4), p.nbr_change?.toFixed(4), p.ndmi_change?.toFixed(4),
-      p.area_ha?.toFixed(4), p.hansen_year ?? "",
-      p.triple_confirmed ? "OUI" : "NON",
-      p.period1, p.period2,
-    ].join(",");
-  });
-
-  const blob = new Blob([BOM + header + rows.join("\n")], {
-    type: "text/csv;charset=utf-8",
-  });
-  const url  = URL.createObjectURL(blob);
-  const a    = Object.assign(document.createElement("a"), {
-    href:     url,
-    download: `alertes_${zone}_${new Date().toISOString().split("T")[0]}.csv`,
-  });
-  a.click();
-  URL.revokeObjectURL(url);
+export async function runAnalyze(p: AnalyzeParams): Promise<AnalyzeResult> {
+  return geePost<AnalyzeResult>("/gee/analyze", buildBody(p));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Sentinel-1 SAR
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface Sentinel1Result {
-  success: boolean;
-  tileUrl: string | null;
-  period1: string;
-  period2: string;
-  band: string;
-  orbitPass: string;
-  palette: string;
-  loss_ha: number;
-  zone: string;
-  note: string;
-  dVV_stats: {
-    mean: number;
-    stdDev: number;
-    min: number;
-    max: number;
-  };
+export async function fetchTopPolygons(p: AnalyzeParams, topN = 20): Promise<PolygonFC> {
+  const data = await geePost<{ features: PolygonFeature[] }>(
+    "/gee/top-polygons", { ...buildBody(p), topN });
+  return { type: "FeatureCollection", features: data.features ?? [] };
 }
 
-/**
- * Détection de changement Sentinel-1 (dVV SAR)
- * Bleu = perte rétrodiffusion = perturbation
- * Rouge = gain rétrodiffusion
- * dVV < -3 dB → perte confirmée
- */
-export async function fetchSentinel1Change(
-  params: AnalyzeParams
-): Promise<Sentinel1Result | null> {
-  try {
-    return await geePost<Sentinel1Result>("/gee/sentinel1-change", {
-      zone:       toFlaskZone(params.zone),
-      date1Start: params.date1Start,
-      date1End:   params.date1End,
-      date2Start: params.date2Start,
-      date2End:   params.date2End,
-    });
-  } catch (e) {
-    console.warn("[Sentinel-1]", e);
-    return null;
-  }
+export async function fetchForestWatchLayer(p: AnalyzeParams): Promise<ForestWatchResult | null> {
+  try { return await geePost<ForestWatchResult>("/gee/forest-watch-layer", buildBody(p)); }
+  catch (e) { console.warn("[ForestWatch]", e); return null; }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Phénologie — comparaison NDVI vs baseline 3 ans
-// ─────────────────────────────────────────────────────────────────────────────
-
-export type AnomalyLabel =
-  | "severe_deficit"
-  | "moderate_deficit"
-  | "slight_deficit"
-  | "normal"
-  | "above_average"
-  | "unknown";
-
-export interface PhenologyResult {
-  success: boolean;
-  period_current: string;
-  baseline_years: number[];
-  baseline_ndvi: number | null;
-  current_ndvi: number;
-  current_std: number;
-  ndvi_anomaly: number | null;
-  anomaly_score: number | null;
-  anomaly_label: AnomalyLabel;
-  tileUrl: string | null;
-  algorithm: string;
-  zone: string;
+export async function fetchSentinel1Change(p: AnalyzeParams): Promise<Sentinel1Result | null> {
+  try { return await geePost<Sentinel1Result>("/gee/sentinel1-change", buildBody(p)); }
+  catch (e) { console.warn("[Sentinel-1]", e); return null; }
 }
 
-/**
- * Baseline phénologique — compare la période actuelle
- * aux 3 années précédentes (même mois)
- * Détecte les anomalies NDVI (déficits = stress végétal)
- */
-export async function fetchPhenology(
-  zone: string,
-  dateStart: string,
-  dateEnd: string,
-  cloud = 30
-): Promise<PhenologyResult | null> {
+export async function fetchPhenology(zone: string, dateStart: string, dateEnd: string, cloud = 30): Promise<PhenologyResult | null> {
   try {
     return await geePost<PhenologyResult>("/gee/phenology-baseline", {
-      zone:      toFlaskZone(zone),
-      dateStart,
-      dateEnd,
-      cloud,
-    });
-  } catch (e) {
-    console.warn("[Phenology]", e);
-    return null;
-  }
+      zone: toFlaskZone(zone), dateStart, dateEnd, cloud });
+  } catch (e) { console.warn("[Phenology]", e); return null; }
 }
+
+// ── Exports reels (polygones, cote backend) ──────────────────────────────────
+const stamp = () => new Date().toISOString().split("T")[0];
+
+export function exportPolygonsGeoJson(p: AnalyzeParams): Promise<void> {
+  return downloadFile("/gee/export-geojson", buildBody(p), `disturbances_${p.zone}_${stamp()}.geojson`);
+}
+export function exportPolygonsKml(p: AnalyzeParams): Promise<void> {
+  return downloadFile("/gee/export-kml", buildBody(p), `disturbances_${p.zone}_${stamp()}.kml`);
+}
+export function exportPolygonsShp(p: AnalyzeParams): Promise<void> {
+  return downloadFile("/gee/export-shp", buildBody(p), `disturbances_${p.zone}_${stamp()}.zip`);
+}
+
+// CSV genere cote client a partir des polygones deja charges
+export function exportPolygonsCsv(features: PolygonFeature[], zone: string): void {
+  const BOM = "\uFEFF";
+  const header = "ID,Confiance,Score,Aire_ha,Aire_m2,NDVI_Delta,NBR_Delta,NDMI_Delta,Hansen_Annee\n";
+  const rows = features.map((f) => {
+    const p = f.properties;
+    return [p.id, p.confidence, (p.conf_score ?? 0).toFixed(1),
+      (p.area_ha ?? 0).toFixed(4), Math.round(p.area_m2 ?? 0),
+      (p.ndvi_change ?? 0).toFixed(4), (p.nbr_change ?? 0).toFixed(4),
+      (p.ndmi_change ?? 0).toFixed(4), p.hansen_year ?? ""].join(",");
+  });
+  const blob = new Blob([BOM + header + rows.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), {
+    href: url, download: `disturbances_${zone}_${stamp()}.csv` });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export const exportGeoTiff = (p: AnalyzeParams) =>
+  geePost<{ message: string }>("/gee/export-geotiff", buildBody(p));

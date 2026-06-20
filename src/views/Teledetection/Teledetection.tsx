@@ -5,9 +5,9 @@ import {
   TreePine, Sliders, SplitSquareHorizontal, FileWarning, CheckCircle2,
   ChevronDown, Hexagon, Crosshair, Map as MapIcon, RotateCcw,
   MapPin, BarChart3, Download, FileSpreadsheet, DownloadCloud,
-  PanelRightClose, PanelRightOpen, Anchor, Waves, TrendingUp
+  PanelRightClose, PanelRightOpen, Anchor, Waves, TrendingUp, Globe
 } from 'lucide-react';
-import { MapContainer, TileLayer, LayersControl, FeatureGroup, useMap, GeoJSON, CircleMarker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, LayersControl, FeatureGroup, useMap, GeoJSON } from 'react-leaflet';
 import { EditControl } from 'react-leaflet-draw';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -15,21 +15,19 @@ import 'leaflet-draw/dist/leaflet.draw.css';
 import {
   checkGeeHealth,
   runAnalyze,
-  runTripleAnalyze,
-  fetchGladAlerts,
+  fetchTopPolygons,
+  fetchForestWatchLayer,
   fetchSentinel1Change,
   fetchPhenology,
-  exportDisturbanceGeoJson,
-  exportAlertsKml,
-  exportAlertsCsv,
-  type AlertFeature,
+  exportPolygonsGeoJson,
+  exportPolygonsKml,
+  exportPolygonsShp,
+  exportPolygonsCsv,
+  type PolygonFeature,
   type AnalyzeParams,
   type AnomalyLabel,
 } from '../../lib/gee-api';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Config phénologie — couleurs + labels
-// ─────────────────────────────────────────────────────────────────────────────
 const ANOMALY_CONFIG: Record<AnomalyLabel, { color: string; label: string; emoji: string }> = {
   severe_deficit:   { color: '#ef4444', label: 'Déficit sévère',  emoji: '🔴' },
   moderate_deficit: { color: '#f97316', label: 'Déficit modéré',  emoji: '🟠' },
@@ -39,30 +37,30 @@ const ANOMALY_CONFIG: Record<AnomalyLabel, { color: string; label: string; emoji
   unknown:          { color: '#71717a', label: 'Inconnu',          emoji: '⚪' },
 };
 
+// Couleurs de confiance — 4 niveaux (preuves indépendantes)
+const CONF_COLOR: Record<string, string> = {
+  highest: '#7f1d1d', high: '#ef4444', medium: '#f97316', low: '#eab308',
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
-// UI Sub-components (INCHANGÉS)
+// Sous-composants UI
 // ─────────────────────────────────────────────────────────────────────────────
 const ToggleCard = ({ checked, onChange, label, icon: Icon, activeColor = "var(--brand)" }: any) => (
   <button
     onClick={() => onChange(!checked)}
     className={cn(
       "flex flex-col items-start p-3 md:p-4 rounded-2xl border-2 transition-all text-left w-full hover:scale-[1.02] hover:shadow-lg",
-      checked
-        ? "bg-[var(--bg-main)]"
-        : "bg-[var(--bg-main)]/50 border-transparent text-[var(--text-muted)] hover:border-[var(--brand)]/30 hover:bg-[var(--bg-main)] hover:text-[var(--text-main)]"
+      checked ? "bg-[var(--bg-main)]"
+              : "bg-[var(--bg-main)]/50 border-transparent text-[var(--text-muted)] hover:border-[var(--brand)]/30 hover:bg-[var(--bg-main)] hover:text-[var(--text-main)]"
     )}
     style={checked ? { borderColor: activeColor, boxShadow: `0 8px 16px color-mix(in srgb, ${activeColor} 20%, transparent)` } : {}}
   >
     <div className="flex items-center justify-between w-full mb-3 md:mb-4">
       {Icon && <Icon className="w-5 h-5 md:w-6 md:h-6" style={{ color: checked ? activeColor : 'currentColor' }} />}
-      <div className={cn(
-        "w-10 h-5 md:w-12 md:h-6 rounded-full relative transition-colors duration-300",
-        checked ? "bg-opacity-100" : "bg-black/20 dark:bg-white/20"
-      )} style={checked ? { backgroundColor: activeColor } : {}}>
-        <div className={cn(
-          "absolute top-1 left-1 w-3 h-3 md:w-4 md:h-4 rounded-full bg-white transition-transform duration-300 shadow-sm",
-          checked ? "translate-x-5 md:translate-x-6" : "translate-x-0"
-        )} />
+      <div className={cn("w-10 h-5 md:w-12 md:h-6 rounded-full relative transition-colors duration-300",
+        checked ? "bg-opacity-100" : "bg-black/20 dark:bg-white/20")} style={checked ? { backgroundColor: activeColor } : {}}>
+        <div className={cn("absolute top-1 left-1 w-3 h-3 md:w-4 md:h-4 rounded-full bg-white transition-transform duration-300 shadow-sm",
+          checked ? "translate-x-5 md:translate-x-6" : "translate-x-0")} />
       </div>
     </div>
     <span className={cn("text-[11px] md:text-sm font-bold leading-tight", checked ? "text-[var(--text-main)]" : "")}>{label}</span>
@@ -74,9 +72,7 @@ const RangeSlider = ({ label, value, min, max, step, onChange, unit = '', format
     <div className="flex justify-between items-end transition-transform group-hover:-translate-y-0.5">
       <label className="text-[10px] md:text-xs font-bold uppercase tracking-widest text-[var(--text-muted)] group-hover:text-[var(--text-main)] transition-colors cursor-pointer">{label}</label>
       <div className="bg-[var(--bg-main)] px-2 py-1 rounded-md border border-[var(--border-color)] group-hover:border-[var(--brand)] transition-colors">
-        <span className="text-xs md:text-sm font-mono text-[var(--brand)] font-bold">
-          {formatter ? formatter(value) : value}{unit}
-        </span>
+        <span className="text-xs md:text-sm font-mono text-[var(--brand)] font-bold">{formatter ? formatter(value) : value}{unit}</span>
       </div>
     </div>
     <div className="relative h-2 bg-[var(--bg-main)] rounded-full overflow-hidden border border-[var(--border-color)] group-hover:border-[var(--brand)]/30 transition-all group-hover:h-2.5">
@@ -110,6 +106,14 @@ function MapResizer() {
   return null;
 }
 
+// Expose la carte pour le zoom-vers-polygone
+function MapRefSetter({ onReady }: { onReady: (m: L.Map) => void }) {
+  const map = useMap();
+  useEffect(() => { onReady(map); }, [map, onReady]);
+  return null;
+}
+
+// Pane droite (clip) = S2 APRÈS ; le S2 AVANT est une couche pleine en dessous
 function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
   const map = useMap();
   const [paneCreated, setPaneCreated] = useState(false);
@@ -132,23 +136,21 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
         pane.style.display = 'none';
       }
     }
-  }, [splitPos, toggles.s2Split, map]);
+  }, [splitPos, toggles.s2Split, map, geeAfterUrl]);
 
   if (!paneCreated || !toggles.s2Split) return null;
 
   return geeAfterUrl ? (
-    <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" attribution="© GEE / Copernicus S2" />
+    <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" attribution="© GEE / Copernicus S2 (après)" />
   ) : (
     <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}" pane="splitPaneRight" className="sepia-[.3] contrast-125" />
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Composant Principal
+// Composant principal
 // ─────────────────────────────────────────────────────────────────────────────
 export function Teledetection() {
-
-  // ── State UI (INCHANGÉ) ───────────────────────────────────────────────────
   const [isAnalyzing, setIsAnalyzing]     = useState(false);
   const [splitPos, setSplitPos]           = useState(50);
   const [cloudMax, setCloudMax]           = useState(30);
@@ -156,7 +158,7 @@ export function Teledetection() {
   const [nbrThreshold, setNbrThreshold]   = useState(0.15);
   const [ndmiThreshold, setNdmiThreshold] = useState(0.12);
   const [minSurface, setMinSurface]       = useState(500);
-  const [minConfidence, setMinConfidence] = useState(1);
+  const [minConfidence, setMinConfidence] = useState(2);
   const [refStart, setRefStart]           = useState('2024-04-03');
   const [refEnd, setRefEnd]               = useState('2024-06-02');
   const [actStart, setActStart]           = useState('2026-04-03');
@@ -169,14 +171,12 @@ export function Teledetection() {
   const [isZoneExpanded, setIsZoneExpanded]                 = useState(true);
   const [isStatsExpanded, setIsStatsExpanded]               = useState(false);
   const [isExportExpanded, setIsExportExpanded]             = useState(false);
+  const [isTopExpanded, setIsTopExpanded]                   = useState(false);
   const [selectedZone, setSelectedZone]   = useState('tetouan_ouest');
 
-  // ── Toggles — incluant Sentinel-1 et Phénologie ──────────────────────────
   const [toggles, setToggles] = useState({
-    s2Split: true, disturbance: true, alertes: true, foretApef: true,
-    ndviDelta: false, tripleConf: false, glad: false,
-    sentinel1: false,   // ← NOUVEAU
-    phenology: false,   // ← NOUVEAU
+    s2Split: true, disturbance: true, polygons: true, foretApef: true,
+    ndviDelta: false, forestWatch: false, sentinel1: false, phenology: false,
   });
 
   const zones = [
@@ -185,68 +185,63 @@ export function Teledetection() {
     { id: 'tetouan_ouest', label: 'Tétouan Ouest',  icon: TreePine },
   ];
 
-  // ── State GEE ─────────────────────────────────────────────────────────────
   const [geeStatus, setGeeStatus]           = useState<'unknown'|'ready'|'error'>('unknown');
+  const [beforeTileUrl, setBeforeTileUrl]   = useState<string|null>(null);
   const [afterTileUrl, setAfterTileUrl]     = useState<string|null>(null);
   const [distTileUrl, setDistTileUrl]       = useState<string|null>(null);
   const [ndviTileUrl, setNdviTileUrl]       = useState<string|null>(null);
-  const [gladTileUrl, setGladTileUrl]       = useState<string|null>(null);
-  const [s1TileUrl, setS1TileUrl]           = useState<string|null>(null);   // Sentinel-1
-  const [phenologyTileUrl, setPhenologyTileUrl] = useState<string|null>(null); // Phénologie
-  const [alertFeatures, setAlertFeatures]   = useState<AlertFeature[]>([]);
+  const [hansenTileUrl, setHansenTileUrl]   = useState<string|null>(null);
+  const [distAlertTileUrl, setDistAlertTileUrl] = useState<string|null>(null);
+  const [s1TileUrl, setS1TileUrl]           = useState<string|null>(null);
+  const [phenologyTileUrl, setPhenologyTileUrl] = useState<string|null>(null);
+  const [polygons, setPolygons]             = useState<PolygonFeature[]>([]);
+  const [topPolys, setTopPolys]             = useState<PolygonFeature[]>([]);
+  const [selectedPolyId, setSelectedPolyId] = useState<number|null>(null);
   const [realStats, setRealStats]           = useState<any>(null);
-  const [s1Data, setS1Data]                 = useState<any>(null);   // stats S1
-  const [phenologyData, setPhenologyData]   = useState<any>(null);   // résultats phéno
+  const [s1Data, setS1Data]                 = useState<any>(null);
+  const [fwData, setFwData]                 = useState<any>(null);
+  const [phenologyData, setPhenologyData]   = useState<any>(null);
   const [errorMsg, setErrorMsg]             = useState<string|null>(null);
   const [forestBoundary, setForestBoundary] = useState<any>(null);
   const [isPhenologyExpanded, setIsPhenologyExpanded] = useState(false);
 
-  const mapRef = useRef<L.Map>(null);
+  const mapRef = useRef<L.Map|null>(null);
 
-  // ── useEffects ────────────────────────────────────────────────────────────
   useEffect(() => {
-    checkGeeHealth()
-      .then(d => setGeeStatus(d?.gee ? 'ready' : 'error'))
-      .catch(() => setGeeStatus('error'));
+    checkGeeHealth().then(d => setGeeStatus(d?.gee ? 'ready' : 'error')).catch(() => setGeeStatus('error'));
   }, []);
 
   useEffect(() => {
-    fetch('/assets/data/forest_limits.json')
-      .then(r => r.json())
-      .then(setForestBoundary)
-      .catch(() => {});
+    fetch('/assets/data/forest_limits.json').then(r => r.json()).then(setForestBoundary).catch(() => {});
   }, []);
 
-  // Effacer tous les résultats GEE au changement de zone
   useEffect(() => {
-    setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
-    setGladTileUrl(null);  setS1TileUrl(null);   setPhenologyTileUrl(null);
-    setAlertFeatures([]); setRealStats(null);
-    setS1Data(null);      setPhenologyData(null);
-    setErrorMsg(null);
+    setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
+    setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null);
+    setPolygons([]); setTopPolys([]); setSelectedPolyId(null);
+    setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
   }, [selectedZone]);
 
-  // Auto-ouvrir section phénologie quand les données arrivent
-  useEffect(() => {
-    if (phenologyData) setIsPhenologyExpanded(true);
-  }, [phenologyData]);
+  useEffect(() => { if (phenologyData) setIsPhenologyExpanded(true); }, [phenologyData]);
+  useEffect(() => { if (s1Data || realStats) setIsStatsExpanded(true); }, [s1Data, realStats]);
+  useEffect(() => { if (topPolys.length) setIsTopExpanded(true); }, [topPolys]);
 
-  // Auto-ouvrir stats quand S1 ou résultats arrivent
-  useEffect(() => {
-    if (s1Data || realStats) setIsStatsExpanded(true);
-  }, [s1Data, realStats]);
+  const handleToggle = (key: keyof typeof toggles) => setToggles(prev => ({ ...prev, [key]: !prev[key] }));
 
-  // ── Handlers ──────────────────────────────────────────────────────────────
-  const handleToggle = (key: keyof typeof toggles) =>
-    setToggles(prev => ({ ...prev, [key]: !prev[key] }));
+  const buildParams = (): AnalyzeParams => ({
+    zone: selectedZone, date1Start: refStart, date1End: refEnd,
+    date2Start: actStart, date2End: actEnd,
+    cloud: cloudMax, sensitivity: ndviThreshold, nbr: nbrThreshold, ndmi: ndmiThreshold,
+    minScore: minConfidence, minArea: minSurface,
+  });
 
   const resetParams = () => {
     setCloudMax(30); setNdviThreshold(0.15); setNbrThreshold(0.15);
-    setNdmiThreshold(0.12); setMinSurface(500); setMinConfidence(1);
-    setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
-    setGladTileUrl(null);  setS1TileUrl(null);   setPhenologyTileUrl(null);
-    setAlertFeatures([]); setRealStats(null);
-    setS1Data(null); setPhenologyData(null); setErrorMsg(null);
+    setNdmiThreshold(0.12); setMinSurface(500); setMinConfidence(2);
+    setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
+    setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null);
+    setPolygons([]); setTopPolys([]); setSelectedPolyId(null);
+    setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
   };
 
   const resetMap = () => mapRef.current?.setView([35.7595, -5.8340], 12);
@@ -254,132 +249,113 @@ export function Teledetection() {
   // ── Analyse principale ────────────────────────────────────────────────────
   const handleAnalyze = async () => {
     if (geeStatus === 'error') { setErrorMsg('GEE hors-ligne — vérifier PythonAnywhere'); return; }
-    setIsAnalyzing(true);
-    setErrorMsg(null);
-
-    const params: AnalyzeParams = {
-      zone: selectedZone, date1Start: refStart, date1End: refEnd,
-      date2Start: actStart, date2End: actEnd,
-      cloud: cloudMax, sensitivity: ndviThreshold, nbr: nbrThreshold,
-      ndmi: ndmiThreshold, minScore: minConfidence,
-    };
+    setIsAnalyzing(true); setErrorMsg(null);
+    const params = buildParams();
 
     try {
-      // ── 1. Analyse principale (S2 disturbance + alerts) ────────────────
       const result = await runAnalyze(params);
+      setBeforeTileUrl(result.beforeTileUrl);   // ← FIX swipe : couche S2 AVANT
       setAfterTileUrl(result.afterTileUrl);
       setDistTileUrl(result.distTileUrl);
       setNdviTileUrl(result.ndviTileUrl);
       setRealStats(result.stats);
-      const minAreaHa = minSurface / 10_000;
-      setAlertFeatures(
-        (result.features ?? []).filter(f => (f.properties.area_ha ?? 0) >= minAreaHa)
-      );
+      setPolygons(result.polygons?.features ?? []);
 
-      // ── 2. Analyses secondaires (en arrière-plan) ─────────────────────
+      // Top-N polygones les plus dangereux
+      fetchTopPolygons(params, 20)
+        .then(fc => setTopPolys(fc.features))
+        .catch(e => console.warn('[Top]', e));
 
-      // Triple confirmation
-      if (toggles.tripleConf) {
-        runTripleAnalyze(params).then(({ features: tf }) => {
-          if (tf.length > 0) {
-            setAlertFeatures(prev => {
-              const existing = new Set(prev.map(f => f.geometry.coordinates.join(',')));
-              return [...prev, ...tf.filter(f => !existing.has(f.geometry.coordinates.join(',')))];
-            });
-          }
-        }).catch(e => console.warn('[Triple]', e));
+      // Forest Watch (Hansen / DIST-ALERT)
+      if (toggles.forestWatch) {
+        fetchForestWatchLayer(params).then(fw => {
+          if (fw) { setFwData(fw); setHansenTileUrl(fw.hansenTileUrl); setDistAlertTileUrl(fw.distAlertTileUrl); }
+        }).catch(e => console.warn('[FW]', e));
       }
-
-      // GLAD alerts
-      if (toggles.glad) {
-        fetchGladAlerts(selectedZone)
-          .then(g => { if (g.tileUrl) setGladTileUrl(g.tileUrl); })
-          .catch(e => console.warn('[GLAD]', e));
-      }
-
-      // Sentinel-1 SAR
+      // Sentinel-1
       if (toggles.sentinel1) {
         fetchSentinel1Change(params).then(s1 => {
           if (s1?.tileUrl) setS1TileUrl(s1.tileUrl);
           if (s1) setS1Data(s1);
         }).catch(e => console.warn('[S1]', e));
       }
-
-      // Phénologie baseline
+      // Phénologie
       if (toggles.phenology) {
         fetchPhenology(selectedZone, actStart, actEnd, cloudMax).then(ph => {
           if (ph?.tileUrl) setPhenologyTileUrl(ph.tileUrl);
           if (ph) setPhenologyData(ph);
         }).catch(e => console.warn('[Phenology]', e));
       }
-
     } catch (err: any) {
       const msg = err.message || 'Erreur GEE';
-      if (err.name === 'AbortError' || msg.includes('abort'))
-        setErrorMsg('Délai dépassé (2.5 min). Réduire la zone ou augmenter cloudMax.');
-      else if (msg.includes('GEE non disponible'))
-        setErrorMsg('GEE hors-ligne côté serveur — relancer PythonAnywhere.');
-      else if (msg.includes('date'))
-        setErrorMsg(`Dates invalides: ${msg}`);
-      else
-        setErrorMsg(msg);
+      if (err.name === 'AbortError' || msg.includes('abort')) setErrorMsg('Délai dépassé (3 min). Réduire la zone ou augmenter cloudMax.');
+      else if (msg.includes('GEE non disponible')) setErrorMsg('GEE hors-ligne côté serveur.');
+      else if (msg.includes('date')) setErrorMsg(`Dates invalides: ${msg}`);
+      else setErrorMsg(msg);
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  // ── Exports ───────────────────────────────────────────────────────────────
-  const handleExportGeoJson = async () => {
-    if (!realStats) { setErrorMsg('Lancer une analyse d\'abord.'); return; }
+  // ── Exports (vrais polygones, côté backend) ───────────────────────────────
+  const guard = () => { if (!polygons.length) { setErrorMsg('Lancer une analyse d\'abord.'); return false; } return true; };
+  const handleExportGeoJson = async () => { if (!guard()) return; try { await exportPolygonsGeoJson(buildParams()); } catch (e: any) { setErrorMsg(e.message); } };
+  const handleExportKml     = async () => { if (!guard()) return; try { await exportPolygonsKml(buildParams()); } catch (e: any) { setErrorMsg(e.message); } };
+  const handleExportShp     = async () => { if (!guard()) return; try { await exportPolygonsShp(buildParams()); } catch (e: any) { setErrorMsg(e.message); } };
+  const handleExportCsv     = () => { if (!guard()) return; exportPolygonsCsv(polygons, selectedZone); };
+
+  // ── Zoom vers un polygone ─────────────────────────────────────────────────
+  const flyToPolygon = (f: PolygonFeature) => {
     try {
-      await exportDisturbanceGeoJson({
-        zone: selectedZone, date1Start: refStart, date1End: refEnd,
-        date2Start: actStart, date2End: actEnd,
-        cloud: cloudMax, sensitivity: ndviThreshold, nbr: nbrThreshold,
-        ndmi: ndmiThreshold, minScore: minConfidence,
-      });
-    } catch (e: any) { setErrorMsg(e.message); }
+      const layer = L.geoJSON(f as any);
+      mapRef.current?.fitBounds(layer.getBounds(), { maxZoom: 16, padding: [40, 40] });
+      setSelectedPolyId(f.properties.id);
+    } catch { /* noop */ }
   };
 
-  const handleExportKml = () => {
-    if (!alertFeatures.length) { setErrorMsg('Lancer une analyse d\'abord.'); return; }
-    exportAlertsKml(alertFeatures, selectedZone);
-  };
-
-  const handleExportExcel = () => {
-    if (!alertFeatures.length) { setErrorMsg('Lancer une analyse d\'abord.'); return; }
-    exportAlertsCsv(alertFeatures, selectedZone);
-  };
-
-  // ── Valeurs stats calculées ───────────────────────────────────────────────
-  const highCount      = alertFeatures.filter(f => f.properties?.confidence === 'high').length;
-  const totalCount     = alertFeatures.length;
+  // ── Stats dérivées ────────────────────────────────────────────────────────
+  const highCount  = polygons.filter(f => ['high', 'highest'].includes(f.properties?.confidence)).length;
+  const totalCount = polygons.length;
   const meanNdviChange = totalCount > 0
-    ? alertFeatures.reduce((s, f) => s + (f.properties?.ndvi_change ?? 0), 0) / totalCount
-    : null;
-  const ndviBarPct     = meanNdviChange != null ? Math.min(100, Math.abs(meanNdviChange) / 0.4 * 100) : 68;
-  const ndviLabel      = meanNdviChange != null ? `${meanNdviChange.toFixed(3)} Δ` : '— —';
-  const perturbees     = realStats?.total_ha?.toFixed(1) ?? '—';
-  const highHaDisp     = realStats?.high_ha?.toFixed(1) ?? '—';
-
-  const alertColor = (conf: string) =>
-    conf === 'high' ? '#ef4444' : conf === 'medium' ? '#f97316' : '#eab308';
+    ? polygons.reduce((s, f) => s + (f.properties?.ndvi_change ?? 0), 0) / totalCount : null;
+  const ndviBarPct = meanNdviChange != null ? Math.min(100, Math.abs(meanNdviChange) / 0.4 * 100) : 68;
+  const ndviLabel  = meanNdviChange != null ? `${meanNdviChange.toFixed(3)} Δ` : '— —';
+  const perturbees = realStats?.total_ha?.toFixed(1) ?? '—';
+  const highHaDisp = realStats ? ((realStats.high_ha ?? 0) + (realStats.highest_ha ?? 0)).toFixed(1) : '—';
 
   const anomaly = phenologyData
-    ? (ANOMALY_CONFIG[phenologyData.anomaly_label as AnomalyLabel] ?? ANOMALY_CONFIG.unknown)
-    : null;
+    ? (ANOMALY_CONFIG[phenologyData.anomaly_label as AnomalyLabel] ?? ANOMALY_CONFIG.unknown) : null;
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // JSX
+  const polyStyle = (f: any) => {
+    const c = CONF_COLOR[f.properties?.confidence] ?? '#eab308';
+    const sel = f.properties?.id === selectedPolyId;
+    return { color: c, weight: sel ? 3.5 : 1.8, fillColor: c, fillOpacity: sel ? 0.45 : 0.25 };
+  };
+  const onEachPoly = (f: any, layer: any) => {
+    const p = f.properties ?? {};
+    layer.bindPopup(
+      `<div style="font-size:11px;line-height:1.7;min-width:170px">
+        <strong>#${p.id} — ${p.confidence}</strong> (score ${Number(p.conf_score ?? 0).toFixed(1)}/4)<br/>
+        Aire: <strong>${Number(p.area_ha ?? 0).toFixed(3)} ha</strong> (${Math.round(p.area_m2 ?? 0)} m²)<br/>
+        NDVI Δ: ${Number(p.ndvi_change ?? 0).toFixed(3)}<br/>
+        NBR Δ: ${Number(p.nbr_change ?? 0).toFixed(3)}<br/>
+        ${p.hansen_year ? `Hansen: ${p.hansen_year}<br/>` : ''}
+      </div>`
+    );
+    layer.on('click', () => setSelectedPolyId(p.id));
+  };
+
   // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col md:flex-row h-full font-sans bg-[var(--bg-main)]">
 
-      {/* ── MAP VIEWPORT ─────────────────────────────────────────────────── */}
+      {/* ── CARTE ─────────────────────────────────────────────────────────── */}
       <div className="relative h-[35vh] md:h-full md:flex-1 bg-[#121214] border-b md:border-b-0 md:border-r border-[var(--border-color)] shrink-0 z-10 md:shrink overflow-hidden">
 
         <MapContainer center={[35.7595, -5.8340]} zoom={12}
-          style={{ height: '100%', width: '100%' }} zoomControl={false} ref={mapRef}>
+          style={{ height: '100%', width: '100%' }} zoomControl={false}>
+
+          <MapRefSetter onReady={(m) => { mapRef.current = m; }} />
 
           <LayersControl position="topright">
             <LayersControl.BaseLayer checked name="Hybride + Satellite">
@@ -396,70 +372,52 @@ export function Teledetection() {
             <EditControl position="topleft" draw={{ rectangle: true, polygon: true, circle: false, circlemarker: false, marker: false, polyline: false }} />
           </FeatureGroup>
 
-          {/* Split pane droite */}
+          {/* S2 AVANT — couche pleine (côté gauche du slider) — FIX swipe */}
+          {toggles.s2Split && beforeTileUrl && (
+            <TileLayer key={`before-${beforeTileUrl}`} url={beforeTileUrl} attribution="© GEE / Copernicus S2 (avant)" />
+          )}
+
+          {/* S2 APRÈS — pane droite clippée */}
           <MapControls splitPos={splitPos} toggles={toggles} geeAfterUrl={afterTileUrl} />
 
-          {/* ── Couches GEE ───────────────────────────────────────────── */}
+          {/* Couches raster */}
           {toggles.disturbance && distTileUrl && (
-            <TileLayer key={distTileUrl} url={distTileUrl} opacity={0.75} attribution="GEE Disturbance" />
+            <TileLayer key={distTileUrl} url={distTileUrl} opacity={0.75} attribution="GEE Confiance" />
           )}
           {toggles.ndviDelta && ndviTileUrl && (
             <TileLayer key={ndviTileUrl} url={ndviTileUrl} opacity={0.72} attribution="GEE NDVI Δ" />
           )}
-          {toggles.glad && gladTileUrl && (
-            <TileLayer key={gladTileUrl} url={gladTileUrl} opacity={0.80} attribution="GLAD UMD" />
+          {toggles.forestWatch && hansenTileUrl && (
+            <TileLayer key={hansenTileUrl} url={hansenTileUrl} opacity={0.80} attribution="UMD Hansen GFC" />
           )}
-          {/* Sentinel-1 dVV (bleu=perte, rouge=gain) */}
+          {toggles.forestWatch && distAlertTileUrl && (
+            <TileLayer key={distAlertTileUrl} url={distAlertTileUrl} opacity={0.80} attribution="OPERA DIST-ALERT" />
+          )}
           {toggles.sentinel1 && s1TileUrl && (
             <TileLayer key={s1TileUrl} url={s1TileUrl} opacity={0.70} attribution="GEE Sentinel-1 SAR" />
           )}
-          {/* Phénologie anomalie NDVI */}
           {toggles.phenology && phenologyTileUrl && (
             <TileLayer key={phenologyTileUrl} url={phenologyTileUrl} opacity={0.68} attribution="GEE Phénologie" />
           )}
-          {/* Limite forêt ANEF */}
           {toggles.foretApef && forestBoundary && (
             <GeoJSON key="forest-boundary" data={forestBoundary}
               style={() => ({ color: '#34d399', weight: 2, dashArray: '8 5', fillColor: '#34d399', fillOpacity: 0.05 })} />
           )}
-          {/* Points alertes */}
-          {toggles.alertes && alertFeatures.map((feat, i) => {
-            const coords = feat.geometry?.coordinates;
-            if (!coords || coords.length < 2) return null;
-            const [lng, lat] = coords;
-            const conf  = feat.properties?.confidence ?? 'low';
-            const color = alertColor(conf);
-            const r     = Math.max(4, (feat.properties?.radius_m ?? 30) / 8);
-            return (
-              <CircleMarker key={`a-${i}`} center={[lat, lng]} radius={r}
-                pathOptions={{ color, fillColor: color, fillOpacity: 0.65, weight: 1.5 }}>
-                <Popup>
-                  <div style={{ fontSize: 11, lineHeight: 1.7, minWidth: 160 }}>
-                    <strong>Alerte #{feat.properties?.id}</strong><br />
-                    <span style={{ color }}>
-                      {conf === 'high' ? '🔴 Haute' : conf === 'medium' ? '🟠 Moyenne' : '🟡 Faible'}
-                    </span> — Score: {feat.properties?.conf_score?.toFixed(1)}<br />
-                    NDVI Δ: <strong>{feat.properties?.ndvi_change?.toFixed(3)}</strong><br />
-                    NBR Δ: {feat.properties?.nbr_change?.toFixed(3)}<br />
-                    NDMI Δ: {feat.properties?.ndmi_change?.toFixed(3)}<br />
-                    Surface est.: {(feat.properties?.area_ha ?? 0).toFixed(2)} ha<br />
-                    {feat.properties?.hansen_year != null && (
-                      <><span style={{ color: '#f97316' }}>Hansen: {feat.properties.hansen_year}</span><br /></>
-                    )}
-                    {feat.properties?.triple_confirmed && (
-                      <><em style={{ color: '#22d3ee' }}>✅ Triple confirmée</em><br /></>
-                    )}
-                    <em style={{ color: '#888', fontSize: 10 }}>{feat.properties?.period2}</em>
-                  </div>
-                </Popup>
-              </CircleMarker>
-            );
-          })}
+
+          {/* POLYGONES de perturbation (vecteurs réels) */}
+          {toggles.polygons && polygons.length > 0 && (
+            <GeoJSON
+              key={`polys-${selectedZone}-${polygons.length}-${selectedPolyId ?? 0}`}
+              data={{ type: 'FeatureCollection', features: polygons } as any}
+              style={polyStyle}
+              onEachFeature={onEachPoly}
+            />
+          )}
 
           <MapResizer />
         </MapContainer>
 
-        {/* Split Slider */}
+        {/* Slider swipe */}
         {toggles.s2Split && (
           <div id="split-slider-container"
             className="absolute top-0 bottom-0 w-12 cursor-ew-resize z-[500] flex items-center justify-center group pointer-events-auto"
@@ -519,7 +477,7 @@ export function Teledetection() {
           </div>
         )}
 
-        {/* Top UI */}
+        {/* Boutons carte */}
         <div className="absolute top-2 md:top-4 inset-x-2 md:inset-x-4 flex justify-between items-start z-[500] pointer-events-none">
           <div />
           <div className="flex flex-col gap-2 pointer-events-auto">
@@ -532,14 +490,14 @@ export function Teledetection() {
           </div>
         </div>
 
-        {/* Légende */}
+        {/* Légende — 4 niveaux de confiance */}
         <div className="absolute bottom-2 md:bottom-4 left-2 md:left-4 z-[500] pointer-events-none flex flex-col gap-2">
-          {toggles.alertes && (
-            <div className="bg-black/80 backdrop-blur-xl border border-white/10 rounded-xl pointer-events-auto shadow-2xl overflow-hidden min-w-[160px]">
+          {toggles.polygons && (
+            <div className="bg-black/80 backdrop-blur-xl border border-white/10 rounded-xl pointer-events-auto shadow-2xl overflow-hidden min-w-[180px]">
               <div className="p-2 md:p-2.5 bg-black/40 flex items-center justify-between cursor-pointer hover:bg-white/10 transition-colors" onClick={() => setIsLegendMinimized(!isLegendMinimized)}>
                 <div className="flex items-center gap-1.5">
                   <ShieldAlert className="w-3.5 h-3.5 text-white/70" />
-                  <h4 className="text-[9px] md:text-[10px] font-bold text-white/70 uppercase tracking-widest">Confiance Alerte</h4>
+                  <h4 className="text-[9px] md:text-[10px] font-bold text-white/70 uppercase tracking-widest">Confiance (preuves)</h4>
                 </div>
                 <svg className={`w-3.5 h-3.5 text-white/50 transition-transform duration-300 ${isLegendMinimized ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -547,9 +505,9 @@ export function Teledetection() {
               </div>
               {!isLegendMinimized && (
                 <div className="p-2.5 md:p-3 space-y-2">
-                  {[['bg-red-500','rgba(239,68,68,0.6)','Haute (3 indices)'],['bg-orange-500','rgba(249,115,22,0.6)','Moyenne (2 indices)'],['bg-yellow-500','rgba(234,179,8,0.6)','Faible (1 indice)']].map(([bg, shadow, label]) => (
+                  {[['#7f1d1d','Très haute (4 preuves)'],['#ef4444','Haute (3)'],['#f97316','Moyenne (2)'],['#eab308','Faible (1)']].map(([c, label]) => (
                     <div key={label} className="flex items-center gap-2">
-                      <div className={`w-2.5 h-2.5 rounded-full ${bg}`} style={{ boxShadow: `0 0 8px ${shadow}` }} />
+                      <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: c as string, boxShadow: `0 0 8px ${c}88` }} />
                       <span className="text-[10px] md:text-[11px] text-white/90">{label}</span>
                     </div>
                   ))}
@@ -564,6 +522,12 @@ export function Teledetection() {
                       <span className="text-[10px] md:text-[11px] text-white/90">S1 perte SAR</span>
                     </div>
                   )}
+                  {toggles.forestWatch && hansenTileUrl && (
+                    <div className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#ff00ff' }} />
+                      <span className="text-[10px] md:text-[11px] text-white/90">Hansen / DIST-ALERT</span>
+                    </div>
+                  )}
                   {toggles.phenology && phenologyTileUrl && anomaly && (
                     <div className="flex items-center gap-2">
                       <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: anomaly.color }} />
@@ -576,25 +540,20 @@ export function Teledetection() {
           )}
         </div>
 
-        {/* Badge S2 / statut */}
         {toggles.s2Split && (
           <div className="absolute top-2 md:top-4 right-[3.5rem] md:right-[4.5rem] bg-amber-500 text-black px-2 py-1 md:px-3 md:py-1.5 rounded-lg text-[9px] md:text-xs font-bold shadow-lg z-[500]">
-            {afterTileUrl ? 'S2 APRÈS' : 'S2 APRÈS (TOPO)'}
+            {afterTileUrl ? 'S2 AVANT | APRÈS' : 'S2 APRÈS (TOPO)'}
           </div>
         )}
 
-        {/* GEE status dot */}
         <div className="absolute bottom-2 right-2 md:bottom-4 md:right-4 z-[500] pointer-events-none">
           <div className={`text-[9px] px-2 py-0.5 rounded-full font-mono font-bold tracking-wider ${
             geeStatus === 'ready' ? 'bg-emerald-900/80 text-emerald-300' :
-            geeStatus === 'error' ? 'bg-red-900/80 text-red-300' :
-            'bg-zinc-900/70 text-zinc-500'
-          }`}>
+            geeStatus === 'error' ? 'bg-red-900/80 text-red-300' : 'bg-zinc-900/70 text-zinc-500'}`}>
             GEE {geeStatus === 'ready' ? '● EN LIGNE' : geeStatus === 'error' ? '● HORS LIGNE' : '● ...'}
           </div>
         </div>
 
-        {/* Error overlay */}
         {errorMsg && (
           <div className="absolute top-14 left-2 md:left-4 right-16 bg-red-900/90 backdrop-blur-md border border-red-700/50 text-white text-[10px] md:text-xs px-3 py-2 rounded-lg z-[500] flex items-center gap-2 shadow-xl">
             <span className="text-red-300 shrink-0">⚠</span>
@@ -604,14 +563,11 @@ export function Teledetection() {
         )}
       </div>
 
-      {/* ── PANNEAU PARAMÈTRES ────────────────────────────────────────────── */}
-      <div
-        className={cn(
+      {/* ── PANNEAU ───────────────────────────────────────────────────────── */}
+      <div className={cn(
           "flex-[0_0_auto] flex flex-col bg-[var(--bg-surface)] shadow-[-10px_0_30px_rgba(0,0,0,0.05)] z-[400] relative transition-all duration-300 border-l border-[var(--border-color)]",
-          isPanelCollapsed ? "w-4 md:w-6 lg:w-8 cursor-pointer items-center justify-center group hover:bg-[var(--brand-light)]" : "w-full md:w-[360px] lg:w-[400px]"
-        )}
-        onClick={() => isPanelCollapsed && setIsPanelCollapsed(false)}
-      >
+          isPanelCollapsed ? "w-4 md:w-6 lg:w-8 cursor-pointer items-center justify-center group hover:bg-[var(--brand-light)]" : "w-full md:w-[360px] lg:w-[400px]")}
+        onClick={() => isPanelCollapsed && setIsPanelCollapsed(false)}>
         {isPanelCollapsed && (
           <div className="flex flex-col items-center justify-center h-full w-full relative">
             <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-[var(--brand)] shadow-[0_0_10px_var(--brand)]" />
@@ -622,13 +578,12 @@ export function Teledetection() {
 
         {!isPanelCollapsed && (
           <>
-            {/* Header */}
             <div className="p-4 md:p-6 border-b border-[var(--border-color)] shrink-0 bg-[var(--bg-surface)] flex justify-between items-center sticky top-0 z-10">
               <div>
                 <h2 className="font-black text-lg md:text-xl text-[var(--text-main)] flex items-center gap-2">
                   <Satellite className="w-5 h-5 text-[var(--brand)]" /> AtlasForest GEE
                 </h2>
-                <p className="text-[10px] md:text-xs text-[var(--text-muted)] font-mono mt-1">Surveillance GEE • v11.0</p>
+                <p className="text-[10px] md:text-xs text-[var(--text-muted)] font-mono mt-1">Surveillance GEE • v12.0</p>
               </div>
               <div className="flex items-center gap-2">
                 <button onClick={resetParams} className="w-8 h-8 rounded-full bg-[var(--bg-main)] border border-[var(--border-color)] flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-main)] hover:border-[var(--text-main)] hover:scale-110 hover:shadow-md transition-all" title="Réinitialiser">
@@ -671,23 +626,17 @@ export function Teledetection() {
                   <div className="space-y-3 mt-1">
                     <div className="bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)]">
                       <label className="block text-[10px] font-bold text-[var(--brand)] uppercase tracking-wide mb-1.5 opacity-80">RÉFÉRENCE</label>
-                      <div className="flex flex-col gap-2">
-                        <DateInput value={refStart} onChange={setRefStart} />
-                        <DateInput value={refEnd} onChange={setRefEnd} />
-                      </div>
+                      <div className="flex flex-col gap-2"><DateInput value={refStart} onChange={setRefStart} /><DateInput value={refEnd} onChange={setRefEnd} /></div>
                     </div>
                     <div className="bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)]">
                       <label className="block text-[10px] font-bold text-amber-500 uppercase tracking-wide mb-1.5 opacity-80">ACTUELLE</label>
-                      <div className="flex flex-col gap-2">
-                        <DateInput value={actStart} onChange={setActStart} />
-                        <DateInput value={actEnd} onChange={setActEnd} />
-                      </div>
+                      <div className="flex flex-col gap-2"><DateInput value={actStart} onChange={setActStart} /><DateInput value={actEnd} onChange={setActEnd} /></div>
                     </div>
                   </div>
                 </div>
               </section>
 
-              {/* Algorithmes — grille 2×5 avec S1 + Phénologie */}
+              {/* Algorithmes */}
               <section className="border-b border-stone-200/50 dark:border-stone-800/50 pb-3 mb-3">
                 <button onClick={() => setIsAlgorithmExpanded(!isAlgorithmExpanded)} className="w-full text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 flex items-center justify-between group hover:text-[var(--text-main)] transition-colors">
                   <div className="flex items-center gap-2"><Anchor className="w-4 h-4 group-hover:text-[var(--brand)] transition-colors" /> Algorithmes</div>
@@ -696,26 +645,24 @@ export function Teledetection() {
                 <div className={`transition-all duration-300 origin-top overflow-hidden ${isAlgorithmExpanded ? 'max-h-[900px] opacity-100' : 'max-h-0 opacity-0'}`}>
                   <div className="grid grid-cols-2 gap-1.5 mt-1">
                     <ToggleCard label="S2 Split"     icon={SplitSquareHorizontal} checked={toggles.s2Split}     onChange={() => handleToggle('s2Split')}     activeColor="#3b82f6" />
-                    <ToggleCard label="Disturbance"  icon={FileWarning}           checked={toggles.disturbance} onChange={() => handleToggle('disturbance')} activeColor="#eab308" />
+                    <ToggleCard label="Confiance"    icon={FileWarning}           checked={toggles.disturbance} onChange={() => handleToggle('disturbance')} activeColor="#eab308" />
                     <ToggleCard label="NDVI Δ"       icon={CloudRain}             checked={toggles.ndviDelta}   onChange={() => handleToggle('ndviDelta')}   activeColor="#10b981" />
-                    <ToggleCard label="Alertes"      icon={ShieldAlert}           checked={toggles.alertes}     onChange={() => handleToggle('alertes')}     activeColor="#ef4444" />
+                    <ToggleCard label="Polygones"    icon={ShieldAlert}           checked={toggles.polygons}    onChange={() => handleToggle('polygons')}    activeColor="#ef4444" />
                     <ToggleCard label="Forêt ANEF"   icon={TreePine}              checked={toggles.foretApef}   onChange={() => handleToggle('foretApef')}   activeColor="#14b8a6" />
-                    <ToggleCard label="Triple conf." icon={CheckCircle2}          checked={toggles.tripleConf}  onChange={() => handleToggle('tripleConf')}  activeColor="#0ea5e9" />
-                    {/* NOUVEAU — Sentinel-1 SAR */}
+                    <ToggleCard label="Forest Watch" icon={Globe}                 checked={toggles.forestWatch} onChange={() => handleToggle('forestWatch')} activeColor="#d946ef" />
                     <ToggleCard label="Sentinel-1"   icon={Waves}                 checked={toggles.sentinel1}   onChange={() => handleToggle('sentinel1')}   activeColor="#8b5cf6" />
-                    {/* NOUVEAU — Phénologie baseline */}
                     <ToggleCard label="Phénologie"   icon={TrendingUp}            checked={toggles.phenology}   onChange={() => handleToggle('phenology')}   activeColor="#f59e0b" />
                   </div>
-                  {/* Info tooltips */}
-                  {toggles.sentinel1 && (
-                    <p className="mt-2 text-[9px] text-purple-400 font-mono leading-relaxed px-1">
-                      🔵 Bleu = perte rétrodiffusion SAR (perturbation) · Fonctionne sous nuages
+                  {toggles.forestWatch && (
+                    <p className="mt-2 text-[9px] text-fuchsia-400 font-mono leading-relaxed px-1">
+                      🌍 Hansen GFC v1.13 (global, couvre Tétouan). DIST-ALERT global = via asset configuré côté serveur.
                     </p>
                   )}
+                  {toggles.sentinel1 && (
+                    <p className="mt-2 text-[9px] text-purple-400 font-mono leading-relaxed px-1">🔵 Bleu = perte SAR · fonctionne sous nuages</p>
+                  )}
                   {toggles.phenology && (
-                    <p className="mt-1 text-[9px] text-amber-400 font-mono leading-relaxed px-1">
-                      📊 Compare NDVI actuel vs baseline 3 ans (même mois)
-                    </p>
+                    <p className="mt-1 text-[9px] text-amber-400 font-mono leading-relaxed px-1">📊 NDVI actuel vs baseline 3 ans (même mois)</p>
                   )}
                 </div>
               </section>
@@ -735,7 +682,7 @@ export function Teledetection() {
                     <RangeSlider label="NDMI Δ seuil"  value={ndmiThreshold}  min={0}   max={0.5} step={0.01} onChange={setNdmiThreshold}  formatter={(v: number) => v.toFixed(2)} />
                     <div className="h-px bg-[var(--border-color)]" />
                     <RangeSlider label="Surface min"   value={minSurface}     min={100} max={5000} step={100} onChange={setMinSurface}     unit=" m²" />
-                    <RangeSlider label="Score min conf." value={minConfidence} min={1}   max={3}   step={1}   onChange={setMinConfidence} />
+                    <RangeSlider label="Confiance min (preuves)" value={minConfidence} min={1} max={4} step={1} onChange={setMinConfidence} />
                   </div>
                 </div>
               </section>
@@ -748,52 +695,48 @@ export function Teledetection() {
                 </button>
                 <div className={`transition-all duration-300 origin-top overflow-hidden ${isStatsExpanded ? 'max-h-[900px] opacity-100' : 'max-h-0 opacity-0'}`}>
                   <div className="bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)] mt-1 space-y-2.5">
-                    {/* S2 stats */}
                     <div className="grid grid-cols-2 gap-1.5">
                       <div className="p-2 shadow-sm rounded border border-[var(--border-color)] bg-[var(--bg-surface)]">
                         <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5">Perturbées</p>
                         <div className="flex items-baseline gap-1"><span className="text-sm font-bold text-red-500">{perturbees}</span><span className="text-[9px] text-[var(--text-muted)]">ha</span></div>
                       </div>
                       <div className="p-2 shadow-sm rounded border border-[var(--border-color)] bg-[var(--bg-surface)]">
-                        <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5">Sévères</p>
+                        <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5">Sévères (H+)</p>
                         <div className="flex items-baseline gap-1"><span className="text-sm font-bold text-orange-500">{highHaDisp}</span><span className="text-[9px] text-[var(--text-muted)]">ha</span></div>
                       </div>
                       <div className="p-2 shadow-sm rounded border border-[var(--border-color)] bg-[var(--bg-surface)]">
-                        <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5">High</p>
-                        <div className="flex items-baseline gap-1"><span className="text-sm font-bold text-red-500">{highCount > 0 ? highCount : '—'}</span><span className="text-[9px] text-[var(--text-muted)]">rés.</span></div>
+                        <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5">Polyg. High+</p>
+                        <div className="flex items-baseline gap-1"><span className="text-sm font-bold text-red-500">{highCount > 0 ? highCount : '—'}</span><span className="text-[9px] text-[var(--text-muted)]">poly</span></div>
                       </div>
                       <div className="p-2 shadow-sm rounded border border-[var(--border-color)] bg-[var(--bg-surface)]">
-                        <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5">Total</p>
-                        <div className="flex items-baseline gap-1"><span className="text-sm font-bold text-[var(--brand)]">{totalCount > 0 ? totalCount : '—'}</span><span className="text-[9px] text-[var(--text-muted)]">rés.</span></div>
+                        <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5">Total poly.</p>
+                        <div className="flex items-baseline gap-1"><span className="text-sm font-bold text-[var(--brand)]">{totalCount > 0 ? totalCount : '—'}</span><span className="text-[9px] text-[var(--text-muted)]">poly</span></div>
                       </div>
                     </div>
-                    {/* NDVI bar */}
                     <div>
-                      <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5 flex justify-between pr-1">
-                        <span>NDVI Δ</span>
-                        <span className="text-[var(--brand)] font-bold">{ndviLabel}</span>
-                      </p>
-                      <div className="h-1 w-full bg-[var(--border-color)] rounded-full overflow-hidden">
-                        <div className="h-full bg-[var(--brand)] rounded-full transition-all duration-500" style={{ width: `${ndviBarPct}%` }} />
-                      </div>
+                      <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5 flex justify-between pr-1"><span>NDVI Δ moyen</span><span className="text-[var(--brand)] font-bold">{ndviLabel}</span></p>
+                      <div className="h-1 w-full bg-[var(--border-color)] rounded-full overflow-hidden"><div className="h-full bg-[var(--brand)] rounded-full transition-all duration-500" style={{ width: `${ndviBarPct}%` }} /></div>
                     </div>
-                    {/* Sentinel-1 stats (si disponible) */}
+                    {realStats && (
+                      <div className="grid grid-cols-4 gap-1 text-center">
+                        {[['Faible', realStats.low_ha, '#eab308'], ['Moy.', realStats.medium_ha, '#f97316'], ['Haute', realStats.high_ha, '#ef4444'], ['T.H.', realStats.highest_ha, '#7f1d1d']].map(([l, v, c]) => (
+                          <div key={l as string} className="p-1 rounded bg-[var(--bg-surface)] border border-[var(--border-color)]">
+                            <p className="text-[8px] font-mono" style={{ color: c as string }}>{l}</p>
+                            <p className="text-[10px] font-bold text-[var(--text-main)]">{Number(v ?? 0).toFixed(1)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {toggles.forestWatch && fwData && (
+                      <p className="text-[9px] text-fuchsia-400 font-mono">Hansen perte récente: {fwData.hansen_ha} ha — {fwData.note}</p>
+                    )}
                     {toggles.sentinel1 && s1Data && (
                       <>
                         <div className="h-px bg-[var(--border-color)]" />
                         <div>
-                          <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5 flex justify-between pr-1">
-                            <span className="text-purple-400">S1 dVV moyen</span>
-                            <span className="text-purple-400 font-bold">{s1Data.dVV_stats?.mean?.toFixed(2)} dB</span>
-                          </p>
-                          <div className="h-1 w-full bg-[var(--border-color)] rounded-full overflow-hidden">
-                            <div className="h-full bg-purple-500 rounded-full transition-all duration-500" style={{ width: `${Math.min(100, Math.abs(s1Data.dVV_stats?.mean ?? 0) / 10 * 100)}%` }} />
-                          </div>
-                          {s1Data.loss_ha > 0 && (
-                            <p className="text-[9px] text-purple-400 font-mono mt-1">
-                              {s1Data.loss_ha?.toFixed(1)} ha perte (dVV &lt; −3 dB)
-                            </p>
-                          )}
+                          <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5 flex justify-between pr-1"><span className="text-purple-400">S1 dVV moyen</span><span className="text-purple-400 font-bold">{s1Data.dVV_stats?.mean?.toFixed(2)} dB</span></p>
+                          <div className="h-1 w-full bg-[var(--border-color)] rounded-full overflow-hidden"><div className="h-full bg-purple-500 rounded-full transition-all duration-500" style={{ width: `${Math.min(100, Math.abs(s1Data.dVV_stats?.mean ?? 0) / 10 * 100)}%` }} /></div>
+                          {s1Data.loss_ha > 0 && (<p className="text-[9px] text-purple-400 font-mono mt-1">{s1Data.loss_ha?.toFixed(1)} ha perte (dVV &lt; −3 dB)</p>)}
                         </div>
                       </>
                     )}
@@ -801,7 +744,35 @@ export function Teledetection() {
                 </div>
               </section>
 
-              {/* ── PHÉNOLOGIE — section nouvelle ─────────────────────────── */}
+              {/* TOP — polygones les plus dangereux */}
+              <section className="border-b border-stone-200/50 dark:border-stone-800/50 pb-3 mb-3">
+                <button onClick={() => setIsTopExpanded(!isTopExpanded)} className="w-full text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 flex items-center justify-between group hover:text-[var(--text-main)] transition-colors">
+                  <div className="flex items-center gap-2"><ShieldAlert className="w-4 h-4 group-hover:text-red-500 transition-colors" /> Top alertes ({topPolys.length})</div>
+                  <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isTopExpanded ? 'rotate-180' : ''}`} />
+                </button>
+                <div className={`transition-all duration-300 origin-top overflow-hidden ${isTopExpanded ? 'max-h-[420px] opacity-100' : 'max-h-0 opacity-0'}`}>
+                  <div className="bg-[var(--bg-main)] p-1.5 rounded-lg border border-[var(--border-color)] mt-1 space-y-1 max-h-[360px] overflow-y-auto no-scrollbar">
+                    {topPolys.length === 0 && (<p className="text-[10px] text-[var(--text-muted)] text-center py-3">Lancer une analyse pour voir les alertes prioritaires.</p>)}
+                    {topPolys.map((f) => {
+                      const p = f.properties; const c = CONF_COLOR[p.confidence] ?? '#eab308';
+                      return (
+                        <button key={p.id} onClick={() => flyToPolygon(f)}
+                          className={cn("w-full flex items-center justify-between gap-2 p-2 rounded border transition-all text-left",
+                            selectedPolyId === p.id ? "border-[var(--brand)] bg-[var(--bg-surface)]" : "border-transparent bg-[var(--bg-surface)] hover:border-[var(--border-color)]")}>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: c }} />
+                            <span className="text-[11px] font-bold text-[var(--text-main)]">#{p.id}</span>
+                            <span className="text-[10px] text-[var(--text-muted)] truncate">{p.confidence} · {Number(p.area_ha).toFixed(2)} ha</span>
+                          </div>
+                          <MapPin className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </section>
+
+              {/* Phénologie */}
               {toggles.phenology && (
                 <section className="border-b border-stone-200/50 dark:border-stone-800/50 pb-3 mb-3">
                   <button onClick={() => setIsPhenologyExpanded(!isPhenologyExpanded)} className="w-full text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 flex items-center justify-between group hover:text-[var(--text-main)] transition-colors">
@@ -809,9 +780,7 @@ export function Teledetection() {
                       <TrendingUp className="w-4 h-4 group-hover:text-amber-400 transition-colors" />
                       <span>Phénologie</span>
                       {phenologyData?.anomaly_label && phenologyData.anomaly_label !== 'normal' && (
-                        <span className="text-[8px] px-1.5 py-0.5 rounded-full font-bold" style={{ backgroundColor: anomaly?.color + '25', color: anomaly?.color }}>
-                          {anomaly?.emoji}
-                        </span>
+                        <span className="text-[8px] px-1.5 py-0.5 rounded-full font-bold" style={{ backgroundColor: anomaly?.color + '25', color: anomaly?.color }}>{anomaly?.emoji}</span>
                       )}
                     </div>
                     <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isPhenologyExpanded ? 'rotate-180' : ''}`} />
@@ -819,14 +788,10 @@ export function Teledetection() {
                   <div className={`transition-all duration-300 origin-top overflow-hidden ${isPhenologyExpanded ? 'max-h-[500px] opacity-100' : 'max-h-0 opacity-0'}`}>
                     {phenologyData ? (
                       <div className="bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)] mt-1 space-y-2.5">
-                        {/* Badge anomalie */}
                         <div className="flex items-center justify-between">
                           <span className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider">Anomalie NDVI</span>
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ backgroundColor: anomaly?.color + '20', color: anomaly?.color }}>
-                            {anomaly?.emoji} {anomaly?.label}
-                          </span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ backgroundColor: anomaly?.color + '20', color: anomaly?.color }}>{anomaly?.emoji} {anomaly?.label}</span>
                         </div>
-                        {/* Baseline vs Actuel */}
                         <div className="grid grid-cols-2 gap-1.5">
                           <div className="p-2 rounded border border-[var(--border-color)] bg-[var(--bg-surface)]">
                             <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5">Baseline 3 ans</p>
@@ -837,39 +802,26 @@ export function Teledetection() {
                             <span className="text-sm font-bold" style={{ color: anomaly?.color }}>{phenologyData.current_ndvi?.toFixed(3) ?? '—'}</span>
                           </div>
                         </div>
-                        {/* Barre déviation centrée */}
                         {phenologyData.ndvi_anomaly != null && (
                           <div>
                             <p className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider mb-0.5 flex justify-between pr-1">
                               <span>Déviation</span>
-                              <span className="font-bold" style={{ color: anomaly?.color }}>
-                                {phenologyData.ndvi_anomaly > 0 ? '+' : ''}{phenologyData.ndvi_anomaly.toFixed(3)}
-                              </span>
+                              <span className="font-bold" style={{ color: anomaly?.color }}>{phenologyData.ndvi_anomaly > 0 ? '+' : ''}{phenologyData.ndvi_anomaly.toFixed(3)}</span>
                             </p>
                             <div className="h-1.5 w-full bg-[var(--border-color)] rounded-full overflow-hidden relative">
-                              {/* Ligne centrale */}
                               <div className="absolute inset-y-0 left-1/2 w-px bg-[var(--text-muted)] opacity-40" />
-                              {/* Barre depuis le centre */}
                               <div className="absolute top-0 h-full rounded-full transition-all duration-500"
-                                style={{
-                                  width:  `${Math.min(50, Math.abs(phenologyData.ndvi_anomaly) / 0.4 * 50)}%`,
-                                  left:   phenologyData.ndvi_anomaly >= 0 ? '50%' : `${50 - Math.min(50, Math.abs(phenologyData.ndvi_anomaly) / 0.4 * 50)}%`,
-                                  backgroundColor: anomaly?.color,
-                                }}
-                              />
+                                style={{ width: `${Math.min(50, Math.abs(phenologyData.ndvi_anomaly) / 0.4 * 50)}%`,
+                                  left: phenologyData.ndvi_anomaly >= 0 ? '50%' : `${50 - Math.min(50, Math.abs(phenologyData.ndvi_anomaly) / 0.4 * 50)}%`,
+                                  backgroundColor: anomaly?.color }} />
                             </div>
                           </div>
                         )}
-                        {/* Années baseline */}
-                        <p className="text-[9px] text-[var(--text-muted)] font-mono">
-                          Ref: {phenologyData.baseline_years?.join(', ')} · {phenologyData.period_current}
-                        </p>
+                        <p className="text-[9px] text-[var(--text-muted)] font-mono">Ref: {phenologyData.baseline_years?.join(', ')} · {phenologyData.period_current}</p>
                       </div>
                     ) : (
                       <div className="bg-[var(--bg-main)] p-3 rounded-lg border border-[var(--border-color)] mt-1 text-center">
-                        <p className="text-[10px] text-[var(--text-muted)]">
-                          {isAnalyzing ? '⏳ Calcul baseline en cours...' : '↑ Lancer une analyse pour voir les données phénologiques'}
-                        </p>
+                        <p className="text-[10px] text-[var(--text-muted)]">{isAnalyzing ? '⏳ Calcul baseline...' : '↑ Lancer une analyse'}</p>
                       </div>
                     )}
                   </div>
@@ -879,7 +831,7 @@ export function Teledetection() {
               {/* Export */}
               <section className="border-b border-stone-200/50 dark:border-stone-800/50 pb-3 mb-3 last:border-0 last:pb-0 last:mb-0">
                 <button onClick={() => setIsExportExpanded(!isExportExpanded)} className="w-full text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 flex items-center justify-between group hover:text-[var(--text-main)] transition-colors">
-                  <div className="flex items-center gap-2"><DownloadCloud className="w-4 h-4 group-hover:text-[var(--brand)] transition-colors" /> Exporter</div>
+                  <div className="flex items-center gap-2"><DownloadCloud className="w-4 h-4 group-hover:text-[var(--brand)] transition-colors" /> Exporter (polygones)</div>
                   <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isExportExpanded ? 'rotate-180' : ''}`} />
                 </button>
                 <div className={`transition-all duration-300 origin-top overflow-hidden ${isExportExpanded ? 'max-h-[500px] opacity-100' : 'max-h-0 opacity-0'}`}>
@@ -893,12 +845,12 @@ export function Teledetection() {
                         <div className="flex items-center gap-2 text-xs font-medium"><MapPin className="w-3.5 h-3.5 text-green-500" /> KML (.kml)</div>
                         <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
                       </button>
-                      <button disabled className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded opacity-40 cursor-not-allowed" title="Utiliser QGIS pour convertir depuis GeoJSON">
-                        <div className="flex items-center gap-2 text-xs font-medium"><Layers className="w-3.5 h-3.5 text-purple-500" /> Shapefile (.shp)</div>
-                        <span className="text-[8px] text-[var(--text-muted)]">→ QGIS</span>
+                      <button onClick={handleExportShp} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-[var(--brand)] hover:text-[var(--brand)] hover:shadow-sm transition-all group">
+                        <div className="flex items-center gap-2 text-xs font-medium"><Layers className="w-3.5 h-3.5 text-purple-500" /> Shapefile (.zip)</div>
+                        <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
                       </button>
-                      <button onClick={handleExportExcel} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-[var(--brand)] hover:text-[var(--brand)] hover:shadow-sm transition-all group">
-                        <div className="flex items-center gap-2 text-xs font-medium"><FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" /> Excel (.csv)</div>
+                      <button onClick={handleExportCsv} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-[var(--brand)] hover:text-[var(--brand)] hover:shadow-sm transition-all group">
+                        <div className="flex items-center gap-2 text-xs font-medium"><FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" /> CSV (.csv)</div>
                         <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
                       </button>
                     </div>
@@ -908,22 +860,13 @@ export function Teledetection() {
 
             </div>
 
-            {/* Bouton Analyser */}
             <div className="p-3 md:p-6 border-t border-[var(--border-color)] bg-[var(--bg-surface)] shrink-0 sticky bottom-0 z-10 pb-[calc(4.75rem+env(safe-area-inset-bottom))] md:pb-6">
-              <button
-                onClick={handleAnalyze}
-                disabled={isAnalyzing}
-                className={cn(
-                  "w-full py-3 md:py-4 rounded-xl flex items-center justify-center gap-2 text-sm md:text-base font-bold transition-all",
-                  isAnalyzing
-                    ? "bg-[var(--bg-main)] text-[var(--brand)] border-2 border-[var(--brand)] shadow-none"
-                    : "bg-[var(--brand)] text-[var(--bg-main)] shadow-[0_4px_15px_rgba(var(--brand-rgb),0.3)] hover:brightness-110 active:scale-[0.98]"
-                )}
-              >
-                {isAnalyzing
-                  ? <><Hexagon className="w-4 h-4 md:w-5 md:h-5 animate-spin" /> Traitement GEE en cours...</>
-                  : <><Play className="w-4 h-4 md:w-5 md:h-5 fill-current" /> Lancer l'analyse</>
-                }
+              <button onClick={handleAnalyze} disabled={isAnalyzing}
+                className={cn("w-full py-3 md:py-4 rounded-xl flex items-center justify-center gap-2 text-sm md:text-base font-bold transition-all",
+                  isAnalyzing ? "bg-[var(--bg-main)] text-[var(--brand)] border-2 border-[var(--brand)] shadow-none"
+                              : "bg-[var(--brand)] text-[var(--bg-main)] shadow-[0_4px_15px_rgba(var(--brand-rgb),0.3)] hover:brightness-110 active:scale-[0.98]")}>
+                {isAnalyzing ? <><Hexagon className="w-4 h-4 md:w-5 md:h-5 animate-spin" /> Traitement GEE en cours...</>
+                            : <><Play className="w-4 h-4 md:w-5 md:h-5 fill-current" /> Lancer l'analyse</>}
               </button>
             </div>
           </>
