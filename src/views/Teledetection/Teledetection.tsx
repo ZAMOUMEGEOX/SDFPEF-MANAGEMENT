@@ -340,7 +340,7 @@ export function Teledetection() {
       }
     } catch (err: any) {
       const msg = err.message || 'Erreur GEE';
-      if (err.name === 'AbortError' || msg.includes('abort')) setErrorMsg('Délai dépassé (3 min). Réduire la zone ou augmenter cloudMax.');
+      if (err.name === 'AbortError' || msg.includes('abort')) setErrorMsg('Connexion interrompue avec le serveur GEE. Vérifier la connexion et réessayer.');
       else if (msg.includes('GEE non disponible')) setErrorMsg('GEE hors-ligne côté serveur.');
       else if (msg.includes('date')) setErrorMsg(`Dates invalides: ${msg}`);
       else setErrorMsg(msg);
