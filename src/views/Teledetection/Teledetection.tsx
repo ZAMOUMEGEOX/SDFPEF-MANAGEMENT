@@ -135,7 +135,9 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
     if (!pane) return;
 
     const applyClip = () => {
-      if (!toggles.s2Split) {
+      // Pas de couche "après" (analyse pas encore lancée) → on masque la pane :
+      // le fond satellite par défaut reste visible des deux côtés du slider.
+      if (!toggles.s2Split || !geeAfterUrl) {
         pane.style.display = 'none';
         return;
       }
@@ -156,12 +158,13 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
     };
   }, [splitPos, toggles.s2Split, paneReady, map, geeAfterUrl]);
 
-  if (!paneReady || !toggles.s2Split) return null;
+  // Tant que l'analyse GEE n'a pas fourni d'image Sentinel-2 "après",
+  // on n'affiche AUCUNE couche de remplacement (plus de fallback topo) :
+  // la carte satellite d'origine reste visible sur toute la largeur.
+  if (!paneReady || !toggles.s2Split || !geeAfterUrl) return null;
 
-  return geeAfterUrl ? (
+  return (
     <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" attribution="© GEE / Copernicus S2 (après)" />
-  ) : (
-    <TileLayer key="split-topo-fallback" url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}" pane="splitPaneRight" className="sepia-[.3] contrast-125" />
   );
 }
 
@@ -578,9 +581,9 @@ export function Teledetection() {
           )}
         </div>
 
-        {toggles.s2Split && (
+        {toggles.s2Split && afterTileUrl && (
           <div className="absolute top-2 md:top-4 right-[3.5rem] md:right-[4.5rem] bg-amber-500 text-black px-2 py-1 md:px-3 md:py-1.5 rounded-lg text-[9px] md:text-xs font-bold shadow-lg z-[500]">
-            {afterTileUrl ? 'S2 AVANT | APRÈS' : 'S2 APRÈS (TOPO)'}
+            S2 AVANT | APRÈS
           </div>
         )}
 
