@@ -195,6 +195,7 @@ export function Teledetection() {
   const [toggles, setToggles] = useState({
     s2Split: true, disturbance: true, polygons: true, foretApef: true,
     ndviDelta: false, forestWatch: false, sentinel1: false, phenology: false,
+    tripleConf: false, highConfOnly: false,
   });
 
   const zones = [
@@ -213,6 +214,9 @@ export function Teledetection() {
   const [s1TileUrl, setS1TileUrl]           = useState<string|null>(null);
   const [phenologyTileUrl, setPhenologyTileUrl] = useState<string|null>(null);
   const [polygons, setPolygons]             = useState<PolygonFeature[]>([]);
+  const [beforeLabel, setBeforeLabel]       = useState<string>('Sentinel-2 (avant)');
+  const [afterLabel, setAfterLabel]         = useState<string>('Sentinel-2 (après)');
+  const [polyError, setPolyError]           = useState<string|null>(null);
   const [topPolys, setTopPolys]             = useState<PolygonFeature[]>([]);
   const [selectedPolyId, setSelectedPolyId] = useState<number|null>(null);
   const [realStats, setRealStats]           = useState<any>(null);
@@ -236,7 +240,7 @@ export function Teledetection() {
   useEffect(() => {
     setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
     setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null);
-    setPolygons([]); setTopPolys([]); setSelectedPolyId(null);
+    setPolygons([]); setTopPolys([]); setSelectedPolyId(null); setPolyError(null);
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
   }, [selectedZone]);
 
@@ -250,7 +254,16 @@ export function Teledetection() {
     zone: selectedZone, date1Start: refStart, date1End: refEnd,
     date2Start: actStart, date2End: actEnd,
     cloud: cloudMax, sensitivity: ndviThreshold, nbr: nbrThreshold, ndmi: ndmiThreshold,
-    minScore: minConfidence, minArea: minSurface,
+    // Haute confiance seule -> on ne garde que score >= 3 (high + highest)
+    minScore: toggles.highConfOnly ? 3 : minConfidence,
+    minArea: minSurface,
+    // Preuves : "Triple confirmation" active TOUT (rigueur max, plus lent).
+    // Sinon chaque couche active sa preuve : Sentinel-1 -> radar, Phénologie -> saisonnier,
+    // Forest Watch -> externe (Hansen). L'optique tourne toujours.
+    useRadar:    toggles.tripleConf || toggles.sentinel1,
+    useTemporal: toggles.tripleConf,
+    useSeasonal: toggles.tripleConf || toggles.phenology,
+    useExternal: toggles.tripleConf || toggles.forestWatch || true, // Hansen peu coûteux -> tjs
   });
 
   const resetParams = () => {
@@ -258,7 +271,7 @@ export function Teledetection() {
     setNdmiThreshold(0.12); setMinSurface(500); setMinConfidence(2);
     setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
     setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null);
-    setPolygons([]); setTopPolys([]); setSelectedPolyId(null);
+    setPolygons([]); setTopPolys([]); setSelectedPolyId(null); setPolyError(null);
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
   };
 
@@ -278,6 +291,9 @@ export function Teledetection() {
       setNdviTileUrl(result.ndviTileUrl);
       setRealStats(result.stats);
       setPolygons(result.polygons?.features ?? []);
+      if (result.beforeLabel) setBeforeLabel(result.beforeLabel);
+      if (result.afterLabel) setAfterLabel(result.afterLabel);
+      setPolyError(result.poly_error ?? null);
 
       // Top-N polygones les plus dangereux
       fetchTopPolygons(params, 20)
@@ -578,9 +594,21 @@ export function Teledetection() {
           )}
         </div>
 
-        {toggles.s2Split && (
+        {toggles.s2Split && beforeTileUrl && (
+          <>
+            <div className="absolute top-2 md:top-4 left-2 md:left-4 bg-blue-600/90 backdrop-blur-md text-white px-2.5 py-1 md:px-3 md:py-1.5 rounded-lg text-[9px] md:text-[11px] font-bold shadow-lg z-[500] flex items-center gap-1.5 max-w-[45%]">
+              <span className="text-blue-200">◀ AVANT</span>
+              <span className="font-mono font-normal truncate opacity-90">{beforeLabel.replace('Sentinel-2 —', '').trim()}</span>
+            </div>
+            <div className="absolute top-2 md:top-4 right-[3.5rem] md:right-[4.5rem] bg-amber-500/95 backdrop-blur-md text-black px-2.5 py-1 md:px-3 md:py-1.5 rounded-lg text-[9px] md:text-[11px] font-bold shadow-lg z-[500] flex items-center gap-1.5 max-w-[45%]">
+              <span className="font-mono font-normal truncate">{afterLabel.replace('Sentinel-2 —', '').trim()}</span>
+              <span>APRÈS ▶</span>
+            </div>
+          </>
+        )}
+        {toggles.s2Split && !beforeTileUrl && (
           <div className="absolute top-2 md:top-4 right-[3.5rem] md:right-[4.5rem] bg-amber-500 text-black px-2 py-1 md:px-3 md:py-1.5 rounded-lg text-[9px] md:text-xs font-bold shadow-lg z-[500]">
-            {afterTileUrl ? 'S2 AVANT | APRÈS' : 'S2 APRÈS (TOPO)'}
+            S2 APRÈS (TOPO) — lancez l'analyse
           </div>
         )}
 
@@ -599,9 +627,14 @@ export function Teledetection() {
             <button onClick={() => setErrorMsg(null)} className="text-red-400 hover:text-white shrink-0 font-bold">✕</button>
           </div>
         )}
+        {polyError && !errorMsg && (
+          <div className="absolute top-14 left-2 md:left-4 right-16 bg-amber-900/90 backdrop-blur-md border border-amber-700/50 text-white text-[10px] md:text-xs px-3 py-2 rounded-lg z-[500] flex items-center gap-2 shadow-xl">
+            <span className="text-amber-300 shrink-0">⚠</span>
+            <span className="flex-1 leading-tight">Raster affiché. Polygones non générés (zone trop grande / délai) — réessayez avec une zone plus petite ou « Haute conf. ».</span>
+            <button onClick={() => setPolyError(null)} className="text-amber-400 hover:text-white shrink-0 font-bold">✕</button>
+          </div>
+        )}
       </div>
-
-      {/* ── PANNEAU ───────────────────────────────────────────────────────── */}
       <div className={cn(
           "flex-[0_0_auto] flex flex-col bg-[var(--bg-surface)] shadow-[-10px_0_30px_rgba(0,0,0,0.05)] z-[400] relative transition-all duration-300 border-l border-[var(--border-color)]",
           isPanelCollapsed ? "w-4 md:w-6 lg:w-8 cursor-pointer items-center justify-center group hover:bg-[var(--brand-light)]" : "w-full md:w-[360px] lg:w-[400px]")}
@@ -683,14 +716,24 @@ export function Teledetection() {
                 <div className={`transition-all duration-300 origin-top overflow-hidden ${isAlgorithmExpanded ? 'max-h-[900px] opacity-100' : 'max-h-0 opacity-0'}`}>
                   <div className="grid grid-cols-2 gap-1.5 mt-1">
                     <ToggleCard label="S2 Split"     icon={SplitSquareHorizontal} checked={toggles.s2Split}     onChange={() => handleToggle('s2Split')}     activeColor="#3b82f6" />
-                    <ToggleCard label="Confiance"    icon={FileWarning}           checked={toggles.disturbance} onChange={() => handleToggle('disturbance')} activeColor="#eab308" />
-                    <ToggleCard label="NDVI Δ"       icon={CloudRain}             checked={toggles.ndviDelta}   onChange={() => handleToggle('ndviDelta')}   activeColor="#10b981" />
+                    <ToggleCard label="Alertes (raster)" icon={FileWarning}       checked={toggles.disturbance} onChange={() => handleToggle('disturbance')} activeColor="#eab308" />
                     <ToggleCard label="Polygones"    icon={ShieldAlert}           checked={toggles.polygons}    onChange={() => handleToggle('polygons')}    activeColor="#ef4444" />
+                    <ToggleCard label="NDVI Δ"       icon={CloudRain}             checked={toggles.ndviDelta}   onChange={() => handleToggle('ndviDelta')}   activeColor="#10b981" />
+                    <ToggleCard label="Triple confirm." icon={CheckCircle2}       checked={toggles.tripleConf}  onChange={() => handleToggle('tripleConf')}  activeColor="#16a34a" />
+                    <ToggleCard label="Haute conf."  icon={ShieldAlert}           checked={toggles.highConfOnly} onChange={() => handleToggle('highConfOnly')} activeColor="#7f1d1d" />
                     <ToggleCard label="Forêt ANEF"   icon={TreePine}              checked={toggles.foretApef}   onChange={() => handleToggle('foretApef')}   activeColor="#14b8a6" />
                     <ToggleCard label="Forest Watch" icon={Globe}                 checked={toggles.forestWatch} onChange={() => handleToggle('forestWatch')} activeColor="#d946ef" />
                     <ToggleCard label="Sentinel-1"   icon={Waves}                 checked={toggles.sentinel1}   onChange={() => handleToggle('sentinel1')}   activeColor="#8b5cf6" />
                     <ToggleCard label="Phénologie"   icon={TrendingUp}            checked={toggles.phenology}   onChange={() => handleToggle('phenology')}   activeColor="#f59e0b" />
                   </div>
+                  {toggles.tripleConf && (
+                    <p className="mt-2 text-[9px] text-green-400 font-mono leading-relaxed px-1">
+                      ✅ Rigueur max : optique + radar + persistance + Hansen + saisonnier. <b>Plus lent</b> (~1–2 min de plus).
+                    </p>
+                  )}
+                  {toggles.highConfOnly && (
+                    <p className="mt-1 text-[9px] text-red-400 font-mono leading-relaxed px-1">🔴 N'affiche que High + Très haute (score ≥ 3).</p>
+                  )}
                   {toggles.forestWatch && (
                     <p className="mt-2 text-[9px] text-fuchsia-400 font-mono leading-relaxed px-1">
                       🌍 Hansen GFC v1.13 (global, couvre Tétouan). DIST-ALERT global = via asset configuré côté serveur.

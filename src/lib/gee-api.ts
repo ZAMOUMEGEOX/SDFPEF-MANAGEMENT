@@ -54,7 +54,7 @@ export interface AnalyzeResult {
   beforeLabel: string; afterLabel: string;
   period1: string; period2: string;
   polygons: PolygonFC; count: number; stats: AnalyzeStats;
-  algorithm: string; error?: string;
+  algorithm: string; evidence_used?: string[]; poly_error?: string | null; error?: string;
 }
 
 export interface Sentinel1Result {
@@ -96,7 +96,7 @@ function buildBody(p: AnalyzeParams): Record<string, unknown> {
   };
 }
 
-async function geePost<T>(path: string, body: Record<string, unknown>, timeoutMs = 180_000): Promise<T> {
+async function geePost<T>(path: string, body: Record<string, unknown>, timeoutMs = 290_000): Promise<T> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
