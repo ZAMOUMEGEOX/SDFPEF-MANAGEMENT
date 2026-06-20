@@ -116,42 +116,52 @@ function MapRefSetter({ onReady }: { onReady: (m: L.Map) => void }) {
 // Pane droite (clip) = S2 APRÈS ; le S2 AVANT est une couche pleine en dessous
 function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
   const map = useMap();
-  const [paneCreated, setPaneCreated] = useState(false);
+  const [paneReady, setPaneReady] = useState(false);
 
+  // Créer le pane une seule fois — z=250 (entre tilePane=200 et overlayPane=400)
   useEffect(() => {
-    // ── FIX SWIPE : le pane doit couvrir toute la carte pour que les
-    //   pourcentages de clip-path soient calculés sur la bonne référence.
-    //   Sans width/height explicites, le pane fait 0×0 (les tuiles Leaflet
-    //   sont positionnées via transform et ne contribuent pas au flux CSS),
-    //   ce qui rend clip-path polygon(50% …) = polygon(0px …) = RIEN visible.
-    let pane = map.getPane('splitPaneRight');
-    if (!pane) {
-      pane = map.createPane('splitPaneRight');
-      pane.style.zIndex = '450';
+    if (!map.getPane('splitPaneRight')) {
+      const pane = map.createPane('splitPaneRight');
+      pane.style.zIndex = '250';
     }
-    pane.style.width  = '100%';   // ← critique : couvrire toute la carte
-    pane.style.height = '100%';   // ← critique : couvrire toute la carte
-    setPaneCreated(true);
+    setPaneReady(true);
   }, [map]);
 
+  // Appliquer le clip rect avec les vraies coordonnées Leaflet (containerPoint → layerPoint)
+  // Cela reste précis même après pan/zoom
   useEffect(() => {
+    if (!paneReady) return;
     const pane = map.getPane('splitPaneRight');
-    if (pane) {
-      if (toggles.s2Split) {
-        pane.style.clipPath = `polygon(${splitPos}% 0, 100% 0, 100% 100%, ${splitPos}% 100%)`;
-        pane.style.display = 'block';
-      } else {
-        pane.style.display = 'none';
-      }
-    }
-  }, [splitPos, toggles.s2Split, map, geeAfterUrl]);
+    if (!pane) return;
 
-  if (!paneCreated || !toggles.s2Split) return null;
+    const applyClip = () => {
+      if (!toggles.s2Split) {
+        pane.style.display = 'none';
+        return;
+      }
+      pane.style.display = 'block';
+      const nw = map.containerPointToLayerPoint([0, 0] as any);
+      const se = map.containerPointToLayerPoint(map.getSize() as any);
+      const clipX = nw.x + map.getSize().x * (splitPos / 100);
+      // clip: rect(top, right, bottom, left) en coordonnées layer
+      pane.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${clipX}px)`;
+    };
+
+    applyClip();
+    map.on('move', applyClip);
+    map.on('zoomend', applyClip);
+    return () => {
+      map.off('move', applyClip);
+      map.off('zoomend', applyClip);
+    };
+  }, [splitPos, toggles.s2Split, paneReady, map, geeAfterUrl]);
+
+  if (!paneReady || !toggles.s2Split) return null;
 
   return geeAfterUrl ? (
     <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" attribution="© GEE / Copernicus S2 (après)" />
   ) : (
-    <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}" pane="splitPaneRight" className="sepia-[.3] contrast-125" />
+    <TileLayer key="split-topo-fallback" url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}" pane="splitPaneRight" className="sepia-[.3] contrast-125" />
   );
 }
 
@@ -438,22 +448,32 @@ export function Teledetection() {
               const rect = container.getBoundingClientRect();
               document.body.classList.add('select-none');
               document.body.style.cursor = 'ew-resize';
+              let lastP = splitPos;
+
+              const applyClipAt = (p: number) => {
+                const mapInst = mapRef.current;
+                if (!mapInst) return;
+                const pane = mapInst.getPane('splitPaneRight');
+                if (!pane) return;
+                const nw = mapInst.containerPointToLayerPoint([0, 0] as any);
+                const se = mapInst.containerPointToLayerPoint(mapInst.getSize() as any);
+                const clipX = nw.x + mapInst.getSize().x * (p / 100);
+                pane.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${clipX}px)`;
+              };
+
               const onMove = (ev: MouseEvent) => {
                 let p = ((ev.clientX - rect.left) / rect.width) * 100;
                 p = Math.max(0, Math.min(p, 100));
+                lastP = p;
                 slider.style.left = `calc(${p}% - 24px)`;
-                // Utiliser mapRef.current.getPane plutôt que document.querySelector
-                // pour cibler précisément le pane de cette carte
-                const pane = mapRef.current?.getPane('splitPaneRight') as HTMLElement | undefined;
-                if (pane) pane.style.clipPath = `polygon(${p}% 0, 100% 0, 100% 100%, ${p}% 100%)`;
+                applyClipAt(p);
               };
-              const onUp = (ev: MouseEvent) => {
+              const onUp = () => {
                 document.body.classList.remove('select-none');
                 document.body.style.cursor = '';
                 window.removeEventListener('mousemove', onMove);
                 window.removeEventListener('mouseup', onUp);
-                let p = ((ev.clientX - rect.left) / rect.width) * 100;
-                setSplitPos(Math.max(0, Math.min(p, 100)));
+                setSplitPos(lastP);
               };
               window.addEventListener('mousemove', onMove);
               window.addEventListener('mouseup', onUp);
@@ -465,8 +485,16 @@ export function Teledetection() {
               let p = ((e.touches[0].clientX - rect.left) / rect.width) * 100;
               p = Math.max(0, Math.min(p, 100));
               e.currentTarget.style.left = `calc(${p}% - 24px)`;
-              const pane = mapRef.current?.getPane('splitPaneRight') as HTMLElement | undefined;
-              if (pane) pane.style.clipPath = `polygon(${p}% 0, 100% 0, 100% 100%, ${p}% 100%)`;
+              const mapInst = mapRef.current;
+              if (mapInst) {
+                const pane = mapInst.getPane('splitPaneRight');
+                if (pane) {
+                  const nw = mapInst.containerPointToLayerPoint([0, 0] as any);
+                  const se = mapInst.containerPointToLayerPoint(mapInst.getSize() as any);
+                  const clipX = nw.x + mapInst.getSize().x * (p / 100);
+                  pane.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${clipX}px)`;
+                }
+              }
             }}
             onTouchEnd={(e) => {
               document.body.classList.remove('select-none');
