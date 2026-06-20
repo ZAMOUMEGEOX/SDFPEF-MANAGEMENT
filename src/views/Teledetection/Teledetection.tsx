@@ -43,6 +43,28 @@ const CONF_COLOR: Record<string, string> = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Sentinel-2 par défaut (avant analyse GEE)
+// Tant que l'utilisateur n'a pas cliqué sur "Lancer l'analyse", beforeTileUrl/
+// afterTileUrl (résultats GEE) sont null. Pour que le slider AVANT|APRÈS soit
+// utilisable dès le chargement (et pas seulement après une analyse), on affiche
+// par défaut une vraie mosaïque Sentinel-2 (EOX "s2cloudless", gratuite, sans
+// clé) : une année proche de la période RÉFÉRENCE à gauche, une année proche
+// de la période ACTUELLE à droite. Dès qu'une analyse GEE tourne, ces tuiles
+// par défaut sont remplacées par les vraies tuiles GEE (dates exactes choisies).
+// ─────────────────────────────────────────────────────────────────────────────
+const EOX_MIN_YEAR = 2018;
+const EOX_MAX_YEAR = 2024; // dernière mosaïque annuelle EOX disponible publiquement
+
+const eoxYearFromDate = (dateStr: string): number => {
+  const y = parseInt((dateStr || '').slice(0, 4), 10);
+  if (Number.isNaN(y)) return EOX_MAX_YEAR;
+  return Math.min(EOX_MAX_YEAR, Math.max(EOX_MIN_YEAR, y));
+};
+
+const eoxS2Url = (year: number) =>
+  `https://tiles.maps.eox.at/wmts?layer=s2cloudless-${year}_3857&style=default&tilematrixset=GoogleMapsCompatible&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image/jpeg&TileMatrix={z}&TileCol={x}&TileRow={y}`;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Sous-composants UI
 // ─────────────────────────────────────────────────────────────────────────────
 const ToggleCard = ({ checked, onChange, label, icon: Icon, activeColor = "var(--brand)" }: any) => (
@@ -113,55 +135,66 @@ function MapRefSetter({ onReady }: { onReady: (m: L.Map) => void }) {
   return null;
 }
 
-// Pane droite (clip) = S2 APRÈS ; le S2 AVANT est une couche pleine en dessous
-function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
+// Pane droite (clip) = S2 APRÈS ; le S2 AVANT est une couche pleine en dessous.
+//
+// ⚠️ FIX du bug "l'image récente ne s'affiche pas / le split ne divise rien" :
+// un pane créé via map.createPane() n'a, par défaut, NI largeur NI hauteur en
+// CSS (.leaflet-pane ne définit que position:absolute; left:0; top:0;). Comme
+// ses seuls enfants (les tuiles) sont eux aussi en position absolute (donc hors
+// du flux normal), le pane se calcule à 0×0 — invisible tant qu'aucun clip-path
+// n'est posé (l'overflow visible par défaut laisse quand même voir les tuiles).
+// Mais dès qu'on applique `clip-path: polygon(X% ...)` à une boîte de 0×0, tous
+// les pourcentages valent 0 → le polygone est dégénéré et TOUT le contenu du
+// pane disparaît, peu importe la position du slider. C'est exactement ce qui
+// était observé. On corrige en donnant au pane une taille explicite en pixels
+// (= taille réelle de la carte), tenue à jour au resize.
+function MapControls({ splitPos, toggles, geeAfterUrl, defaultAfterUrl, afterAttribution }: any) {
   const map = useMap();
-  const [paneReady, setPaneReady] = useState(false);
+  const [paneCreated, setPaneCreated] = useState(false);
+  const paneElRef = useRef<HTMLElement | null>(null);
 
-  // Créer le pane une seule fois — z=250 (entre tilePane=200 et overlayPane=400)
   useEffect(() => {
-    if (!map.getPane('splitPaneRight')) {
-      const pane = map.createPane('splitPaneRight');
-      pane.style.zIndex = '250';
+    let pane = map.getPane('splitPaneRight');
+    if (!pane) {
+      pane = map.createPane('splitPaneRight');
+      pane.style.zIndex = '450';
+      pane.style.pointerEvents = 'none'; // laisse les clics/popups des polygones passer
     }
-    setPaneReady(true);
+    paneElRef.current = pane;
+
+    const syncPaneSize = () => {
+      const size = map.getSize(); // taille réelle du conteneur carte, en pixels
+      pane!.style.width = `${size.x}px`;
+      pane!.style.height = `${size.y}px`;
+    };
+    syncPaneSize();
+    map.on('resize', syncPaneSize);
+    setPaneCreated(true);
+    return () => { map.off('resize', syncPaneSize); };
   }, [map]);
 
-  // Appliquer le clip rect avec les vraies coordonnées Leaflet (containerPoint → layerPoint)
-  // Cela reste précis même après pan/zoom
   useEffect(() => {
-    if (!paneReady) return;
-    const pane = map.getPane('splitPaneRight');
+    const pane = paneElRef.current;
     if (!pane) return;
-
-    const applyClip = () => {
-      if (!toggles.s2Split) {
-        pane.style.display = 'none';
-        return;
-      }
+    if (toggles.s2Split) {
+      pane.style.clipPath = `polygon(${splitPos}% 0, 100% 0, 100% 100%, ${splitPos}% 100%)`;
       pane.style.display = 'block';
-      const nw = map.containerPointToLayerPoint([0, 0] as any);
-      const se = map.containerPointToLayerPoint(map.getSize() as any);
-      const clipX = nw.x + map.getSize().x * (splitPos / 100);
-      // clip: rect(top, right, bottom, left) en coordonnées layer
-      pane.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${clipX}px)`;
-    };
+    } else {
+      pane.style.display = 'none';
+    }
+  }, [splitPos, toggles.s2Split]);
 
-    applyClip();
-    map.on('move', applyClip);
-    map.on('zoomend', applyClip);
-    return () => {
-      map.off('move', applyClip);
-      map.off('zoomend', applyClip);
-    };
-  }, [splitPos, toggles.s2Split, paneReady, map, geeAfterUrl]);
+  if (!paneCreated || !toggles.s2Split) return null;
 
-  if (!paneReady || !toggles.s2Split) return null;
-
-  return geeAfterUrl ? (
-    <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" attribution="© GEE / Copernicus S2 (après)" />
-  ) : (
-    <TileLayer key="split-topo-fallback" url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}" pane="splitPaneRight" className="sepia-[.3] contrast-125" />
+  const url = geeAfterUrl || defaultAfterUrl;
+  return (
+    <TileLayer
+      key={`after-${url}`}
+      url={url}
+      pane="splitPaneRight"
+      maxNativeZoom={geeAfterUrl ? undefined : 16}
+      attribution={geeAfterUrl ? '© GEE / Copernicus S2 (après)' : afterAttribution}
+    />
   );
 }
 
@@ -344,6 +377,14 @@ export function Teledetection() {
   const anomaly = phenologyData
     ? (ANOMALY_CONFIG[phenologyData.anomaly_label as AnomalyLabel] ?? ANOMALY_CONFIG.unknown) : null;
 
+  // S2 par défaut (avant qu'une analyse GEE n'ait tourné) — voir commentaire plus haut.
+  const beforeYear = eoxYearFromDate(refStart);
+  const afterYear  = eoxYearFromDate(actStart);
+  const defaultBeforeUrl = eoxS2Url(beforeYear);
+  const defaultAfterUrl  = eoxS2Url(afterYear);
+  const beforeAttribution = `Sentinel-2 cloudless ${beforeYear} © EOX`;
+  const afterAttribution  = `Sentinel-2 cloudless ${afterYear} © EOX`;
+
   const polyStyle = (f: any) => {
     const c = CONF_COLOR[f.properties?.confidence] ?? '#eab308';
     const sel = f.properties?.id === selectedPolyId;
@@ -390,13 +431,25 @@ export function Teledetection() {
             <EditControl position="topleft" draw={{ rectangle: true, polygon: true, circle: false, circlemarker: false, marker: false, polyline: false }} />
           </FeatureGroup>
 
-          {/* S2 AVANT — couche pleine (côté gauche du slider) — FIX swipe */}
-          {toggles.s2Split && beforeTileUrl && (
-            <TileLayer key={`before-${beforeTileUrl}`} url={beforeTileUrl} attribution="© GEE / Copernicus S2 (avant)" />
+          {/* S2 AVANT — couche pleine (côté gauche du slider) — FIX swipe
+              Utilise les tuiles GEE si une analyse a tourné, sinon une vraie
+              mosaïque Sentinel-2 par défaut (au lieu de rien du tout avant). */}
+          {toggles.s2Split && (
+            beforeTileUrl ? (
+              <TileLayer key={`before-gee-${beforeTileUrl}`} url={beforeTileUrl} attribution="© GEE / Copernicus S2 (avant)" />
+            ) : (
+              <TileLayer key={`before-default-${defaultBeforeUrl}`} url={defaultBeforeUrl} maxNativeZoom={16} attribution={beforeAttribution} />
+            )
           )}
 
           {/* S2 APRÈS — pane droite clippée */}
-          <MapControls splitPos={splitPos} toggles={toggles} geeAfterUrl={afterTileUrl} />
+          <MapControls
+            splitPos={splitPos}
+            toggles={toggles}
+            geeAfterUrl={afterTileUrl}
+            defaultAfterUrl={defaultAfterUrl}
+            afterAttribution={afterAttribution}
+          />
 
           {/* Couches raster */}
           {toggles.disturbance && distTileUrl && (
@@ -448,32 +501,20 @@ export function Teledetection() {
               const rect = container.getBoundingClientRect();
               document.body.classList.add('select-none');
               document.body.style.cursor = 'ew-resize';
-              let lastP = splitPos;
-
-              const applyClipAt = (p: number) => {
-                const mapInst = mapRef.current;
-                if (!mapInst) return;
-                const pane = mapInst.getPane('splitPaneRight');
-                if (!pane) return;
-                const nw = mapInst.containerPointToLayerPoint([0, 0] as any);
-                const se = mapInst.containerPointToLayerPoint(mapInst.getSize() as any);
-                const clipX = nw.x + mapInst.getSize().x * (p / 100);
-                pane.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${clipX}px)`;
-              };
-
               const onMove = (ev: MouseEvent) => {
                 let p = ((ev.clientX - rect.left) / rect.width) * 100;
                 p = Math.max(0, Math.min(p, 100));
-                lastP = p;
                 slider.style.left = `calc(${p}% - 24px)`;
-                applyClipAt(p);
+                const pane = document.querySelector('.leaflet-splitPaneRight-pane') as HTMLElement;
+                if (pane) pane.style.clipPath = `polygon(${p}% 0, 100% 0, 100% 100%, ${p}% 100%)`;
               };
-              const onUp = () => {
+              const onUp = (ev: MouseEvent) => {
                 document.body.classList.remove('select-none');
                 document.body.style.cursor = '';
                 window.removeEventListener('mousemove', onMove);
                 window.removeEventListener('mouseup', onUp);
-                setSplitPos(lastP);
+                let p = ((ev.clientX - rect.left) / rect.width) * 100;
+                setSplitPos(Math.max(0, Math.min(p, 100)));
               };
               window.addEventListener('mousemove', onMove);
               window.addEventListener('mouseup', onUp);
@@ -485,16 +526,8 @@ export function Teledetection() {
               let p = ((e.touches[0].clientX - rect.left) / rect.width) * 100;
               p = Math.max(0, Math.min(p, 100));
               e.currentTarget.style.left = `calc(${p}% - 24px)`;
-              const mapInst = mapRef.current;
-              if (mapInst) {
-                const pane = mapInst.getPane('splitPaneRight');
-                if (pane) {
-                  const nw = mapInst.containerPointToLayerPoint([0, 0] as any);
-                  const se = mapInst.containerPointToLayerPoint(mapInst.getSize() as any);
-                  const clipX = nw.x + mapInst.getSize().x * (p / 100);
-                  pane.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${clipX}px)`;
-                }
-              }
+              const pane = document.querySelector('.leaflet-splitPaneRight-pane') as HTMLElement;
+              if (pane) pane.style.clipPath = `polygon(${p}% 0, 100% 0, 100% 100%, ${p}% 100%)`;
             }}
             onTouchEnd={(e) => {
               document.body.classList.remove('select-none');
@@ -580,7 +613,9 @@ export function Teledetection() {
 
         {toggles.s2Split && (
           <div className="absolute top-2 md:top-4 right-[3.5rem] md:right-[4.5rem] bg-amber-500 text-black px-2 py-1 md:px-3 md:py-1.5 rounded-lg text-[9px] md:text-xs font-bold shadow-lg z-[500]">
-            {afterTileUrl ? 'S2 AVANT | APRÈS' : 'S2 APRÈS (TOPO)'}
+            {beforeTileUrl && afterTileUrl
+              ? 'S2 AVANT | APRÈS (analyse GEE)'
+              : `S2 ${beforeYear} | ${afterYear} (Sentinel-2 cloudless)`}
           </div>
         )}
 
