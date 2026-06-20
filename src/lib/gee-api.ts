@@ -90,8 +90,9 @@ function buildBody(p: AnalyzeParams): Record<string, unknown> {
     sensitivity: p.sensitivity ?? 0.15,
     nbr: p.nbr ?? 0.15, ndmi: p.ndmi ?? 0.12, vv: p.vv ?? 2.0,
     minScore: p.minScore ?? 2, minArea: p.minArea ?? 500,
-    useRadar: p.useRadar ?? true, useTemporal: p.useTemporal ?? true,
-    useSeasonal: p.useSeasonal ?? true, useExternal: p.useExternal ?? true,
+    // Defaut LEGER (rapide) — les preuves lourdes ne tournent que si activees via les toggles
+    useRadar: p.useRadar ?? false, useTemporal: p.useTemporal ?? false,
+    useSeasonal: p.useSeasonal ?? false, useExternal: p.useExternal ?? false,
   };
 }
 
