@@ -335,10 +335,10 @@ export function Teledetection() {
   };
 
   // ── Analyse principale ────────────────────────────────────────────────────
-  const handleAnalyze = async () => {
+  const handleAnalyze = async (highOnlyOverride?: boolean) => {
     if (geeStatus === 'error') { setErrorMsg('GEE hors-ligne — vérifier PythonAnywhere'); return; }
     setIsAnalyzing(true); setErrorMsg(null);
-    const params = buildParams();
+    const params = buildParams(highOnlyOverride);
 
     try {
       const result = await runAnalyze(params);
@@ -403,6 +403,14 @@ export function Teledetection() {
     ? polygons.filter(f => ['high', 'highest'].includes(f.properties?.confidence)) : polygons;
   const displayTop = highConfOnly
     ? topPolys.filter(f => ['high', 'highest'].includes(f.properties?.confidence)) : topPolys;
+
+  // High only : régénère le RASTER + polygones côté serveur avec minScore=3
+  // (la couche Alertes devient le résultat final filtré "haute confiance").
+  const toggleHighOnly = () => {
+    const next = !highConfOnly;
+    setHighConfOnly(next);
+    if (afterTileUrl) handleAnalyze(next);   // re-analyse seulement si une analyse existe déjà
+  };
 
   // ── Sélection de polygone SANS reconstruction de la couche (anti-flicker) ──
   const polyLayerRef = useRef<any>(null);          // référence vers la couche GeoJSON Leaflet
@@ -652,7 +660,7 @@ export function Teledetection() {
         <div className="absolute bottom-10 right-2 md:bottom-14 md:right-4 z-[500] pointer-events-auto flex flex-col gap-1.5 items-end">
           {/* High confidence only — bascule la couche Alertes vers score >= 3 uniquement */}
           {(toggles.disturbance || toggles.polygons) && polygons.length > 0 && (
-            <button onClick={() => setHighConfOnly(v => !v)} title="Afficher uniquement la haute confiance"
+            <button onClick={toggleHighOnly} title="Régénérer la couche en haute confiance uniquement"
               className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold shadow-lg backdrop-blur-md border transition-all",
                 highConfOnly ? "bg-[#7f1d1d] text-white border-red-400/40" : "bg-black/65 text-white/90 border-white/10 hover:bg-black/80")}>
               <ShieldAlert className="w-3.5 h-3.5" /> {highConfOnly ? 'Haute conf. ✓' : 'High only'}
