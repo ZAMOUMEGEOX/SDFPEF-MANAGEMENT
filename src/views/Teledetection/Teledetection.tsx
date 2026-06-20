@@ -85,6 +85,18 @@ const RangeSlider = ({ label, value, min, max, step, onChange, unit = '', format
   </div>
 );
 
+// Ligne d'opacité compacte (un simple curseur fin, sans prendre de place)
+const OpacityRow = ({ label, color, value, onChange }: any) => (
+  <div className="flex items-center gap-2">
+    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+    <span className="text-[9px] font-mono text-[var(--text-muted)] w-12 shrink-0">{label}</span>
+    <input type="range" min={0.1} max={1} step={0.05} value={value}
+      onChange={e => onChange(Number(e.target.value))}
+      className="flex-1 h-1 cursor-pointer accent-[var(--brand)]" style={{ accentColor: color }} />
+    <span className="text-[9px] font-mono text-[var(--text-main)] w-7 text-right shrink-0">{Math.round(value * 100)}%</span>
+  </div>
+);
+
 const DateInput = ({ value, onChange }: any) => (
   <div className="flex-1">
     <div className="flex items-center gap-2 bg-[var(--bg-main)] border border-[var(--border-color)] rounded-xl px-3 py-2 md:py-2.5 hover:border-[var(--brand)] hover:shadow-sm hover:bg-[var(--bg-surface)] transition-all focus-within:border-[var(--brand)] focus-within:ring-1 focus-within:ring-[var(--brand)] cursor-pointer">
@@ -195,8 +207,14 @@ export function Teledetection() {
   const [toggles, setToggles] = useState({
     s2Split: true, disturbance: true, polygons: true, foretApef: true,
     ndviDelta: false, forestWatch: false, sentinel1: false, phenology: false,
-    tripleConf: false, highConfOnly: false,
   });
+  // Triple confirmation : ON par défaut (essentiel à toute analyse rigoureuse)
+  const [tripleConf, setTripleConf] = useState(true);
+  // Filtre "Haute confiance" : rattaché à la couche Alertes (raster + polygones)
+  const [highConfOnly, setHighConfOnly] = useState(false);
+  // Opacités réglables des couches raster (gain de place, pas de cartes séparées)
+  const [opacity, setOpacity] = useState({ alertes: 0.78, ndvi: 0.72, hansen: 0.80, s1: 0.70, pheno: 0.68 });
+  const setLayerOpacity = (k: keyof typeof opacity, v: number) => setOpacity(o => ({ ...o, [k]: v }));
 
   const zones = [
     { id: 'mdiq',          label: 'DF Mdiq-Fnideq', icon: MapIcon  },
@@ -270,20 +288,18 @@ export function Teledetection() {
 
   const handleToggle = (key: keyof typeof toggles) => setToggles(prev => ({ ...prev, [key]: !prev[key] }));
 
-  const buildParams = (): AnalyzeParams => ({
+  const buildParams = (highOnly?: boolean): AnalyzeParams => ({
     zone: selectedZone, date1Start: refStart, date1End: refEnd,
     date2Start: actStart, date2End: actEnd,
     cloud: cloudMax, sensitivity: ndviThreshold, nbr: nbrThreshold, ndmi: ndmiThreshold,
-    // Haute confiance seule -> on ne garde que score >= 3 (high + highest)
-    minScore: toggles.highConfOnly ? 3 : minConfidence,
+    // Haute confiance -> on ne garde que score >= 3 (high + highest)
+    minScore: (highOnly ?? highConfOnly) ? 3 : minConfidence,
     minArea: minSurface,
-    // Preuves : "Triple confirmation" active TOUT (rigueur max, plus lent).
-    // Sinon chaque couche active sa preuve : Sentinel-1 -> radar, Phénologie -> saisonnier,
-    // Forest Watch -> externe (Hansen). L'optique tourne toujours.
-    useRadar:    toggles.tripleConf || toggles.sentinel1,
-    useTemporal: toggles.tripleConf,
-    useSeasonal: toggles.tripleConf || toggles.phenology,
-    useExternal: toggles.tripleConf || toggles.forestWatch || true, // Hansen peu coûteux -> tjs
+    // Triple confirmation -> rigueur max (optique + radar + persistance + Hansen + saisonnier)
+    useRadar:    tripleConf || toggles.sentinel1,
+    useTemporal: tripleConf,
+    useSeasonal: tripleConf || toggles.phenology,
+    useExternal: true, // Hansen peu coûteux -> toujours actif
   });
 
   const resetParams = () => {
@@ -359,10 +375,19 @@ export function Teledetection() {
 
   // ── Exports (vrais polygones, côté backend) ───────────────────────────────
   const guard = () => { if (!polygons.length) { setErrorMsg('Lancer une analyse d\'abord.'); return false; } return true; };
-  const handleExportGeoJson = async () => { if (!guard()) return; try { await exportPolygonsGeoJson(buildParams()); } catch (e: any) { setErrorMsg(e.message); } };
-  const handleExportKml     = async () => { if (!guard()) return; try { await exportPolygonsKml(buildParams()); } catch (e: any) { setErrorMsg(e.message); } };
-  const handleExportShp     = async () => { if (!guard()) return; try { await exportPolygonsShp(buildParams()); } catch (e: any) { setErrorMsg(e.message); } };
-  const handleExportCsv     = () => { if (!guard()) return; exportPolygonsCsv(polygons, selectedZone); };
+  // Exports — normaux (selon le filtre courant) ET "haute confiance uniquement"
+  const handleExportGeoJson = async (highOnly = false) => { if (!guard()) return; try { await exportPolygonsGeoJson(buildParams(highOnly)); } catch (e: any) { setErrorMsg(e.message); } };
+  const handleExportKml     = async (highOnly = false) => { if (!guard()) return; try { await exportPolygonsKml(buildParams(highOnly)); } catch (e: any) { setErrorMsg(e.message); } };
+  const handleExportShp     = async (highOnly = false) => { if (!guard()) return; try { await exportPolygonsShp(buildParams(highOnly)); } catch (e: any) { setErrorMsg(e.message); } };
+  const handleExportCsv     = (highOnly = false) => { if (!guard()) return;
+    const feats = highOnly ? polygons.filter(f => ['high','highest'].includes(f.properties?.confidence)) : polygons;
+    exportPolygonsCsv(feats, highOnly ? `${selectedZone}_HC` : selectedZone); };
+
+  // Polygones réellement affichés (respecte "Haute confiance")
+  const displayPolygons = highConfOnly
+    ? polygons.filter(f => ['high', 'highest'].includes(f.properties?.confidence)) : polygons;
+  const displayTop = highConfOnly
+    ? topPolys.filter(f => ['high', 'highest'].includes(f.properties?.confidence)) : topPolys;
 
   // ── Zoom vers un polygone ─────────────────────────────────────────────────
   const flyToPolygon = (f: PolygonFeature) => {
@@ -442,22 +467,22 @@ export function Teledetection() {
 
           {/* Couches raster */}
           {toggles.disturbance && distTileUrl && (
-            <TileLayer key={distTileUrl} url={distTileUrl} opacity={0.75} attribution="GEE Confiance" />
+            <TileLayer key={distTileUrl} url={distTileUrl} opacity={opacity.alertes} attribution="GEE Confiance" />
           )}
           {toggles.ndviDelta && ndviTileUrl && (
-            <TileLayer key={ndviTileUrl} url={ndviTileUrl} opacity={0.72} attribution="GEE NDVI Δ" />
+            <TileLayer key={ndviTileUrl} url={ndviTileUrl} opacity={opacity.ndvi} attribution="GEE NDVI Δ" />
           )}
           {toggles.forestWatch && hansenTileUrl && (
-            <TileLayer key={hansenTileUrl} url={hansenTileUrl} opacity={0.80} attribution="UMD Hansen GFC" />
+            <TileLayer key={hansenTileUrl} url={hansenTileUrl} opacity={opacity.hansen} attribution="UMD Hansen GFC" />
           )}
           {toggles.forestWatch && distAlertTileUrl && (
-            <TileLayer key={distAlertTileUrl} url={distAlertTileUrl} opacity={0.80} attribution="OPERA DIST-ALERT" />
+            <TileLayer key={distAlertTileUrl} url={distAlertTileUrl} opacity={opacity.hansen} attribution="OPERA DIST-ALERT" />
           )}
           {toggles.sentinel1 && s1TileUrl && (
-            <TileLayer key={s1TileUrl} url={s1TileUrl} opacity={0.70} attribution="GEE Sentinel-1 SAR" />
+            <TileLayer key={s1TileUrl} url={s1TileUrl} opacity={opacity.s1} attribution="GEE Sentinel-1 SAR" />
           )}
           {toggles.phenology && phenologyTileUrl && (
-            <TileLayer key={phenologyTileUrl} url={phenologyTileUrl} opacity={0.68} attribution="GEE Phénologie" />
+            <TileLayer key={phenologyTileUrl} url={phenologyTileUrl} opacity={opacity.pheno} attribution="GEE Phénologie" />
           )}
           {toggles.foretApef && forestBoundary && (
             <GeoJSON key="forest-boundary" data={forestBoundary}
@@ -471,10 +496,10 @@ export function Teledetection() {
           )}
 
           {/* POLYGONES de perturbation (vecteurs réels) */}
-          {toggles.polygons && polygons.length > 0 && (
+          {toggles.polygons && displayPolygons.length > 0 && (
             <GeoJSON
-              key={`polys-${selectedZone}-${polygons.length}-${selectedPolyId ?? 0}`}
-              data={{ type: 'FeatureCollection', features: polygons } as any}
+              key={`polys-${selectedZone}-${displayPolygons.length}-${highConfOnly}-${selectedPolyId ?? 0}`}
+              data={{ type: 'FeatureCollection', features: displayPolygons } as any}
               style={polyStyle}
               onEachFeature={onEachPoly}
             />
@@ -745,30 +770,49 @@ export function Teledetection() {
                   <div className="flex items-center gap-2"><Anchor className="w-4 h-4 group-hover:text-[var(--brand)] transition-colors" /> Algorithmes</div>
                   <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isAlgorithmExpanded ? 'rotate-180' : ''}`} />
                 </button>
-                <div className={`transition-all duration-300 origin-top overflow-hidden ${isAlgorithmExpanded ? 'max-h-[900px] opacity-100' : 'max-h-0 opacity-0'}`}>
-                  <div className="grid grid-cols-2 gap-1.5 mt-1">
+                <div className={`transition-all duration-300 origin-top overflow-hidden ${isAlgorithmExpanded ? 'max-h-[1400px] opacity-100' : 'max-h-0 opacity-0'}`}>
+                  {/* Barre Triple confirmation — compacte, activée par défaut */}
+                  <div className={cn("flex items-center justify-between gap-2 p-2.5 rounded-xl border-2 mt-1 mb-2 transition-all",
+                    tripleConf ? "border-green-500/70 bg-green-500/10" : "border-[var(--border-color)] bg-[var(--bg-main)]")}>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <CheckCircle2 className={cn("w-4 h-4 shrink-0", tripleConf ? "text-green-500" : "text-[var(--text-muted)]")} />
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-bold text-[var(--text-main)] leading-tight">Triple confirmation</p>
+                        <p className="text-[8px] text-[var(--text-muted)] font-mono truncate">optique + radar + persistance + Hansen</p>
+                      </div>
+                    </div>
+                    <button onClick={() => setTripleConf(v => !v)}
+                      className={cn("w-11 h-6 rounded-full relative transition-colors shrink-0", tripleConf ? "bg-green-500" : "bg-black/20 dark:bg-white/20")}>
+                      <div className={cn("absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform shadow-sm", tripleConf ? "translate-x-5" : "translate-x-0")} />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5">
                     <ToggleCard label="S2 Split"     icon={SplitSquareHorizontal} checked={toggles.s2Split}     onChange={() => handleToggle('s2Split')}     activeColor="#3b82f6" />
-                    <ToggleCard label="Alertes (raster)" icon={FileWarning}       checked={toggles.disturbance} onChange={() => handleToggle('disturbance')} activeColor="#eab308" />
+                    <ToggleCard label="Alertes"      icon={FileWarning}           checked={toggles.disturbance} onChange={() => handleToggle('disturbance')} activeColor="#eab308" />
                     <ToggleCard label="Polygones"    icon={ShieldAlert}           checked={toggles.polygons}    onChange={() => handleToggle('polygons')}    activeColor="#ef4444" />
                     <ToggleCard label="NDVI Δ"       icon={CloudRain}             checked={toggles.ndviDelta}   onChange={() => handleToggle('ndviDelta')}   activeColor="#10b981" />
-                    <ToggleCard label="Triple confirm." icon={CheckCircle2}       checked={toggles.tripleConf}  onChange={() => handleToggle('tripleConf')}  activeColor="#16a34a" />
-                    <ToggleCard label="Haute conf."  icon={ShieldAlert}           checked={toggles.highConfOnly} onChange={() => handleToggle('highConfOnly')} activeColor="#7f1d1d" />
                     <ToggleCard label="Forêt ANEF"   icon={TreePine}              checked={toggles.foretApef}   onChange={() => handleToggle('foretApef')}   activeColor="#14b8a6" />
                     <ToggleCard label="Forest Watch" icon={Globe}                 checked={toggles.forestWatch} onChange={() => handleToggle('forestWatch')} activeColor="#d946ef" />
                     <ToggleCard label="Sentinel-1"   icon={Waves}                 checked={toggles.sentinel1}   onChange={() => handleToggle('sentinel1')}   activeColor="#8b5cf6" />
                     <ToggleCard label="Phénologie"   icon={TrendingUp}            checked={toggles.phenology}   onChange={() => handleToggle('phenology')}   activeColor="#f59e0b" />
                   </div>
-                  {toggles.tripleConf && (
-                    <p className="mt-2 text-[9px] text-green-400 font-mono leading-relaxed px-1">
-                      ✅ Rigueur max : optique + radar + persistance + Hansen + saisonnier. <b>Plus lent</b> (~1–2 min de plus).
-                    </p>
+
+                  {/* Opacités fines des couches actives (pas de cartes séparées) */}
+                  {(toggles.disturbance || toggles.ndviDelta || toggles.forestWatch || toggles.sentinel1 || toggles.phenology) && (
+                    <div className="mt-2 bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)] space-y-2">
+                      <p className="text-[8px] font-bold uppercase tracking-widest text-[var(--text-muted)]">Opacité des couches</p>
+                      {toggles.disturbance && <OpacityRow label="Alertes" color="#eab308" value={opacity.alertes} onChange={(v:number)=>setLayerOpacity('alertes',v)} />}
+                      {toggles.ndviDelta   && <OpacityRow label="NDVI Δ"  color="#10b981" value={opacity.ndvi}    onChange={(v:number)=>setLayerOpacity('ndvi',v)} />}
+                      {toggles.forestWatch && <OpacityRow label="Hansen"  color="#d946ef" value={opacity.hansen}  onChange={(v:number)=>setLayerOpacity('hansen',v)} />}
+                      {toggles.sentinel1   && <OpacityRow label="SAR S1"  color="#8b5cf6" value={opacity.s1}      onChange={(v:number)=>setLayerOpacity('s1',v)} />}
+                      {toggles.phenology   && <OpacityRow label="Phéno."  color="#f59e0b" value={opacity.pheno}   onChange={(v:number)=>setLayerOpacity('pheno',v)} />}
+                    </div>
                   )}
-                  {toggles.highConfOnly && (
-                    <p className="mt-1 text-[9px] text-red-400 font-mono leading-relaxed px-1">🔴 N'affiche que High + Très haute (score ≥ 3).</p>
-                  )}
+
                   {toggles.forestWatch && (
                     <p className="mt-2 text-[9px] text-fuchsia-400 font-mono leading-relaxed px-1">
-                      🌍 Hansen GFC v1.13 (global, couvre Tétouan). DIST-ALERT global = via asset configuré côté serveur.
+                      🌍 Hansen GFC v1.13 (global, couvre Tétouan). DIST-ALERT = via asset configuré côté serveur.
                     </p>
                   )}
                   {toggles.sentinel1 && (
@@ -779,6 +823,47 @@ export function Teledetection() {
                   )}
                 </div>
               </section>
+
+              {/* Contrôle de la couche Alertes — filtre Haute confiance intégré */}
+              {(toggles.disturbance || toggles.polygons) && (
+                <section className="border-b border-stone-200/50 dark:border-stone-800/50 pb-3 mb-3">
+                  <div className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 flex items-center gap-2">
+                    <FileWarning className="w-4 h-4 text-amber-500" /> Couche Alertes
+                  </div>
+                  <div className="bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)] space-y-2.5">
+                    {/* Sélecteur Tous / Haute confiance — segmenté, pro */}
+                    <div className="flex items-center bg-[var(--bg-surface)] rounded-lg p-0.5 border border-[var(--border-color)]">
+                      <button onClick={() => setHighConfOnly(false)}
+                        className={cn("flex-1 text-[10px] font-bold py-1.5 rounded-md transition-all",
+                          !highConfOnly ? "bg-[var(--brand)] text-[var(--bg-main)] shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
+                        Toutes les alertes
+                      </button>
+                      <button onClick={() => setHighConfOnly(true)}
+                        className={cn("flex-1 text-[10px] font-bold py-1.5 rounded-md transition-all flex items-center justify-center gap-1",
+                          highConfOnly ? "bg-[#7f1d1d] text-white shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
+                        <ShieldAlert className="w-3 h-3" /> Haute confiance
+                      </button>
+                    </div>
+                    <p className="text-[9px] text-[var(--text-muted)] font-mono leading-relaxed">
+                      {highConfOnly
+                        ? '🔴 Affiche uniquement High + Très haute (score ≥ 3).'
+                        : '🟡 Affiche tous les changements selon les paramètres réglés.'}
+                    </p>
+                    {/* Répartition rapide par niveau */}
+                    {realStats && (
+                      <div className="flex items-center gap-1 text-center pt-0.5">
+                        {[['#eab308', realStats.low_ha], ['#f97316', realStats.medium_ha], ['#ef4444', realStats.high_ha], ['#7f1d1d', realStats.highest_ha]].map(([c, v], i) => (
+                          <div key={i} className="flex-1 rounded p-1 bg-[var(--bg-surface)] border border-[var(--border-color)]">
+                            <div className="w-full h-1 rounded-full mb-1" style={{ backgroundColor: c as string }} />
+                            <p className="text-[9px] font-bold text-[var(--text-main)]">{Number(v ?? 0).toFixed(1)}</p>
+                            <p className="text-[7px] text-[var(--text-muted)]">ha</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
 
               {/* Sensibilités */}
               <section className="border-b border-stone-200/50 dark:border-stone-800/50 pb-3 mb-3">
@@ -860,13 +945,13 @@ export function Teledetection() {
               {/* TOP — polygones les plus dangereux */}
               <section className="border-b border-stone-200/50 dark:border-stone-800/50 pb-3 mb-3">
                 <button onClick={() => setIsTopExpanded(!isTopExpanded)} className="w-full text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 flex items-center justify-between group hover:text-[var(--text-main)] transition-colors">
-                  <div className="flex items-center gap-2"><ShieldAlert className="w-4 h-4 group-hover:text-red-500 transition-colors" /> Top alertes ({topPolys.length})</div>
+                  <div className="flex items-center gap-2"><ShieldAlert className="w-4 h-4 group-hover:text-red-500 transition-colors" /> Top alertes ({displayTop.length})</div>
                   <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isTopExpanded ? 'rotate-180' : ''}`} />
                 </button>
                 <div className={`transition-all duration-300 origin-top overflow-hidden ${isTopExpanded ? 'max-h-[420px] opacity-100' : 'max-h-0 opacity-0'}`}>
                   <div className="bg-[var(--bg-main)] p-1.5 rounded-lg border border-[var(--border-color)] mt-1 space-y-1 max-h-[360px] overflow-y-auto no-scrollbar">
-                    {topPolys.length === 0 && (<p className="text-[10px] text-[var(--text-muted)] text-center py-3">Lancer une analyse pour voir les alertes prioritaires.</p>)}
-                    {topPolys.map((f) => {
+                    {displayTop.length === 0 && (<p className="text-[10px] text-[var(--text-muted)] text-center py-3">Lancer une analyse pour voir les alertes prioritaires.</p>)}
+                    {displayTop.map((f) => {
                       const p = f.properties; const c = CONF_COLOR[p.confidence] ?? '#eab308';
                       return (
                         <button key={p.id} onClick={() => flyToPolygon(f)}
@@ -947,25 +1032,47 @@ export function Teledetection() {
                   <div className="flex items-center gap-2"><DownloadCloud className="w-4 h-4 group-hover:text-[var(--brand)] transition-colors" /> Exporter (polygones)</div>
                   <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isExportExpanded ? 'rotate-180' : ''}`} />
                 </button>
-                <div className={`transition-all duration-300 origin-top overflow-hidden ${isExportExpanded ? 'max-h-[500px] opacity-100' : 'max-h-0 opacity-0'}`}>
-                  <div className="mt-1">
-                    <div className="bg-[var(--bg-main)] p-1.5 rounded-lg border border-[var(--border-color)] space-y-1">
-                      <button onClick={handleExportGeoJson} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-[var(--brand)] hover:text-[var(--brand)] hover:shadow-sm transition-all group">
-                        <div className="flex items-center gap-2 text-xs font-medium"><MapIcon className="w-3.5 h-3.5 text-blue-500" /> GeoJSON (.geojson)</div>
-                        <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
-                      </button>
-                      <button onClick={handleExportKml} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-[var(--brand)] hover:text-[var(--brand)] hover:shadow-sm transition-all group">
-                        <div className="flex items-center gap-2 text-xs font-medium"><MapPin className="w-3.5 h-3.5 text-green-500" /> KML (.kml)</div>
-                        <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
-                      </button>
-                      <button onClick={handleExportShp} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-[var(--brand)] hover:text-[var(--brand)] hover:shadow-sm transition-all group">
-                        <div className="flex items-center gap-2 text-xs font-medium"><Layers className="w-3.5 h-3.5 text-purple-500" /> Shapefile (.zip)</div>
-                        <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
-                      </button>
-                      <button onClick={handleExportCsv} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-[var(--brand)] hover:text-[var(--brand)] hover:shadow-sm transition-all group">
-                        <div className="flex items-center gap-2 text-xs font-medium"><FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" /> CSV (.csv)</div>
-                        <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
-                      </button>
+                <div className={`transition-all duration-300 origin-top overflow-hidden ${isExportExpanded ? 'max-h-[900px] opacity-100' : 'max-h-0 opacity-0'}`}>
+                  <div className="mt-1 space-y-2">
+                    {/* Toutes les alertes */}
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-amber-500 mb-1 px-1">🟡 Toutes les alertes</p>
+                      <div className="bg-[var(--bg-main)] p-1.5 rounded-lg border border-[var(--border-color)] space-y-1">
+                        <button onClick={() => handleExportGeoJson(false)} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-[var(--brand)] hover:text-[var(--brand)] hover:shadow-sm transition-all group">
+                          <div className="flex items-center gap-2 text-xs font-medium"><MapIcon className="w-3.5 h-3.5 text-blue-500" /> GeoJSON (.geojson)</div>
+                          <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </button>
+                        <button onClick={() => handleExportKml(false)} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-[var(--brand)] hover:text-[var(--brand)] hover:shadow-sm transition-all group">
+                          <div className="flex items-center gap-2 text-xs font-medium"><MapPin className="w-3.5 h-3.5 text-green-500" /> KML (.kml)</div>
+                          <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </button>
+                        <button onClick={() => handleExportShp(false)} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-[var(--brand)] hover:text-[var(--brand)] hover:shadow-sm transition-all group">
+                          <div className="flex items-center gap-2 text-xs font-medium"><Layers className="w-3.5 h-3.5 text-purple-500" /> Shapefile (.zip)</div>
+                          <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </button>
+                        <button onClick={() => handleExportCsv(false)} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-[var(--brand)] hover:text-[var(--brand)] hover:shadow-sm transition-all group">
+                          <div className="flex items-center gap-2 text-xs font-medium"><FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" /> CSV (.csv)</div>
+                          <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </button>
+                      </div>
+                    </div>
+                    {/* Haute confiance uniquement */}
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-red-500 mb-1 px-1 flex items-center gap-1"><ShieldAlert className="w-3 h-3" /> Haute confiance uniquement</p>
+                      <div className="bg-red-950/20 p-1.5 rounded-lg border border-red-900/40 space-y-1">
+                        <button onClick={() => handleExportGeoJson(true)} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-red-500 hover:text-red-400 hover:shadow-sm transition-all group">
+                          <div className="flex items-center gap-2 text-xs font-medium"><MapIcon className="w-3.5 h-3.5 text-red-500" /> GeoJSON — HC</div>
+                          <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </button>
+                        <button onClick={() => handleExportShp(true)} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-red-500 hover:text-red-400 hover:shadow-sm transition-all group">
+                          <div className="flex items-center gap-2 text-xs font-medium"><Layers className="w-3.5 h-3.5 text-red-500" /> Shapefile — HC</div>
+                          <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </button>
+                        <button onClick={() => handleExportCsv(true)} className="w-full flex justify-between items-center bg-[var(--bg-surface)] border border-transparent p-2 rounded hover:border-red-500 hover:text-red-400 hover:shadow-sm transition-all group">
+                          <div className="flex items-center gap-2 text-xs font-medium"><FileSpreadsheet className="w-3.5 h-3.5 text-red-500" /> CSV — HC</div>
+                          <Download className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
