@@ -134,6 +134,31 @@ function MapRefSetter({ onReady }: { onReady: (m: L.Map) => void }) {
   return null;
 }
 
+// Ordre d'affichage STRICT des couches via des panes dédiés (z-index croissant).
+// Du bas vers le haut : S2 (fond) < NDVI/Hansen/SAR < Alertes (raster) < Polygones < Limites.
+// Ainsi le Sentinel-2 ne recouvre JAMAIS les changements ni les polygones.
+function LayerPanes() {
+  const map = useMap();
+  useEffect(() => {
+    const defs: [string, number][] = [
+      ['paneS2', 210],        // images Sentinel-2 (avant) — juste au-dessus du fond
+      ['paneIndices', 360],   // NDVI Δ / Hansen / SAR / Phéno — sous les alertes
+      ['paneAlertes', 410],   // raster de confiance (changements)
+      ['paneMultiscene', 415],
+      ['panePolygons', 440],  // polygones vectoriels — au-dessus des alertes
+      ['paneLimits', 480],    // limites ANEF / zone
+    ];
+    defs.forEach(([name, z]) => {
+      let p = map.getPane(name);
+      if (!p) p = map.createPane(name);
+      p.style.zIndex = String(z);
+      // les panes raster ne doivent pas capter les clics destinés aux polygones
+      if (name !== 'panePolygons' && name !== 'paneLimits') p.style.pointerEvents = 'none';
+    });
+  }, [map]);
+  return null;
+}
+
 // Pane droite (clip) = S2 APRÈS ; le S2 AVANT est une couche pleine en dessous
 function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
   const map = useMap();
@@ -262,6 +287,7 @@ export function Teledetection() {
   const [isPhenologyExpanded, setIsPhenologyExpanded] = useState(false);
 
   const mapRef = useRef<L.Map|null>(null);
+  const polyRendererRef = useRef<any>(null);   // renderer canvas dédié aux polygones
 
   useEffect(() => {
     checkGeeHealth().then(d => setGeeStatus(d?.gee ? 'ready' : 'error')).catch(() => setGeeStatus('error'));
@@ -488,10 +514,18 @@ export function Teledetection() {
       <div className="relative h-[35vh] md:h-full md:flex-1 bg-[#121214] border-b md:border-b-0 md:border-r border-[var(--border-color)] shrink-0 z-10 md:shrink overflow-hidden">
 
         <MapContainer center={[35.5785, -5.3684]} zoom={11}
-          preferCanvas={true} zoomControl={false} zoomAnimation={true}
+          zoomControl={false} zoomAnimation={true}
           style={{ height: '100%', width: '100%' }}>
 
-          <MapRefSetter onReady={(m) => { mapRef.current = m; setMapReady(true); }} />
+          <MapRefSetter onReady={(m) => {
+            mapRef.current = m; setMapReady(true);
+            // renderer canvas dédié, rattaché au pane des polygones (perf + ordre correct)
+            setTimeout(() => {
+              if (!polyRendererRef.current && m.getPane('panePolygons')) {
+                polyRendererRef.current = L.canvas({ pane: 'panePolygons', padding: 0.5 });
+              }
+            }, 0);
+          }} />
 
           <LayersControl position="topright">
             <LayersControl.BaseLayer checked name="Hybride + Satellite">
@@ -502,56 +536,62 @@ export function Teledetection() {
             </LayersControl.BaseLayer>
           </LayersControl>
 
+          <LayerPanes />
+
           <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" keepBuffer={6} updateWhenZooming={false} updateWhenIdle={true} />
 
           <FeatureGroup>
             <EditControl position="topleft" draw={{ rectangle: true, polygon: true, circle: false, circlemarker: false, marker: false, polyline: false }} />
           </FeatureGroup>
 
-          {/* S2 AVANT — couche pleine (côté gauche du slider) — FIX swipe */}
+          {/* S2 AVANT — pane S2 (sous tout le reste, ne recouvre rien) */}
           {toggles.s2Split && beforeTileUrl && (
-            <TileLayer key={`before-${beforeTileUrl}`} url={beforeTileUrl} {...TILE_PERF} attribution="© GEE / Copernicus S2 (avant)" />
+            <TileLayer key={`before-${beforeTileUrl}`} url={beforeTileUrl} pane="paneS2" {...TILE_PERF} attribution="© GEE / Copernicus S2 (avant)" />
           )}
 
           {/* S2 APRÈS — pane droite clippée */}
           <MapControls splitPos={splitPos} toggles={toggles} geeAfterUrl={afterTileUrl} />
 
-          {/* Couches raster */}
-          {toggles.disturbance && distTileUrl && (
-            <TileLayer key={distTileUrl} url={distTileUrl} opacity={opacity.alertes} {...TILE_PERF} attribution="GEE Confiance" />
-          )}
+          {/* Indices (NDVI/Hansen/SAR/Phéno) — pane indices, SOUS les alertes */}
           {toggles.ndviDelta && ndviTileUrl && (
-            <TileLayer key={ndviTileUrl} url={ndviTileUrl} opacity={opacity.ndvi} {...TILE_PERF} attribution="GEE NDVI Δ" />
+            <TileLayer key={ndviTileUrl} url={ndviTileUrl} pane="paneIndices" opacity={opacity.ndvi} {...TILE_PERF} attribution="GEE NDVI Δ" />
           )}
           {toggles.forestWatch && hansenTileUrl && (
-            <TileLayer key={hansenTileUrl} url={hansenTileUrl} opacity={opacity.hansen} {...TILE_PERF} attribution="UMD Hansen GFC" />
+            <TileLayer key={hansenTileUrl} url={hansenTileUrl} pane="paneIndices" opacity={opacity.hansen} {...TILE_PERF} attribution="UMD Hansen GFC" />
           )}
           {toggles.forestWatch && distAlertTileUrl && (
-            <TileLayer key={distAlertTileUrl} url={distAlertTileUrl} opacity={opacity.hansen} {...TILE_PERF} attribution="OPERA DIST-ALERT" />
+            <TileLayer key={distAlertTileUrl} url={distAlertTileUrl} pane="paneIndices" opacity={opacity.hansen} {...TILE_PERF} attribution="OPERA DIST-ALERT" />
           )}
           {toggles.sentinel1 && s1TileUrl && (
-            <TileLayer key={s1TileUrl} url={s1TileUrl} opacity={opacity.s1} {...TILE_PERF} attribution="GEE Sentinel-1 SAR" />
+            <TileLayer key={s1TileUrl} url={s1TileUrl} pane="paneIndices" opacity={opacity.s1} {...TILE_PERF} attribution="GEE Sentinel-1 SAR" />
           )}
           {toggles.phenology && phenologyTileUrl && (
-            <TileLayer key={phenologyTileUrl} url={phenologyTileUrl} opacity={opacity.pheno} {...TILE_PERF} attribution="GEE Phénologie" />
+            <TileLayer key={phenologyTileUrl} url={phenologyTileUrl} pane="paneIndices" opacity={opacity.pheno} {...TILE_PERF} attribution="GEE Phénologie" />
+          )}
+
+          {/* ALERTES (raster de confiance) — pane alertes, AU-DESSUS des indices */}
+          {toggles.disturbance && distTileUrl && (
+            <TileLayer key={distTileUrl} url={distTileUrl} pane="paneAlertes" opacity={opacity.alertes} {...TILE_PERF} attribution="GEE Confiance" />
           )}
           {multiScene && multisceneTileUrl && (
-            <TileLayer key={multisceneTileUrl} url={multisceneTileUrl} opacity={opacity.multiscene} {...TILE_PERF} attribution="GEE Multi-scène S2" />
+            <TileLayer key={multisceneTileUrl} url={multisceneTileUrl} pane="paneMultiscene" opacity={opacity.multiscene} {...TILE_PERF} attribution="GEE Multi-scène S2" />
           )}
+
+          {/* Limites — pane limits (au-dessus, cliquable) */}
           {showAnefLimit && forestBoundary && (
-            <GeoJSON key="forest-boundary" data={forestBoundary}
-              style={() => ({ color: '#34d399', weight: 2, dashArray: '8 5', fillColor: '#34d399', fillOpacity: 0.05 })} />
+            <GeoJSON key="forest-boundary" pane="paneLimits" data={forestBoundary}
+              style={() => ({ color: '#34d399', weight: 2, dashArray: '8 5', fill: false })} />
           )}
-
-          {/* Limite du domaine de la zone sélectionnée — toujours visible */}
           {zoneBoundary && (
-            <GeoJSON key={`zone-${selectedZone}`} data={zoneBoundary}
-              style={() => ({ color: '#fbbf24', weight: 2.5, fillColor: '#fbbf24', fillOpacity: 0.04 })} />
+            <GeoJSON key={`zone-${selectedZone}`} pane="paneLimits" data={zoneBoundary}
+              style={() => ({ color: '#fbbf24', weight: 2.5, fill: false })} />
           )}
 
-          {/* POLYGONES de perturbation (vecteurs réels) — rendu canvas, pas de rebuild à la sélection */}
+          {/* POLYGONES de perturbation — pane polygons, AU-DESSUS des alertes (cliquables) */}
           {toggles.polygons && displayPolygons.length > 0 && (
             <GeoJSON
+              pane="panePolygons"
+              {...(polyRendererRef.current ? { renderer: polyRendererRef.current } : {})}
               key={`polys-${selectedZone}-${displayPolygons.length}-${highConfOnly}`}
               ref={(r: any) => { polyLayerRef.current = r; }}
               data={{ type: 'FeatureCollection', features: displayPolygons } as any}
