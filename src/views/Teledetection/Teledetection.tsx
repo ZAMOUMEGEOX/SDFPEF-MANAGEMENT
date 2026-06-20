@@ -113,57 +113,55 @@ function MapRefSetter({ onReady }: { onReady: (m: L.Map) => void }) {
   return null;
 }
 
-// Pane gauche = S2 AVANT (couche pleine, toujours sous la pane droite)
-// Pane droite (clip) = S2 APRÈS — FIX : panes dédiées + z-index fixes => empilement
-// déterministe (avant ne dépend plus de l'ordre de montage React vs le fond ArcGIS)
-function MapControls({ splitPos, toggles, geeBeforeUrl, geeAfterUrl }: any) {
+// Pane droite (clip) = S2 APRÈS ; le S2 AVANT est une couche pleine en dessous
+function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
   const map = useMap();
-  const [paneCreated, setPaneCreated] = useState(false);
+  const [paneReady, setPaneReady] = useState(false);
 
+  // Créer le pane une seule fois — z=250 (entre tilePane=200 et overlayPane=400)
   useEffect(() => {
-    if (!map.getPane('splitPaneLeft')) {
-      const paneL = map.createPane('splitPaneLeft');
-      paneL.style.zIndex = '440'; // au-dessus du fond ArcGIS (200), sous la pane droite
-    }
     if (!map.getPane('splitPaneRight')) {
-      const paneR = map.createPane('splitPaneRight');
-      paneR.style.zIndex = '450';
+      const pane = map.createPane('splitPaneRight');
+      pane.style.zIndex = '250';
     }
-    setPaneCreated(true);
+    setPaneReady(true);
   }, [map]);
 
+  // Appliquer le clip rect avec les vraies coordonnées Leaflet (containerPoint → layerPoint)
+  // Cela reste précis même après pan/zoom
   useEffect(() => {
-    const paneL = map.getPane('splitPaneLeft');
-    const paneR = map.getPane('splitPaneRight');
-    if (toggles.s2Split) {
-      if (paneR) {
-        const clip = `polygon(${splitPos}% 0, 100% 0, 100% 100%, ${splitPos}% 100%)`;
-        paneR.style.clipPath = clip;
-        (paneR.style as any).webkitClipPath = clip; // compat Safari/iOS
-        paneR.style.display = 'block';
+    if (!paneReady) return;
+    const pane = map.getPane('splitPaneRight');
+    if (!pane) return;
+
+    const applyClip = () => {
+      if (!toggles.s2Split) {
+        pane.style.display = 'none';
+        return;
       }
-      if (paneL) paneL.style.display = 'block';
-    } else {
-      if (paneR) paneR.style.display = 'none';
-      if (paneL) paneL.style.display = 'none';
-    }
-  }, [splitPos, toggles.s2Split, map, geeAfterUrl, geeBeforeUrl]);
+      pane.style.display = 'block';
+      const nw = map.containerPointToLayerPoint([0, 0] as any);
+      const se = map.containerPointToLayerPoint(map.getSize() as any);
+      const clipX = nw.x + map.getSize().x * (splitPos / 100);
+      // clip: rect(top, right, bottom, left) en coordonnées layer
+      pane.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${clipX}px)`;
+    };
 
-  if (!paneCreated || !toggles.s2Split) return null;
+    applyClip();
+    map.on('move', applyClip);
+    map.on('zoomend', applyClip);
+    return () => {
+      map.off('move', applyClip);
+      map.off('zoomend', applyClip);
+    };
+  }, [splitPos, toggles.s2Split, paneReady, map, geeAfterUrl]);
 
-  return (
-    <>
-      {/* S2 AVANT — image de référence (gauche) */}
-      {geeBeforeUrl && (
-        <TileLayer key={`before-${geeBeforeUrl}`} url={geeBeforeUrl} pane="splitPaneLeft" attribution="© GEE / Copernicus S2 (avant)" />
-      )}
-      {/* S2 APRÈS — image récente (droite, clippée). Si elle n'est pas encore prête,
-          on ne met AUCUN calque ici : le côté droit affichera alors l'image AVANT
-          (au lieu d'une fausse couche topo) jusqu'à ce que l'image récente arrive. */}
-      {geeAfterUrl && (
-        <TileLayer key={`after-${geeAfterUrl}`} url={geeAfterUrl} pane="splitPaneRight" attribution="© GEE / Copernicus S2 (après)" />
-      )}
-    </>
+  if (!paneReady || !toggles.s2Split) return null;
+
+  return geeAfterUrl ? (
+    <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" attribution="© GEE / Copernicus S2 (après)" />
+  ) : (
+    <TileLayer key="split-topo-fallback" url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}" pane="splitPaneRight" className="sepia-[.3] contrast-125" />
   );
 }
 
@@ -240,10 +238,6 @@ export function Teledetection() {
     setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null);
     setPolygons([]); setTopPolys([]); setSelectedPolyId(null);
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
-    // FIX : on charge automatiquement les images S2 avant/après pour la zone
-    // (sans attendre un clic sur "Lancer l'analyse"), sinon le côté droit du
-    // split reste vide tant que l'utilisateur n'a pas cliqué manuellement.
-    handleAnalyze();
   }, [selectedZone]);
 
   useEffect(() => { if (phenologyData) setIsPhenologyExpanded(true); }, [phenologyData]);
@@ -396,9 +390,13 @@ export function Teledetection() {
             <EditControl position="topleft" draw={{ rectangle: true, polygon: true, circle: false, circlemarker: false, marker: false, polyline: false }} />
           </FeatureGroup>
 
-          {/* S2 AVANT/APRÈS — gérées ensemble (panes dédiées + clip) pour un
-              empilement fiable, quel que soit l'ordre de montage React */}
-          <MapControls splitPos={splitPos} toggles={toggles} geeBeforeUrl={beforeTileUrl} geeAfterUrl={afterTileUrl} />
+          {/* S2 AVANT — couche pleine (côté gauche du slider) — FIX swipe */}
+          {toggles.s2Split && beforeTileUrl && (
+            <TileLayer key={`before-${beforeTileUrl}`} url={beforeTileUrl} attribution="© GEE / Copernicus S2 (avant)" />
+          )}
+
+          {/* S2 APRÈS — pane droite clippée */}
+          <MapControls splitPos={splitPos} toggles={toggles} geeAfterUrl={afterTileUrl} />
 
           {/* Couches raster */}
           {toggles.disturbance && distTileUrl && (
@@ -441,7 +439,7 @@ export function Teledetection() {
         {toggles.s2Split && (
           <div id="split-slider-container"
             className="absolute top-0 bottom-0 w-12 cursor-ew-resize z-[500] flex items-center justify-center group pointer-events-auto"
-            style={{ left: `calc(${splitPos}% - 24px)`, touchAction: 'none' }}
+            style={{ left: `calc(${splitPos}% - 24px)` }}
             onMouseDown={(e) => {
               e.preventDefault();
               const slider = e.currentTarget;
@@ -450,52 +448,56 @@ export function Teledetection() {
               const rect = container.getBoundingClientRect();
               document.body.classList.add('select-none');
               document.body.style.cursor = 'ew-resize';
-              mapRef.current?.dragging.disable();
+              let lastP = splitPos;
+
+              const applyClipAt = (p: number) => {
+                const mapInst = mapRef.current;
+                if (!mapInst) return;
+                const pane = mapInst.getPane('splitPaneRight');
+                if (!pane) return;
+                const nw = mapInst.containerPointToLayerPoint([0, 0] as any);
+                const se = mapInst.containerPointToLayerPoint(mapInst.getSize() as any);
+                const clipX = nw.x + mapInst.getSize().x * (p / 100);
+                pane.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${clipX}px)`;
+              };
+
               const onMove = (ev: MouseEvent) => {
                 let p = ((ev.clientX - rect.left) / rect.width) * 100;
                 p = Math.max(0, Math.min(p, 100));
+                lastP = p;
                 slider.style.left = `calc(${p}% - 24px)`;
-                const pane = document.querySelector('.leaflet-splitPaneRight-pane') as HTMLElement;
-                if (pane) {
-                  const clip = `polygon(${p}% 0, 100% 0, 100% 100%, ${p}% 100%)`;
-                  pane.style.clipPath = clip;
-                  (pane.style as any).webkitClipPath = clip;
-                }
+                applyClipAt(p);
               };
-              const onUp = (ev: MouseEvent) => {
+              const onUp = () => {
                 document.body.classList.remove('select-none');
                 document.body.style.cursor = '';
-                mapRef.current?.dragging.enable();
                 window.removeEventListener('mousemove', onMove);
                 window.removeEventListener('mouseup', onUp);
-                let p = ((ev.clientX - rect.left) / rect.width) * 100;
-                setSplitPos(Math.max(0, Math.min(p, 100)));
+                setSplitPos(lastP);
               };
               window.addEventListener('mousemove', onMove);
               window.addEventListener('mouseup', onUp);
             }}
-            onTouchStart={(e) => {
-              e.preventDefault();
-              document.body.classList.add('select-none');
-              mapRef.current?.dragging.disable();
-            }}
+            onTouchStart={() => document.body.classList.add('select-none')}
             onTouchMove={(e) => {
-              e.preventDefault();
               const rect = e.currentTarget.parentElement?.getBoundingClientRect();
               if (!rect) return;
               let p = ((e.touches[0].clientX - rect.left) / rect.width) * 100;
               p = Math.max(0, Math.min(p, 100));
               e.currentTarget.style.left = `calc(${p}% - 24px)`;
-              const pane = document.querySelector('.leaflet-splitPaneRight-pane') as HTMLElement;
-              if (pane) {
-                const clip = `polygon(${p}% 0, 100% 0, 100% 100%, ${p}% 100%)`;
-                pane.style.clipPath = clip;
-                (pane.style as any).webkitClipPath = clip;
+              const mapInst = mapRef.current;
+              if (mapInst) {
+                const pane = mapInst.getPane('splitPaneRight');
+                if (pane) {
+                  const nw = mapInst.containerPointToLayerPoint([0, 0] as any);
+                  const se = mapInst.containerPointToLayerPoint(mapInst.getSize() as any);
+                  const clipX = nw.x + mapInst.getSize().x * (p / 100);
+                  pane.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${clipX}px)`;
+                }
               }
             }}
             onTouchEnd={(e) => {
               document.body.classList.remove('select-none');
-              mapRef.current?.dragging.enable();
               const rect = e.currentTarget.parentElement?.getBoundingClientRect();
               if (rect && e.changedTouches[0]) {
                 let p = ((e.changedTouches[0].clientX - rect.left) / rect.width) * 100;
@@ -578,7 +580,7 @@ export function Teledetection() {
 
         {toggles.s2Split && (
           <div className="absolute top-2 md:top-4 right-[3.5rem] md:right-[4.5rem] bg-amber-500 text-black px-2 py-1 md:px-3 md:py-1.5 rounded-lg text-[9px] md:text-xs font-bold shadow-lg z-[500]">
-            {afterTileUrl ? 'S2 AVANT | APRÈS' : (isAnalyzing ? 'Chargement S2 après…' : 'S2 AVANT (après non chargé)')}
+            {afterTileUrl ? 'S2 AVANT | APRÈS' : 'S2 APRÈS (TOPO)'}
           </div>
         )}
 
