@@ -81,7 +81,7 @@ export function Sidebar({ currentView, setCurrentView, layout = 'sidebar' }: Sid
           className={cn("bg-white/10 rounded-xl relative overflow-hidden backdrop-blur-sm flex items-center justify-center hover:bg-white/20 transition-all text-left", isCollapsed ? "size-10" : "h-12 px-3 py-1 flex-1")}
         >
            <img 
-             src="/logo.png" 
+             src="/images/logo-anef.png" 
              alt="ANEF Logo" 
              className={cn("h-full w-auto object-contain drop-shadow transition-all", isCollapsed ? "scale-150" : "")}
              onError={(e) => {
