@@ -47,9 +47,16 @@ const CONF_COLOR: Record<string, string> = {
 // Tuiles GEE : garder quelques tuiles autour du cadre pour un pan fluide,
 // et ne pas recharger pendant l'animation de zoom (évite le scintillement).
 // On laisse le reste au comportement par défaut de Leaflet (chargement pendant le pan).
+// maxNativeZoom = clé anti-disparition au zoom : GEE ne recalcule plus de tuiles
+// au-delà de z15 ; Leaflet agrandit les tuiles déjà en cache (upsampling) au lieu
+// de relancer un calcul serveur. keepBuffer élevé + updateWhenIdle = pan fluide,
+// rechargement uniquement à l'arrêt (zéro scintillement).
 const TILE_PERF = {
-  keepBuffer: 4,
+  keepBuffer: 8,
   updateWhenZooming: false,
+  updateWhenIdle: true,
+  maxNativeZoom: 15,   // GEE: dernier niveau réellement calculé
+  maxZoom: 19,         // Leaflet: continue à zoomer (tuiles agrandies)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -207,7 +214,7 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
   if (!paneReady || !toggles.s2Split || !geeAfterUrl) return null;
 
   return (
-    <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" keepBuffer={6} updateWhenZooming={false} updateWhenIdle={true} attribution="© GEE / Copernicus S2 (après)" />
+    <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true} maxNativeZoom={15} maxZoom={19} attribution="© GEE / Copernicus S2 (après)" />
   );
 }
 
@@ -340,6 +347,7 @@ export function Teledetection() {
     useTemporal: tripleConf,
     useSeasonal: tripleConf || toggles.phenology,
     useExternal: true, // Hansen peu coûteux -> toujours actif
+    useForest: true,   // masque forêt (couvert arboré) -> ne signale que le domaine boisé
     useMultiscene: multiScene, minScenes,
   });
 
@@ -441,6 +449,8 @@ export function Teledetection() {
   // ── Sélection de polygone SANS reconstruction de la couche (anti-flicker) ──
   const polyLayerRef = useRef<any>(null);          // référence vers la couche GeoJSON Leaflet
   const selectedLayerRef = useRef<any>(null);      // sous-couche actuellement sélectionnée
+  // Renderer canvas (perf) : des centaines de polygones se dessinent sans plomber le DOM
+  const canvasRenderer = useRef<any>(L.canvas({ padding: 0.5 })).current;
 
   const applySelection = (layer: any) => {
     // remet l'ancien à son style normal
@@ -513,7 +523,7 @@ export function Teledetection() {
       {/* ── CARTE ─────────────────────────────────────────────────────────── */}
       <div className="relative h-[35vh] md:h-full md:flex-1 bg-[#121214] border-b md:border-b-0 md:border-r border-[var(--border-color)] shrink-0 z-10 md:shrink overflow-hidden">
 
-        <MapContainer center={[35.5785, -5.3684]} zoom={11}
+        <MapContainer center={[35.5785, -5.3684]} zoom={11} maxZoom={19}
           zoomControl={false} zoomAnimation={true}
           style={{ height: '100%', width: '100%' }}>
 
@@ -530,7 +540,7 @@ export function Teledetection() {
 
           <LayerPanes />
 
-          <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" keepBuffer={6} updateWhenZooming={false} updateWhenIdle={true} />
+          <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true} maxNativeZoom={18} maxZoom={19} />
 
           <FeatureGroup>
             <EditControl position="topleft" draw={{ rectangle: true, polygon: true, circle: false, circlemarker: false, marker: false, polyline: false }} />
@@ -588,6 +598,7 @@ export function Teledetection() {
               data={{ type: 'FeatureCollection', features: displayPolygons } as any}
               style={polyStyle}
               onEachFeature={onEachPoly}
+              renderer={canvasRenderer}
             />
           )}
 

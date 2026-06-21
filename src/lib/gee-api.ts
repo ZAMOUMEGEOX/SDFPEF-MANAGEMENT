@@ -26,6 +26,7 @@ export interface AnalyzeParams {
   minScore?: number;     // 1..5
   minArea?: number;      // m²
   useRadar?: boolean; useTemporal?: boolean; useSeasonal?: boolean; useExternal?: boolean;
+  useForest?: boolean;
   useMultiscene?: boolean; minScenes?: number;
 }
 
@@ -95,7 +96,8 @@ function buildBody(p: AnalyzeParams): Record<string, unknown> {
     minScore: p.minScore ?? 2, minArea: p.minArea ?? 500,
     // Defaut LEGER (rapide) — les preuves lourdes ne tournent que si activees via les toggles
     useRadar: p.useRadar ?? false, useTemporal: p.useTemporal ?? false,
-    useSeasonal: p.useSeasonal ?? false, useExternal: p.useExternal ?? false,
+    useSeasonal: p.useSeasonal ?? false, useExternal: p.useExternal ?? true,
+    useForest: p.useForest ?? true,
     useMultiscene: p.useMultiscene ?? false, minScenes: p.minScenes ?? 2,
   };
 }
