@@ -1593,6 +1593,8 @@ export function Contentieux() {
   const [showOverview, setShowOverview] = useState(false);
   const [cases, setCases] = useState<Case[]>([]);
   const [pvRecords, setPvRecords] = useState<PVRecord[]>([]);
+  // v7.3: عدد المحاضر الحقيقية فقط (يستثني الخانات الوهمية "غير متوفر في البوابة")
+  const realPvCount = useMemo(() => pvRecords.filter(p => !p.notInPortal).length, [pvRecords]);
   const [pvLocalTab, setPvLocalTab] = useState<'cases'|'pvs'>('cases');
   const [selectedPV, setSelectedPV] = useState<PVRecord | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -1943,7 +1945,7 @@ export function Contentieux() {
             <button onClick={() => setPvLocalTab('pvs')}
               className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold text-sm transition-all ${pvLocalTab==='pvs' ? 'bg-blue-600 text-white shadow-sm' : 'text-stone-500 hover:text-stone-700'}`}>
               <ShieldAlert className="size-4"/> محاضر الضابطة
-              {pvRecords.length > 0 && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${pvLocalTab==='pvs' ? 'bg-blue-500 text-white' : 'bg-blue-100 text-blue-700'}`}>{pvRecords.length}</span>}
+              {realPvCount > 0 && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${pvLocalTab==='pvs' ? 'bg-blue-500 text-white' : 'bg-blue-100 text-blue-700'}`}>{realPvCount}</span>}
             </button>
           </div>
         )}
@@ -2339,8 +2341,26 @@ export function Contentieux() {
           onSave={handleSaveCase}
           onSavePV={(pv) => {
             setPvRecords(prev => {
-              const exists = prev.find(p => p.id === pv.id);
-              return exists ? prev.map(p => p.id === pv.id ? pv : p) : [pv, ...prev];
+              // v7.3: إزالة أي سجل بنفس المعرف أو نفس رقم/سنة المحضر،
+              // مع تفضيل السجل الحقيقي على الخانة الوهمية (notInPortal).
+              const sameNum = (a: PVRecord, b: PVRecord) =>
+                a.pvInputNumber && b.pvInputNumber && a.pvInputNumber === b.pvInputNumber;
+              const incomingReal = !pv.notInPortal;
+              const filtered = prev.filter(p => {
+                if (p.id === pv.id) return false;            // نفس المعرف ⇒ يُستبدل
+                if (sameNum(p, pv)) {
+                  // إن كان الوارد حقيقياً، احذف الوهمي القديم؛
+                  // وإن كان الوارد وهمياً ويوجد حقيقي، أبقِ الحقيقي (تجاهل الوارد).
+                  if (incomingReal) return false;            // احذف القديم (سواء وهمي أو حقيقي قديم)
+                  return !p.notInPortal ? true : false;      // أبقِ الحقيقي، احذف الوهمي القديم
+                }
+                return true;
+              });
+              // إن كان الوارد وهمياً لكن يوجد حقيقي بنفس الرقم، لا تُضِف الوارد إطلاقاً.
+              if (!incomingReal && prev.some(p => sameNum(p, pv) && !p.notInPortal)) {
+                return filtered;
+              }
+              return [pv, ...filtered];
             });
           }}
           cases={cases}
@@ -3703,6 +3723,8 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
 
   // -- قاعدة بيانات المحاضر المحلية --
   const [pvRecords, setPvRecords]           = useState<PVRecord[]>([]);
+  // v7.3: عدد المحاضر الحقيقية (يستثني الخانات الوهمية)
+  const realPvCount = useMemo(() => pvRecords.filter(p => !p.notInPortal).length, [pvRecords]);
   const pvRecordsRef = useRef<PVRecord[]>([]);
   useEffect(() => { pvRecordsRef.current = pvRecords; }, [pvRecords]);
   const [pvDbLoading, setPvDbLoading]       = useState(true);
@@ -4054,21 +4076,34 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     let status: 'ok'|'linked'|'created' = 'ok';
 
     if (k) {
+      // للمحضر رقم ملف زجري ⇒ نربط بملف موجود أو نُنشئ ملفاً جديداً مفتاحه k
       const match = allCases.find(c => c.mahakimId && fileNumKey(c.mahakimId) === k);
       if (match) {
         linkedId = match.id; status = 'linked';
-        // إن جاءت بيانات أغنى من البوابة، حدّث الملف الموجود بها
         if (fileParsed) {
           await onSave({ ...match, ...mergeCaseFromFile(match, fileParsed), id: match.id });
         }
       } else if (createdCasesRef.current.has(k)) {
         linkedId = createdCasesRef.current.get(k)!; status = 'linked';
       } else {
-        // إنشاء الملف من المحضر، ثم دمج بيانات الملف الجنحي الحقيقية فوقه
         const base = pvRecordToCase(pv);
         const nc = fileParsed ? { ...base, ...mergeCaseFromFile(base, fileParsed) } : base;
         await onSave(nc);
         createdCasesRef.current.set(k, nc.id);
+        linkedId = nc.id; status = 'created';
+      }
+    } else {
+      // ★ v7.3 — لا رقم ملف زجري بعد: نُنشئ ملفاً قضائياً من بيانات المحضر نفسه
+      //   كي يظهر في «الملفات القضائية» (مطلب المستخدم: كل محضر مستخرج له ملف).
+      //   نتجنّب التكرار بمفتاح المحضر (pvInputNumber) داخل هذه الجلسة.
+      const pvKey = `PVK:${pv.pvInputNumber || pv.pvCourtRef || pv.id}`;
+      if (createdCasesRef.current.has(pvKey)) {
+        linkedId = createdCasesRef.current.get(pvKey)!; status = 'linked';
+      } else {
+        const base = pvRecordToCase(pv);
+        const nc = fileParsed ? { ...base, ...mergeCaseFromFile(base, fileParsed) } : base;
+        await onSave(nc);
+        createdCasesRef.current.set(pvKey, nc.id);
         linkedId = nc.id; status = 'created';
       }
     }
@@ -4076,8 +4111,12 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     const finalPV: PVRecord = { ...pv, linkedCaseId: linkedId || undefined, lastSyncedAt: new Date().toISOString() };
     await savePVRecordDB(finalPV);
     setPvRecords(prev => {
-      const exists = prev.find(p => p.id === finalPV.id);
-      return exists ? prev.map(p => p.id === finalPV.id ? finalPV : p) : [finalPV, ...prev];
+      // v7.3: استبدال أي خانة وهمية بنفس رقم المحضر بالسجل الحقيقي
+      const others = prev.filter(p =>
+        p.id !== finalPV.id &&
+        !(p.pvInputNumber && p.pvInputNumber === finalPV.pvInputNumber)
+      );
+      return [finalPV, ...others];
     });
     onSavePV?.(finalPV);
     return status;
@@ -4462,7 +4501,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
               <div className="flex items-center gap-2">
                 <span className="font-black text-sm">محاضر الضابطة القضائية</span>
                 {pvRecords.length > 0 && (
-                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${mainTab==='pv' ? 'bg-white/25 text-white' : 'bg-blue-100 text-blue-700'}`}>{pvRecords.length}</span>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${mainTab==='pv' ? 'bg-white/25 text-white' : 'bg-blue-100 text-blue-700'}`}>{realPvCount}</span>
                 )}
               </div>
               <p className={`text-[10px] mt-0.5 leading-tight ${mainTab==='pv' ? 'text-blue-100' : 'text-stone-400'}`}>مخالفات المياه والغابات — بحث تلقائي بالرقم</p>
@@ -4538,7 +4577,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
                   </button>
                   <button onClick={() => setPvDbView(pvDbView==='list'?'search':'list')}
                     className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-colors ${pvDbView==='list'||pvDbView==='detail'?'bg-blue-600 text-white':'bg-white text-stone-600 border border-stone-200 hover:bg-stone-50'}`}>
-                    <Database className="size-3.5"/>المحاضر ({pvRecords.length})
+                    <Database className="size-3.5"/>المحاضر ({realPvCount})
                   </button>
                 </div>
 
@@ -4938,7 +4977,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
                   <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden shadow-sm">
                     <div className="px-3 py-2 bg-blue-600 flex items-center justify-between">
                       <span className="text-sm font-bold text-white flex items-center gap-2">
-                        <Database className="size-4"/>قاعدة المحاضر ({pvRecords.length})
+                        <Database className="size-4"/>قاعدة المحاضر ({realPvCount})
                       </span>
                       <button onClick={()=>setPvDbView('search')}
                         className="text-blue-200 hover:text-white text-xs font-bold flex items-center gap-1">
