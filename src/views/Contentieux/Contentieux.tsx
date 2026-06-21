@@ -1593,8 +1593,6 @@ export function Contentieux() {
   const [showOverview, setShowOverview] = useState(false);
   const [cases, setCases] = useState<Case[]>([]);
   const [pvRecords, setPvRecords] = useState<PVRecord[]>([]);
-  // v7.3: عدد المحاضر الحقيقية فقط (يستثني الخانات الوهمية "غير متوفر في البوابة")
-  const realPvCount = useMemo(() => pvRecords.filter(p => !p.notInPortal).length, [pvRecords]);
   const [pvLocalTab, setPvLocalTab] = useState<'cases'|'pvs'>('cases');
   const [selectedPV, setSelectedPV] = useState<PVRecord | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -1945,7 +1943,7 @@ export function Contentieux() {
             <button onClick={() => setPvLocalTab('pvs')}
               className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold text-sm transition-all ${pvLocalTab==='pvs' ? 'bg-blue-600 text-white shadow-sm' : 'text-stone-500 hover:text-stone-700'}`}>
               <ShieldAlert className="size-4"/> محاضر الضابطة
-              {realPvCount > 0 && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${pvLocalTab==='pvs' ? 'bg-blue-500 text-white' : 'bg-blue-100 text-blue-700'}`}>{realPvCount}</span>}
+              {pvRecords.length > 0 && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${pvLocalTab==='pvs' ? 'bg-blue-500 text-white' : 'bg-blue-100 text-blue-700'}`}>{pvRecords.length}</span>}
             </button>
           </div>
         )}
@@ -2341,26 +2339,8 @@ export function Contentieux() {
           onSave={handleSaveCase}
           onSavePV={(pv) => {
             setPvRecords(prev => {
-              // v7.3: إزالة أي سجل بنفس المعرف أو نفس رقم/سنة المحضر،
-              // مع تفضيل السجل الحقيقي على الخانة الوهمية (notInPortal).
-              const sameNum = (a: PVRecord, b: PVRecord) =>
-                a.pvInputNumber && b.pvInputNumber && a.pvInputNumber === b.pvInputNumber;
-              const incomingReal = !pv.notInPortal;
-              const filtered = prev.filter(p => {
-                if (p.id === pv.id) return false;            // نفس المعرف ⇒ يُستبدل
-                if (sameNum(p, pv)) {
-                  // إن كان الوارد حقيقياً، احذف الوهمي القديم؛
-                  // وإن كان الوارد وهمياً ويوجد حقيقي، أبقِ الحقيقي (تجاهل الوارد).
-                  if (incomingReal) return false;            // احذف القديم (سواء وهمي أو حقيقي قديم)
-                  return !p.notInPortal ? true : false;      // أبقِ الحقيقي، احذف الوهمي القديم
-                }
-                return true;
-              });
-              // إن كان الوارد وهمياً لكن يوجد حقيقي بنفس الرقم، لا تُضِف الوارد إطلاقاً.
-              if (!incomingReal && prev.some(p => sameNum(p, pv) && !p.notInPortal)) {
-                return filtered;
-              }
-              return [pv, ...filtered];
+              const exists = prev.find(p => p.id === pv.id);
+              return exists ? prev.map(p => p.id === pv.id ? pv : p) : [pv, ...prev];
             });
           }}
           cases={cases}
@@ -2586,9 +2566,6 @@ export interface PVRecord {
   geoOverlap?: string;     // ملخّص نصّي للتداخل
   geoPosition?: string;    // داخل / جزئيا داخل / خارج الملك الغابوي
   geoOverlapPct?: number;
-
-  /** ★ محضر غير موجود في البوابة بعد (خانة محجوزة في الترتيب السنوي) */
-  notInPortal?: boolean;
 }
 
 
@@ -3068,15 +3045,7 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
   cases: Case[];
 }) {
   const [pvSearch, setPvSearch] = useState('');
-  const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // تقسيم "رقم/سنة"
-  const parseYN = (s: string): { num: number; year: string } | null => {
-    const m = (s || '').match(/^\s*(\d+)\s*\/\s*(\d{4})/);
-    return m ? { num: parseInt(m[1], 10), year: m[2] } : null;
-  };
-
-  // فلترة نصية (للبحث فقط)
   const filtered = useMemo(() => {
     if (!pvSearch.trim()) return pvRecords;
     const q = pvSearch.toLowerCase();
@@ -3089,116 +3058,6 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
       p.parties.some(pt => pt.name.includes(q))
     );
   }, [pvRecords, pvSearch]);
-
-  type Slot = { kind: 'record'; pv: PVRecord } | { kind: 'gap'; year: string; num: number };
-
-  // ترتيب سنوي تصاعدي داخل كل سنة مع حجز الخانات الفارغة (غير متوفرة بعد)
-  const slots = useMemo<Slot[]>(() => {
-    const real = filtered.filter(p => !p.notInPortal);
-    const byYear = new Map<string, Map<number, PVRecord>>();
-    const noNum: PVRecord[] = [];
-    for (const p of filtered) {
-      const yn = parseYN(p.pvInputNumber);
-      if (!yn) { if (!p.notInPortal) noNum.push(p); continue; }
-      if (!byYear.has(yn.year)) byYear.set(yn.year, new Map());
-      // لا نطمس محضراً حقيقياً بخانة فارغة لها نفس الرقم
-      const slot = byYear.get(yn.year)!;
-      const prev = slot.get(yn.num);
-      if (!prev || (prev.notInPortal && !p.notInPortal)) slot.set(yn.num, p);
-    }
-    const out: Slot[] = [];
-    const years = [...byYear.keys()].sort((a, b) => +b - +a); // أحدث سنة أولاً
-    for (const year of years) {
-      const map = byYear.get(year)!;
-      const max = Math.max(...map.keys());
-      for (let n = 1; n <= max; n++) {
-        const rec = map.get(n);
-        if (rec && !rec.notInPortal) out.push({ kind: 'record', pv: rec });
-        else out.push({ kind: 'gap', year, num: n });
-      }
-    }
-    for (const p of noNum) out.push({ kind: 'record', pv: p });
-    // أثناء البحث النصّي نعرض المطابقات فقط (سطح مسطّح بلا خانات فارغة)
-    if (pvSearch.trim()) return real.map(pv => ({ kind: 'record', pv } as Slot));
-    return out;
-  }, [filtered, pvSearch]);
-
-  const realRows = useMemo(() => slots.filter((s): s is { kind:'record'; pv: PVRecord } => s.kind === 'record'), [slots]);
-  const allSelected = realRows.length > 0 && realRows.every(s => selected.has(s.pv.id));
-  const toggleAll = () => setSelected(prev => allSelected ? new Set() : new Set(realRows.map(s => s.pv.id)));
-  const toggleOne = (id: string) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-
-  // ── v7.2: التبويب حسب السنة ───────────────────────────────────────────────
-  // السنوات المتاحة من المحاضر الحقيقية فقط (تتجاهل الوهمية/الفارغة بلا رقم).
-  const availableYears = useMemo(() => {
-    const ys = new Set<string>();
-    for (const p of pvRecords) {
-      const yn = parseYN(p.pvInputNumber);
-      if (yn) ys.add(yn.year);
-    }
-    return [...ys].sort((a, b) => +b - +a); // أحدث سنة أولاً
-  }, [pvRecords]);
-
-  const [activeYear, setActiveYear] = useState<string>('');
-  // افتراضياً: أحدث سنة فيها محاضر (تُضبط مرة عند توفر السنوات)
-  useEffect(() => {
-    if (!activeYear && availableYears.length) setActiveYear(availableYears[0]);
-    // إن اختفت السنة المختارة (حُذفت محاضرها)، عُد لأحدث سنة
-    else if (activeYear && availableYears.length && !availableYears.includes(activeYear))
-      setActiveYear(availableYears[0]);
-  }, [availableYears, activeYear]);
-
-  // عدد المحاضر الحقيقية لكل سنة (للشارات على التبويبات)
-  const realCountByYear = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const p of pvRecords) {
-      if (p.notInPortal) continue;
-      const yn = parseYN(p.pvInputNumber);
-      const key = yn ? yn.year : 'بلا سنة';
-      m.set(key, (m.get(key) || 0) + 1);
-    }
-    return m;
-  }, [pvRecords]);
-
-  // إجمالي المحاضر الحقيقية (لا يحتسب الوهمية)
-  const realTotal = useMemo(() => pvRecords.filter(p => !p.notInPortal).length, [pvRecords]);
-
-  // خانات السنة النشطة فقط (أو الكل أثناء البحث النصّي)
-  const visibleSlots = useMemo(() => {
-    if (pvSearch.trim()) return slots; // أثناء البحث: كل المطابقات مسطّحة
-    if (!activeYear) return slots;
-    return slots.filter(s => s.kind === 'gap' ? s.year === activeYear
-      : (parseYN(s.pv.pvInputNumber)?.year || '') === activeYear);
-  }, [slots, activeYear, pvSearch]);
-
-  const exportExcel = (onlySelected: boolean) => {
-    const rows = realRows.map(s => s.pv).filter(p => !onlySelected || selected.has(p.id));
-    if (!rows.length) { alert('لا توجد محاضر للتصدير.'); return; }
-    const data = rows.map(p => ({
-      'رقم المحضر': p.pvInputNumber || p.pvCourtRef || '',
-      'رقم بالمحكمة': p.pvCourtRef || '',
-      'التاريخ': p.pvDate || '',
-      'النوع': p.pvType || '',
-      'الموضوع/المخالفة': p.pvSubject || p.pvOffense || '',
-      'الجهة': p.pvAgency || '',
-      'الملف الجنحي': p.linkedFileNumber || '',
-      'المحكمة': p.court || '',
-      'الوضعية إزاء الملك الغابوي': p.geoPosition || '',
-      'نسبة التداخل %': p.geoOverlapPct != null ? p.geoOverlapPct.toFixed(1) : '',
-      'الأطراف': (p.parties || []).map(x => `${x.role}: ${x.name}`).join(' | '),
-    }));
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'محاضر الضابطة');
-    XLSX.writeFile(wb, `محاضر_الضابطة_${new Date().toISOString().slice(0,10)}.xlsx`);
-  };
-
-  const deleteSelected = () => {
-    if (!selected.size) return;
-    if (!confirm(`حذف ${selected.size} محضراً محدّداً؟`)) return;
-    selected.forEach(id => onDelete(id));
-    setSelected(new Set());
-  };
 
   return (
     <div className="space-y-4">
@@ -3240,59 +3099,11 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
             {pvSearch && <button onClick={() => setPvSearch('')} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600"><X className="size-4"/></button>}
           </div>
 
-          {/* شريط الأدوات: تحديد / تصدير / حذف */}
-          <div className="flex flex-wrap items-center gap-2 bg-white border border-stone-200 rounded-xl px-3 py-2">
-            <label className="flex items-center gap-2 text-xs font-bold text-stone-600 cursor-pointer select-none">
-              <input type="checkbox" checked={allSelected} onChange={toggleAll}
-                className="size-4 accent-blue-600 rounded"/>
-              تحديد الكل
-            </label>
-            {selected.size > 0 && (
-              <span className="text-[11px] font-bold text-blue-700 bg-blue-50 px-2 py-1 rounded-lg">
-                {selected.size} محدّد
-              </span>
-            )}
-            <div className="flex-1" />
-            <button onClick={() => exportExcel(selected.size > 0)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-colors">
-              <Download className="size-3.5"/> تصدير Excel{selected.size > 0 ? ' (المحدّد)' : ''}
-            </button>
-            <button onClick={deleteSelected} disabled={!selected.size}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-red-50 text-red-600 hover:bg-red-100 border border-red-200">
-              <Trash2 className="size-3.5"/> حذف المحدّد
-            </button>
-          </div>
-
-          {/* ── v7.2: تبويبات حسب السنة (تُخفى أثناء البحث النصّي) ── */}
-          {!pvSearch.trim() && availableYears.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 bg-white border border-stone-200 rounded-xl px-2 py-2">
-              <span className="text-[10px] font-bold text-stone-400 px-1">السنة:</span>
-              {availableYears.map(y => (
-                <button key={y} onClick={() => setActiveYear(y)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 ${
-                    activeYear === y ? 'bg-blue-600 text-white shadow-sm' : 'bg-stone-100 text-stone-600 hover:bg-blue-50'
-                  }`}>
-                  {y}
-                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${activeYear === y ? 'bg-white/25 text-white' : 'bg-blue-100 text-blue-700'}`}>
-                    {realCountByYear.get(y) || 0}
-                  </span>
-                </button>
-              ))}
-              <div className="flex-1" />
-              <span className="text-[10px] font-bold text-stone-400 px-1">
-                الإجمالي: <span className="text-blue-700">{realTotal}</span> محضراً
-              </span>
-            </div>
-          )}
-
           {/* الجدول */}
           <div className="bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
             <table className="w-full text-sm text-right">
               <thead className="bg-blue-50 text-blue-800 border-b border-blue-200">
                 <tr>
-                  <th className="px-3 py-3 font-bold w-10">
-                    <input type="checkbox" checked={allSelected} onChange={toggleAll} className="size-4 accent-blue-600 rounded"/>
-                  </th>
                   <th className="px-4 py-3 font-bold">#</th>
                   <th className="px-4 py-3 font-bold">رقم المحضر</th>
                   <th className="px-4 py-3 font-bold">الموضوع / المخالفة</th>
@@ -3303,50 +3114,21 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100">
-                {visibleSlots.map((slot, idx) => {
-                  // خانة سنة فارغة (محضر غير متوفر في البوابة بعد)
-                  if (slot.kind === 'gap') {
-                    return (
-                      <tr key={`gap-${slot.year}-${slot.num}`} className="bg-stone-50/60">
-                        <td className="px-3 py-3"></td>
-                        <td className="px-4 py-3 text-stone-300 text-xs">{idx+1}</td>
-                        <td className="px-4 py-3">
-                          <span className="font-mono font-bold text-stone-400 bg-stone-100 px-2 py-1 rounded-lg text-xs">
-                            {slot.num}/{slot.year}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3" colSpan={5}>
-                          <span className="text-[11px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-2 py-1 rounded-lg inline-flex items-center gap-1">
-                            <AlertCircle className="size-3"/> غير متوفر في البوابة بعد
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  }
-                  const pv = slot.pv;
+                {filtered.map((pv, idx) => {
                   const relCase = cases.find(c => c.id === pv.linkedCaseId || c.mahakimId === pv.linkedFileNumber);
-                  const isSel = selected.has(pv.id);
                   return (
                     <tr key={pv.id} onClick={() => onSelect(pv)}
-                      className={`cursor-pointer transition-colors group ${isSel ? 'bg-blue-50' : 'hover:bg-blue-50/50'}`}>
-                      <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
-                        <input type="checkbox" checked={isSel} onChange={() => toggleOne(pv.id)}
-                          className="size-4 accent-blue-600 rounded"/>
-                      </td>
+                      className="hover:bg-blue-50/50 cursor-pointer transition-colors group">
                       <td className="px-4 py-3 text-stone-400 text-xs">{idx+1}</td>
                       <td className="px-4 py-3">
                         <span className="font-mono font-bold text-blue-700 bg-blue-50 px-2 py-1 rounded-lg text-xs">
-                          {pv.pvInputNumber || pv.pvCourtRef || '—'}
+                          {pv.pvCourtRef || pv.pvInputNumber || '—'}
                         </span>
-                        {pv.pvCourtRef && pv.pvCourtRef !== pv.pvInputNumber && (
-                          <p className="text-[10px] text-stone-400 font-mono mt-0.5">بالمحكمة: {pv.pvCourtRef}</p>
-                        )}
                         {pv.pvDate && <p className="text-[10px] text-stone-400 font-mono mt-0.5">{pv.pvDate}</p>}
                       </td>
                       <td className="px-4 py-3 max-w-[180px]">
                         <p className="font-bold text-stone-800 truncate text-sm">{pv.pvSubject || pv.pvOffense || '—'}</p>
                         {pv.pvType && <p className="text-[10px] text-emerald-600 font-bold mt-0.5">{pv.pvType}</p>}
-                        {pv.geoPosition && <p className="text-[10px] text-teal-600 font-bold mt-0.5 flex items-center gap-1"><MapPin className="size-2.5"/>{pv.geoPosition}{pv.geoOverlapPct!=null?` (${pv.geoOverlapPct.toFixed(0)}%)`:''}</p>}
                       </td>
                       <td className="px-4 py-3 max-w-[140px]">
                         <p className="text-xs text-stone-600 truncate">{pv.pvAgency || '—'}</p>
@@ -3381,16 +3163,13 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
                     </tr>
                   );
                 })}
-                {slots.length === 0 && (
-                  <tr><td colSpan={8} className="px-6 py-10 text-center text-stone-400 text-sm">لا توجد نتائج مطابقة</td></tr>
+                {filtered.length === 0 && (
+                  <tr><td colSpan={7} className="px-6 py-10 text-center text-stone-400 text-sm">لا توجد نتائج مطابقة</td></tr>
                 )}
               </tbody>
             </table>
-            <div className="px-4 py-2 border-t border-stone-100 bg-stone-50 text-xs text-stone-500 flex items-center justify-between">
-              <span>{realRows.length} محضر{realRows.length !== pvRecords.filter(p=>!p.notInPortal).length ? ` (من أصل ${pvRecords.filter(p=>!p.notInPortal).length})` : ''}</span>
-              {!pvSearch.trim() && slots.some(s => s.kind === 'gap') && (
-                <span className="text-amber-600 font-bold">{slots.filter(s => s.kind === 'gap').length} خانة غير متوفرة بعد</span>
-              )}
+            <div className="px-4 py-2 border-t border-stone-100 bg-stone-50 text-xs text-stone-500">
+              {filtered.length} محضر{filtered.length !== pvRecords.length ? ` (من أصل ${pvRecords.length})` : ''}
             </div>
           </div>
         </div>
@@ -3723,18 +3502,12 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
 
   // -- قاعدة بيانات المحاضر المحلية --
   const [pvRecords, setPvRecords]           = useState<PVRecord[]>([]);
-  // v7.3: عدد المحاضر الحقيقية (يستثني الخانات الوهمية)
-  const realPvCount = useMemo(() => pvRecords.filter(p => !p.notInPortal).length, [pvRecords]);
-  const pvRecordsRef = useRef<PVRecord[]>([]);
-  useEffect(() => { pvRecordsRef.current = pvRecords; }, [pvRecords]);
   const [pvDbLoading, setPvDbLoading]       = useState(true);
   const [selectedPV, setSelectedPV]         = useState<PVRecord | null>(null);
   const [pvDbView, setPvDbView]             = useState<'search'|'list'|'detail'>('search');
 
   // -- بحث المحضر --
   const [pvNumber, setPvNumber]             = useState('');
-  const pvNumberRef = useRef('');
-  useEffect(() => { pvNumberRef.current = pvNumber; }, [pvNumber]);
   const [pvYear, setPvYear]                 = useState('');
   const [pvCourt, setPvCourt]               = useState('تطوان');
   const [pvAgentType, setPvAgentType]       = useState(PV_AGENT_TYPES[0]);
@@ -3757,8 +3530,6 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
   const [autoCurrent, setAutoCurrent]       = useState<number | null>(null);
   const [autoLog, setAutoLog]               = useState<{ num: number; status: 'ok'|'fail'|'linked'|'created'; msg: string }[]>([]);
   const autoResolverRef                     = useRef<((pv: PVRecord | null) => void) | null>(null);
-  // ★ v7.2: محلِّل نتيجة الملف الجنحي أثناء الأتمتة (بحث dossier promisified)
-  const fileResolverRef                     = useRef<((parsed: any | null) => void) | null>(null);
   const autoAbortRef                        = useRef(false);
   const createdCasesRef                     = useRef<Map<string, string>>(new Map());
 
@@ -3844,7 +3615,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
 
       // ✅ نتيجة محضر الضابطة القضائية
       if (d.type === 'MAHAKIM_RESULT' && d.text && d.searchType === 'pv') {
-        const parsed = performParsingPV(d.text, (pvNumberRef.current || '').trim());
+        const parsed = performParsingPV(d.text, pvNumber.trim());
         setPvResult(parsed);
         setPvIsSearching(false);
         setPvSearchStage('');
@@ -3857,16 +3628,6 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
 
       // ✅ نتيجة بحث الملفات
       if (d.type === 'MAHAKIM_RESULT' && d.text) {
-        // ★ v7.2 — أثناء الأتمتة: مرّر نتيجة الملف الجنحي للحلقة بدل تحديث الواجهة
-        if (fileResolverRef.current) {
-          let parsedFile: any = null;
-          try { parsedFile = performParsing(d.text); } catch { parsedFile = null; }
-          const r = fileResolverRef.current; fileResolverRef.current = null;
-          freshSearchRef.current = false;
-          setIsSearching(false); setSearchStage('');
-          r(parsedFile);
-          return;
-        }
         const isFresh = freshSearchRef.current;
         freshSearchRef.current = false;
         if (isFresh) {
@@ -3902,12 +3663,6 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
         return;
       }
       if (d.type === 'MAHAKIM_ERROR') {
-        // ★ v7.2 — أثناء الأتمتة: مرّر فشل الملف للحلقة (null) دون تنبيه
-        if (fileResolverRef.current) {
-          const r = fileResolverRef.current; fileResolverRef.current = null;
-          freshSearchRef.current = false; setIsSearching(false); setSearchStage('');
-          r(null); return;
-        }
         freshSearchRef.current = false; setIsSearching(false); setSearchStage('');
         const ERR: Record<string,string> = {
           no_results: 'لا توجد نتيجة لهذا الرقم', timeout: 'انتهت المهلة',
@@ -3925,7 +3680,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, []);
+  }, [pvNumber]);
 
   // ── Paste auto-capture (للملفات فقط) ─────────────────────────────────────
   useEffect(() => {
@@ -4040,107 +3795,32 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
   // ── الأتمتة: معالجة نطاق أرقام محاضر تلقائياً (النقطة 18) ──────────────
   // ════════════════════════════════════════════════════════════════════
 
-  // ── أدوات مساعدة للأتمتة (v7.2) ──────────────────────────────────────────
-  /** انتظار قصير قابل للإلغاء (يحترم زر الإيقاف). */
-  const settle = (ms: number) => new Promise<void>((res) => {
-    const id = setTimeout(res, ms);
-    if (autoAbortRef.current) { clearTimeout(id); res(); }
-  });
-
-  /** هل استُخرج المحضر فعلاً؟ معيار متساهل لتفادي الإيجابيات الكاذبة («غير متوفر» وهو موجود). */
-  const pvWasFound = (pv: PVRecord | null): pv is PVRecord => {
-    if (!pv) return false;
-    return !!(
-      pv.pvCourtRef ||
-      pv.linkedFileNumber ||
-      (pv as any).fileNum ||
-      (pv.parties && pv.parties.length) ||
-      (pv.procedures && pv.procedures.length) ||
-      pv.pvDate || pv.pvSubject || pv.pvType ||
-      (pv.rawText && pv.rawText.trim().length > 150)
-    );
-  };
-
-  /**
-   * v7.2 — حفظ المحضر + إنشاء/ربط الملف القضائي، مع دمج بيانات الملف الجنحي
-   * المستخرجة فعلياً من البوابة (fileParsed) إن توفّرت. هذا هو قلب «السلسلة الكاملة».
-   */
-  const autoSavePVAndCase = async (
-    pv: PVRecord,
-    fileParsed: any | null
-  ): Promise<'ok'|'linked'|'created'> => {
+  /** حفظ محضر تلقائياً مع ربط بملف مطابق أو إنشاء ملف جديد. يُستخدم داخل الحلقة. */
+  const autoSavePV = async (pv: PVRecord): Promise<'ok'|'linked'|'created'> => {
     const ref = pv.linkedFileNumber
       || [(pv as any).fileNum, (pv as any).fileMark, (pv as any).fileYear].filter(Boolean).join('/');
     const k = fileNumKey(ref);
     let linkedId = pv.linkedCaseId || '';
     let status: 'ok'|'linked'|'created' = 'ok';
-
     if (k) {
-      // للمحضر رقم ملف زجري ⇒ نربط بملف موجود أو نُنشئ ملفاً جديداً مفتاحه k
       const match = allCases.find(c => c.mahakimId && fileNumKey(c.mahakimId) === k);
-      if (match) {
-        linkedId = match.id; status = 'linked';
-        if (fileParsed) {
-          await onSave({ ...match, ...mergeCaseFromFile(match, fileParsed), id: match.id });
-        }
-      } else if (createdCasesRef.current.has(k)) {
-        linkedId = createdCasesRef.current.get(k)!; status = 'linked';
-      } else {
-        const base = pvRecordToCase(pv);
-        const nc = fileParsed ? { ...base, ...mergeCaseFromFile(base, fileParsed) } : base;
+      if (match) { linkedId = match.id; status = 'linked'; }
+      else if (createdCasesRef.current.has(k)) { linkedId = createdCasesRef.current.get(k)!; status = 'linked'; }
+      else {
+        const nc = pvRecordToCase(pv);
         await onSave(nc);
         createdCasesRef.current.set(k, nc.id);
         linkedId = nc.id; status = 'created';
       }
-    } else {
-      // ★ v7.3 — لا رقم ملف زجري بعد: نُنشئ ملفاً قضائياً من بيانات المحضر نفسه
-      //   كي يظهر في «الملفات القضائية» (مطلب المستخدم: كل محضر مستخرج له ملف).
-      //   نتجنّب التكرار بمفتاح المحضر (pvInputNumber) داخل هذه الجلسة.
-      const pvKey = `PVK:${pv.pvInputNumber || pv.pvCourtRef || pv.id}`;
-      if (createdCasesRef.current.has(pvKey)) {
-        linkedId = createdCasesRef.current.get(pvKey)!; status = 'linked';
-      } else {
-        const base = pvRecordToCase(pv);
-        const nc = fileParsed ? { ...base, ...mergeCaseFromFile(base, fileParsed) } : base;
-        await onSave(nc);
-        createdCasesRef.current.set(pvKey, nc.id);
-        linkedId = nc.id; status = 'created';
-      }
     }
-
     const finalPV: PVRecord = { ...pv, linkedCaseId: linkedId || undefined, lastSyncedAt: new Date().toISOString() };
     await savePVRecordDB(finalPV);
     setPvRecords(prev => {
-      // v7.3: استبدال أي خانة وهمية بنفس رقم المحضر بالسجل الحقيقي
-      const others = prev.filter(p =>
-        p.id !== finalPV.id &&
-        !(p.pvInputNumber && p.pvInputNumber === finalPV.pvInputNumber)
-      );
-      return [finalPV, ...others];
+      const exists = prev.find(p => p.id === finalPV.id);
+      return exists ? prev.map(p => p.id === finalPV.id ? finalPV : p) : [finalPV, ...prev];
     });
     onSavePV?.(finalPV);
     return status;
-  };
-
-  /** دمج حقول الملف القضائي من نتيجة البحث المُحلَّلة (performParsing) فوق ملف موجود. */
-  const mergeCaseFromFile = (base: Case, f: any): Partial<Case> => {
-    const pick = (a: any, b: any) => (a && a !== '-' && a !== '—' ? a : b);
-    return {
-      mahakimId:   pick(f.mahakimId, base.mahakimId),
-      court:       pick(f.court, base.court),
-      type:        pick(f.type, base.type),
-      subject:     pick(f.subject, base.subject),
-      date:        pick(f.date, base.date),
-      judge:       pick(f.judge, base.judge),
-      section:     pick(f.section, base.section),
-      status:      pick(f.status, base.status),
-      nextSession: pick(f.nextSession, base.nextSession),
-      defendant:   pick(f.defendant, base.defendant),
-      // الأطراف/الإجراءات: نأخذ الأطول (الأغنى) بين المصدرين
-      parties:     (f.parties && f.parties.length >= (base.parties?.length || 0)) ? f.parties : base.parties,
-      procedures:  (f.procedures && f.procedures.length >= (base.procedures?.length || 0)) ? f.procedures : base.procedures,
-      lastSyncedAt: new Date().toISOString(),
-    };
   };
 
   /** بحث عن محضر واحد ويُرجِع وعداً يُحَلّ عند وصول النتيجة (أو فشلاً/مهلة). */
@@ -4158,103 +3838,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     }}, '*');
   });
 
-  /**
-   * v7.2 — بحث عن المحضر مع إعادة محاولة. الفشل العابر (شاشة بيضاء/شبكة بطيئة)
-   * لا يُعلَن «غير متوفر» إلا بعد استنفاد المحاولات. يُفرّغ البوابة قبل كل محاولة.
-   */
-  const searchPVWithRetry = async (numero: string, attempts = 2): Promise<PVRecord | null> => {
-    for (let i = 0; i < attempts; i++) {
-      if (autoAbortRef.current) return null;
-      if (i > 0) {
-        setPvSearchStage(`أتمتة: إعادة محاولة المحضر ${numero} (${i + 1}/${attempts})`);
-        await settle(900); // مهلة تفريغ/استقرار البوابة قبل إعادة المحاولة
-      }
-      const pv = await searchPVOnce(numero);
-      if (pvWasFound(pv)) return pv;
-    }
-    return null;
-  };
-
-  /**
-   * v7.2 — بحث promisified عن الملف الجنحي المرتبط بالمحضر (مسار dossier).
-   * يُرجِع نتيجة performParsing أو null. يُستخدم داخل حلقة الأتمتة.
-   */
-  const searchLinkedFileOnce = (pv: PVRecord): Promise<any | null> => new Promise((resolve) => {
-    // استخرج أجزاء الملف (num/mark/year) من المحضر
-    let num = (pv as any).fileNum || '';
-    let mark = (pv as any).fileMark || '';
-    let year = (pv as any).fileYear || '';
-    if (!num && pv.linkedFileNumber) {
-      const s = splitFileRef(pv.linkedFileNumber); num = s.num; mark = s.mark; year = s.year;
-    }
-    if (!num) { resolve(null); return; }
-
-    const court = pv.linkedFile?.court || pv.court || pvCourt;
-    const isAppeal = court.startsWith('استئناف ');
-    const courtName = isAppeal ? court.replace('استئناف ', '').trim() : court;
-    const PRIMARY = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
-    const isPrimary = !isAppeal && PRIMARY.includes(court);
-
-    let done = false;
-    const finish = (r: any | null) => { if (done) return; done = true; fileResolverRef.current = null; clearTimeout(to); resolve(r); };
-    fileResolverRef.current = finish;
-    const to = setTimeout(() => finish(null), 90000);
-
-    // حدّث حقول الشريط (لعرض المستخدم) + أطلق بحث dossier
-    setRemoteNum(num); setRemoteMark(mark); setRemoteYear(year); setRemoteCourt(court);
-    freshSearchRef.current = false; // النتيجة تُلتقَط عبر fileResolverRef لا عبر الواجهة
-    window.postMessage({ type: 'MAHAKIM_TO_EXTENSION', payload: {
-      searchType: 'dossier', numero: num, mark, year, court: courtName, isPrimary,
-    }}, '*');
-  });
-
-  /** بحث عن الملف الجنحي مع إعادة محاولة. */
-  const searchLinkedFileWithRetry = async (pv: PVRecord, attempts = 2): Promise<any | null> => {
-    for (let i = 0; i < attempts; i++) {
-      if (autoAbortRef.current) return null;
-      if (i > 0) { await settle(900); }
-      const r = await searchLinkedFileOnce(pv);
-      // نتيجة مقبولة إن حملت بيانات ملف فعلية
-      if (r && (r.mahakimId !== '-' || (r.parties && r.parties.length) || (r.procedures && r.procedures.length) || r.court)) return r;
-    }
-    return null;
-  };
-
-  /** بناء وحفظ خانة «غير متوفر في البوابة» (placeholder) لرقم/سنة. */
-  const savePlaceholderPV = async (n: number, year: string) => {
-    const placeholder: PVRecord = {
-      id: `PV-${n}-${year}-EMPTY`,
-      pvInputNumber: `${n}/${year}`,
-      pvCourtRef: '', pvDate: '', pvType: '', pvSubject: '', pvAgency: '',
-      pvAgentType: '', pvOffense: '', pvAction: '', court: pvCourt,
-      linkedFileNumber: '', fileNum: '', fileMark: '', fileYear: '',
-      linkedFile: { fileNumber: '', fileType: '', court: '', section: '', date: '', status: '', judge: '', nextSession: '' },
-      parties: [], procedures: [],
-      rawText: '', createdAt: new Date().toISOString(), lastSyncedAt: new Date().toISOString(),
-      notInPortal: true,
-    } as PVRecord;
-    try {
-      // لا نطمس محضراً حقيقياً إن وُجد سابقاً بنفس الرقم/السنة
-      const exists = pvRecordsRef.current?.find?.(p => p.pvInputNumber === placeholder.pvInputNumber && !p.notInPortal);
-      if (!exists) {
-        await savePVRecordDB(placeholder);
-        setPvRecords(prev => {
-          const others = prev.filter(p => p.pvInputNumber !== placeholder.pvInputNumber);
-          return [placeholder, ...others];
-        });
-        onSavePV?.(placeholder);
-      }
-    } catch {}
-  };
-
-  /**
-   * v7.2 — حلقة الأتمتة بالسلسلة الكاملة لكل محضر:
-   *   1) استخراج المحضر (مع إعادة محاولة)
-   *   2) حفظ + إنشاء/ربط الملف القضائي
-   *   3) بحث تلقائي عن الملف الجنحي في البوابة واستخراج بياناته (dossier)
-   *   4) دمج البيانات الحقيقية وحفظ الملف القضائي
-   *   5) تفريغ/استقرار البوابة → المحضر التالي
-   */
+  /** حلقة الأتمتة على نطاق الأرقام: بحث → حفظ → ربط/إنشاء → التالي. */
   const runAutomation = async () => {
     const from = parseInt(autoFrom, 10), to = parseInt(autoTo, 10);
     if (isNaN(from) || isNaN(to) || from < 1 || to < from) { alert('أدخل نطاقاً صحيحاً (من ≤ إلى).'); return; }
@@ -4263,49 +3847,24 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     if (to - from > 200 && !confirm(`ستُعالَج ${to - from + 1} محضراً تلقائياً. هل تتابع؟`)) return;
 
     setAutoRunning(true); setAutoLog([]); autoAbortRef.current = false; createdCasesRef.current.clear();
-    const year = pvYear.trim();
-
     for (let n = from; n <= to; n++) {
       if (autoAbortRef.current) break;
       setAutoCurrent(n); setPvNumber(String(n)); setPvSearchStage(`أتمتة: محضر رقم ${n}`);
-
-      // ── 1) استخراج المحضر (مع إعادة محاولة) ──
-      const pv = await searchPVWithRetry(String(n), 2);
-
-      if (!pvWasFound(pv)) {
-        await savePlaceholderPV(n, year);
-        setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'غير متوفر في البوابة — خانة محجوزة' }]);
-        await settle(1200); // استقرار قبل المحضر التالي
-        continue;
+      const pv = await searchPVOnce(String(n));
+      const hasData = !!(pv && (pv.pvCourtRef || pv.linkedFileNumber || (pv.parties && pv.parties.length)));
+      if (!hasData) {
+        setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'لا نتيجة' }]);
+      } else {
+        try {
+          const st = await autoSavePV(pv!);
+          setAutoLog(l => [...l, { num: n, status: st, msg: st === 'created' ? 'حُفظ + أُنشئ ملف' : st === 'linked' ? 'حُفظ + رُبط بملف' : 'حُفظ' }]);
+        } catch {
+          setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'فشل الحفظ' }]);
+        }
       }
-      if (autoAbortRef.current) break;
-
-      // ── 2+3) استخراج الملف الجنحي من البوابة (إن كان للمحضر رقم ملف) ──
-      let fileParsed: any | null = null;
-      const hasFileRef = !!((pv as any).fileNum || pv!.linkedFileNumber);
-      if (hasFileRef) {
-        setPvSearchStage(`أتمتة: استخراج الملف الجنحي للمحضر ${n}`);
-        await settle(800); // تأكّد من تفريغ البوابة قبل بحث الملف
-        if (autoAbortRef.current) break;
-        fileParsed = await searchLinkedFileWithRetry(pv!, 2);
-      }
-
-      // ── 4) حفظ المحضر + إنشاء/ربط/تحديث الملف القضائي ببيانات حقيقية ──
-      try {
-        const st = await autoSavePVAndCase(pv!, fileParsed);
-        const fileMsg = hasFileRef ? (fileParsed ? ' + استُخرج الملف' : ' (تعذّر استخراج الملف)') : '';
-        setAutoLog(l => [...l, {
-          num: n, status: st,
-          msg: (st === 'created' ? 'حُفظ + أُنشئ ملف' : st === 'linked' ? 'حُفظ + رُبط بملف' : 'حُفظ') + fileMsg,
-        }]);
-      } catch {
-        setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'فشل الحفظ' }]);
-      }
-
-      // ── 5) تفريغ/استقرار البوابة قبل المحضر التالي ──
-      await settle(1200);
+      await new Promise(r => setTimeout(r, 700)); // مهلة قصيرة بين المحاضر
     }
-    setAutoRunning(false); setAutoCurrent(null); setPvSearchStage(''); setIsSearching(false); setSearchStage('');
+    setAutoRunning(false); setAutoCurrent(null); setPvSearchStage('');
   };
 
   const stopAutomation = () => { autoAbortRef.current = true; if (autoResolverRef.current) { autoResolverRef.current(null); autoResolverRef.current = null; } setAutoRunning(false); };
@@ -4501,7 +4060,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
               <div className="flex items-center gap-2">
                 <span className="font-black text-sm">محاضر الضابطة القضائية</span>
                 {pvRecords.length > 0 && (
-                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${mainTab==='pv' ? 'bg-white/25 text-white' : 'bg-blue-100 text-blue-700'}`}>{realPvCount}</span>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${mainTab==='pv' ? 'bg-white/25 text-white' : 'bg-blue-100 text-blue-700'}`}>{pvRecords.length}</span>
                 )}
               </div>
               <p className={`text-[10px] mt-0.5 leading-tight ${mainTab==='pv' ? 'text-blue-100' : 'text-stone-400'}`}>مخالفات المياه والغابات — بحث تلقائي بالرقم</p>
@@ -4577,7 +4136,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
                   </button>
                   <button onClick={() => setPvDbView(pvDbView==='list'?'search':'list')}
                     className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-colors ${pvDbView==='list'||pvDbView==='detail'?'bg-blue-600 text-white':'bg-white text-stone-600 border border-stone-200 hover:bg-stone-50'}`}>
-                    <Database className="size-3.5"/>المحاضر ({realPvCount})
+                    <Database className="size-3.5"/>المحاضر ({pvRecords.length})
                   </button>
                 </div>
 
@@ -4977,7 +4536,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
                   <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden shadow-sm">
                     <div className="px-3 py-2 bg-blue-600 flex items-center justify-between">
                       <span className="text-sm font-bold text-white flex items-center gap-2">
-                        <Database className="size-4"/>قاعدة المحاضر ({realPvCount})
+                        <Database className="size-4"/>قاعدة المحاضر ({pvRecords.length})
                       </span>
                       <button onClick={()=>setPvDbView('search')}
                         className="text-blue-200 hover:text-white text-xs font-bold flex items-center gap-1">
