@@ -148,12 +148,8 @@ export async function checkGeeHealth(): Promise<GeeHealthStatus | null> {
 export async function runAnalyze(p: AnalyzeParams): Promise<AnalyzeResult> {
   return geePost<AnalyzeResult>("/gee/analyze", buildBody(p));
 }
-
-export async function fetchTopPolygons(p: AnalyzeParams, topN = 20): Promise<PolygonFC> {
-  const data = await geePost<{ features: PolygonFeature[] }>(
-    "/gee/top-polygons", { ...buildBody(p), topN });
-  return { type: "FeatureCollection", features: data.features ?? [] };
-}
+// NB : le Top-N est dérivé directement de runAnalyze().polygons (déjà triés par aire),
+// donc aucune requête séparée n'est nécessaire (perf).
 
 export async function fetchForestWatchLayer(p: AnalyzeParams): Promise<ForestWatchResult | null> {
   try { return await geePost<ForestWatchResult>("/gee/forest-watch-layer", buildBody(p)); }
@@ -217,5 +213,7 @@ export function exportPolygonsCsv(features: PolygonFeature[], zone: string): voi
   URL.revokeObjectURL(url);
 }
 
+// Export GeoTIFF (raster confiance + indices) vers Google Drive du compte de service.
+// Disponible côté API ; à brancher sur un bouton si besoin d'un raster pour SIG.
 export const exportGeoTiff = (p: AnalyzeParams) =>
   geePost<{ message: string }>("/gee/export-geotiff", buildBody(p));

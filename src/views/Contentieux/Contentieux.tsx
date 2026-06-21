@@ -3646,6 +3646,8 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
 
   // -- بحث المحضر --
   const [pvNumber, setPvNumber]             = useState('');
+  const pvNumberRef = useRef('');
+  useEffect(() => { pvNumberRef.current = pvNumber; }, [pvNumber]);
   const [pvYear, setPvYear]                 = useState('');
   const [pvCourt, setPvCourt]               = useState('تطوان');
   const [pvAgentType, setPvAgentType]       = useState(PV_AGENT_TYPES[0]);
@@ -3753,7 +3755,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
 
       // ✅ نتيجة محضر الضابطة القضائية
       if (d.type === 'MAHAKIM_RESULT' && d.text && d.searchType === 'pv') {
-        const parsed = performParsingPV(d.text, pvNumber.trim());
+        const parsed = performParsingPV(d.text, (pvNumberRef.current || '').trim());
         setPvResult(parsed);
         setPvIsSearching(false);
         setPvSearchStage('');
@@ -3818,7 +3820,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [pvNumber]);
+  }, []);
 
   // ── Paste auto-capture (للملفات فقط) ─────────────────────────────────────
   useEffect(() => {

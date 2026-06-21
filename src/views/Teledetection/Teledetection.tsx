@@ -44,11 +44,12 @@ const CONF_COLOR: Record<string, string> = {
 
 // Options anti-flicker pour les tuiles GEE : garde l'ancien niveau visible
 // pendant le chargement du nouveau, et ne recharge qu'à l'arrêt du zoom/pan.
+// Tuiles GEE : garder quelques tuiles autour du cadre pour un pan fluide,
+// et ne pas recharger pendant l'animation de zoom (évite le scintillement).
+// On laisse le reste au comportement par défaut de Leaflet (chargement pendant le pan).
 const TILE_PERF = {
-  keepBuffer: 6,
+  keepBuffer: 4,
   updateWhenZooming: false,
-  updateWhenIdle: true,
-  crossOrigin: true as const,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -287,7 +288,6 @@ export function Teledetection() {
   const [isPhenologyExpanded, setIsPhenologyExpanded] = useState(false);
 
   const mapRef = useRef<L.Map|null>(null);
-  const polyRendererRef = useRef<any>(null);   // renderer canvas dédié aux polygones
 
   useEffect(() => {
     checkGeeHealth().then(d => setGeeStatus(d?.gee ? 'ready' : 'error')).catch(() => setGeeStatus('error'));
@@ -517,15 +517,7 @@ export function Teledetection() {
           zoomControl={false} zoomAnimation={true}
           style={{ height: '100%', width: '100%' }}>
 
-          <MapRefSetter onReady={(m) => {
-            mapRef.current = m; setMapReady(true);
-            // renderer canvas dédié, rattaché au pane des polygones (perf + ordre correct)
-            setTimeout(() => {
-              if (!polyRendererRef.current && m.getPane('panePolygons')) {
-                polyRendererRef.current = L.canvas({ pane: 'panePolygons', padding: 0.5 });
-              }
-            }, 0);
-          }} />
+          <MapRefSetter onReady={(m) => { mapRef.current = m; setMapReady(true); }} />
 
           <LayersControl position="topright">
             <LayersControl.BaseLayer checked name="Hybride + Satellite">
@@ -591,7 +583,6 @@ export function Teledetection() {
           {toggles.polygons && displayPolygons.length > 0 && (
             <GeoJSON
               pane="panePolygons"
-              {...(polyRendererRef.current ? { renderer: polyRendererRef.current } : {})}
               key={`polys-${selectedZone}-${displayPolygons.length}-${highConfOnly}`}
               ref={(r: any) => { polyLayerRef.current = r; }}
               data={{ type: 'FeatureCollection', features: displayPolygons } as any}
