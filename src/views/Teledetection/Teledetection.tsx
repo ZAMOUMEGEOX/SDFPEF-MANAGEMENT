@@ -56,6 +56,9 @@ const normTxt = (s: unknown): string =>
 const normForest = (s: unknown): string => { const n = normTxt(s); return FOREST_ALIAS[n] ?? n; };
 const isJunkForest = (n: string): boolean => !n || n === 'NONE' || /^-+$/.test(n);
 
+// Imagerie "actuelle" (côté droit du swipe) quand aucune image S2 "après" n'existe encore.
+const ARCGIS_IMAGERY = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+
 // Options anti-flicker pour les tuiles GEE : garde l'ancien niveau visible
 // pendant le chargement du nouveau, et ne recharge qu'à l'arrêt du zoom/pan.
 // Tuiles GEE : garder quelques tuiles autour du cadre pour un pan fluide,
@@ -181,7 +184,8 @@ function LayerPanes() {
   return null;
 }
 
-// Pane droite (clip) = S2 APRÈS ; le S2 AVANT est une couche pleine en dessous
+// Pane droite (clip) = côté "actuel" du swipe : S2 APRÈS si dispo, sinon imagerie ArcGIS actuelle.
+// Le côté gauche (Wayback historique) est une couche pleine en dessous (paneS2).
 function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
   const map = useMap();
   const [paneReady, setPaneReady] = useState(false);
@@ -224,11 +228,17 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
     };
   }, [splitPos, toggles.s2Split, paneReady, map, geeAfterUrl]);
 
-  // Pas de couche droite tant que l'analyse n'a pas renvoyé l'image S2 APRÈS (aucun fallback topo)
-  if (!paneReady || !toggles.s2Split || !geeAfterUrl) return null;
+  if (!paneReady || !toggles.s2Split) return null;
 
+  // Côté droit : S2 "après" (précis) si l'analyse a tourné, sinon imagerie ArcGIS actuelle
+  // -> le swipe fonctionne IMMÉDIATEMENT (gauche=historique Wayback, droite=actuelle).
+  const rightUrl = geeAfterUrl || ARCGIS_IMAGERY;
+  const isS2 = !!geeAfterUrl;
   return (
-    <TileLayer key={geeAfterUrl} url={geeAfterUrl} pane="splitPaneRight" keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true} maxNativeZoom={15} maxZoom={19} attribution="© GEE / Copernicus S2 (après)" />
+    <TileLayer key={rightUrl} url={rightUrl} pane="splitPaneRight"
+      keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true}
+      maxNativeZoom={isS2 ? 15 : 18} maxZoom={19}
+      attribution={isS2 ? '© GEE / Copernicus S2 (après)' : '© Esri World Imagery (actuelle)'} />
   );
 }
 
@@ -298,6 +308,9 @@ export function Teledetection() {
   // Esri Wayback — imagerie historique datee pour le "avant" du swipe (legere)
   const [waybackUrl, setWaybackUrl]         = useState<string|null>(null);
   const [waybackDate, setWaybackDate]       = useState<string>('');
+  // v15 — frise temporelle : toutes les versions disponibles + index sélectionné
+  const [waybackList, setWaybackList]       = useState<{ date: string; url: string }[]>([]);
+  const [waybackIdx, setWaybackIdx]         = useState<number>(-1);
   const [polygons, setPolygons]             = useState<PolygonFeature[]>([]);
   const [beforeLabel, setBeforeLabel]       = useState<string>('Sentinel-2 (avant)');
   const [afterLabel, setAfterLabel]         = useState<string>('Sentinel-2 (après)');
@@ -324,7 +337,7 @@ export function Teledetection() {
     fetch('/assets/data/forest_limits.json').then(r => r.json()).then(setForestBoundary).catch(() => {});
   }, []);
 
-  // Esri Wayback : choisit le millesime historique le plus proche (<=) de la periode de reference
+  // Esri Wayback : charge TOUTES les versions, choisit par défaut la plus proche (<=) de la référence
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -336,28 +349,32 @@ export function Teledetection() {
         const items: { url: string; date: string }[] = [];
         for (const k in cfg) {
           const v = (cfg as any)[k];
-          const url = v && typeof v.itemURL === 'string' ? v.itemURL : '';
+          const raw = v && typeof v.itemURL === 'string' ? v.itemURL : '';
           const m = String(v?.itemTitle || '').match(/\d{4}-\d{2}-\d{2}/);
-          if (url && m) items.push({ url, date: m[0] });
+          if (!raw || !m) continue;
+          // itemURL Esri = template WMTS .../{level}/{row}/{col} -> variables Leaflet
+          const tpl = raw.replace(/\{level\}/gi, '{z}').replace(/\{row\}/gi, '{y}').replace(/\{col\}/gi, '{x}');
+          if (/\{[^}]+\}/.test(tpl.replace(/\{[zxysr]\}/gi, ''))) continue; // variable inconnue -> on saute
+          items.push({ url: tpl, date: m[0] });
         }
-        if (!items.length) return;
+        if (cancelled || !items.length) return;
         items.sort((a, b) => a.date.localeCompare(b.date));
-        const best = items.filter(i => i.date <= refEnd).pop() || items[0];
-        // itemURL Esri = template WMTS .../tile/<release>/{level}/{row}/{col}
-        // -> convertir vers les variables Leaflet (NE PAS ajouter /tile/{z}/{y}/{x})
-        const tpl = best.url
-          .replace(/\{level\}/gi, '{z}')
-          .replace(/\{row\}/gi, '{y}')
-          .replace(/\{col\}/gi, '{x}');
-        // securite : si une variable inconnue subsiste, on abandonne (sinon Leaflet jette -> ecran blanc)
-        if (/\{[^}]+\}/.test(tpl.replace(/\{[zxysr]\}/gi, ''))) return;
-        if (cancelled) return;
-        setWaybackUrl(tpl);
-        setWaybackDate(best.date);
-      } catch { /* repli S2 conserve, jamais de crash */ }
+        setWaybackList(items);
+        // index par défaut = version la plus proche AVANT la date de référence
+        let idx = items.findIndex(i => i.date > refEnd);
+        idx = idx === -1 ? items.length - 1 : Math.max(0, idx - 1);
+        setWaybackIdx(idx);
+      } catch { /* repli S2 conservé, jamais de crash */ }
     })();
     return () => { cancelled = true; };
   }, [refEnd]);
+
+  // Applique l'image Wayback correspondant à l'index choisi (frise temporelle)
+  useEffect(() => {
+    if (waybackIdx < 0 || !waybackList[waybackIdx]) { setWaybackUrl(null); return; }
+    setWaybackUrl(waybackList[waybackIdx].url);
+    setWaybackDate(waybackList[waybackIdx].date);
+  }, [waybackIdx, waybackList]);
 
   // Centrer la carte sur les limites du domaine forestier de la zone sélectionnée
   useEffect(() => {
@@ -787,6 +804,25 @@ export function Teledetection() {
               <div className="flex gap-0.5 text-stone-500 group-hover:text-white transition-colors">
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* v15 — Frise temporelle Wayback : change la date de l'image "avant" (gauche du swipe) */}
+        {toggles.s2Split && waybackList.length > 0 && waybackIdx >= 0 && (
+          <div className="absolute top-2 md:top-4 left-1/2 -translate-x-1/2 z-[500] pointer-events-auto bg-black/80 backdrop-blur-xl border border-white/10 rounded-xl px-3 py-2 shadow-2xl flex items-center gap-3 w-[300px] max-w-[88vw]">
+            <div className="flex flex-col leading-none">
+              <span className="text-[8px] text-white/50 font-bold uppercase tracking-widest">Image avant</span>
+              <span className="text-[12px] text-white font-mono font-bold">{waybackDate}</span>
+            </div>
+            <div className="flex-1 flex flex-col gap-0.5">
+              <input type="range" min={0} max={waybackList.length - 1} step={1} value={waybackIdx}
+                onChange={e => setWaybackIdx(Number(e.target.value))}
+                className="w-full accent-[var(--brand)] cursor-pointer" />
+              <div className="flex justify-between text-[8px] text-white/40 font-mono">
+                <span>{waybackList[0]?.date}</span>
+                <span>{waybackList[waybackList.length - 1]?.date}</span>
               </div>
             </div>
           </div>
