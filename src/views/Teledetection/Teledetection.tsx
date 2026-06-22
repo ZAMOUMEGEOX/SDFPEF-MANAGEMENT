@@ -426,8 +426,18 @@ export function Teledetection() {
   const forestsForZone: string[] = forestsByCpf[ZONE_TO_CPF[selectedZone] ?? ''] ?? [];
 
   // FeatureCollection (parcelles) de la forêt sélectionnée -> envoyé comme roi_geojson
+  // FIX v15 — GEE exige system:index string ; les id entiers (QGIS/SHP) causent l'erreur
+  // "Value of property 'system:index' must be a string" → on les convertit ici.
   const buildForestRoi = (forestName: string) => {
-    const feats = forestFeatures.filter(f => normForest(f?.properties?.FORET) === forestName);
+    const feats = forestFeatures
+      .filter(f => normForest(f?.properties?.FORET) === forestName)
+      .map(f => {
+        if (typeof f?.id === 'number') {
+          const { id, ...rest } = f;
+          return { ...rest, id: String(id) };
+        }
+        return f;
+      });
     return feats.length ? { type: 'FeatureCollection', features: feats } : null;
   };
 
