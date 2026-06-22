@@ -310,23 +310,35 @@ export function Teledetection() {
   // Esri Wayback : choisit le millesime historique le plus proche (<=) de la periode de reference
   useEffect(() => {
     let cancelled = false;
-    fetch('https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json')
-      .then(r => r.json())
-      .then((cfg: Record<string, any>) => {
-        if (cancelled) return;
-        const items = Object.values(cfg)
-          .map((v: any) => ({
-            url: v.itemURL as string,
-            date: (String(v.itemTitle || '').match(/\d{4}-\d{2}-\d{2}/) || [''])[0],
-          }))
-          .filter(i => i.date)
-          .sort((a, b) => a.date.localeCompare(b.date));
+    (async () => {
+      try {
+        const r = await fetch('https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json');
+        if (!r.ok) return;
+        const cfg = await r.json();
+        if (cancelled || !cfg || typeof cfg !== 'object') return;
+        const items: { url: string; date: string }[] = [];
+        for (const k in cfg) {
+          const v = (cfg as any)[k];
+          const url = v && typeof v.itemURL === 'string' ? v.itemURL : '';
+          const m = String(v?.itemTitle || '').match(/\d{4}-\d{2}-\d{2}/);
+          if (url && m) items.push({ url, date: m[0] });
+        }
         if (!items.length) return;
+        items.sort((a, b) => a.date.localeCompare(b.date));
         const best = items.filter(i => i.date <= refEnd).pop() || items[0];
-        setWaybackUrl(best.url + '/tile/{z}/{y}/{x}');
+        // itemURL Esri = template WMTS .../tile/<release>/{level}/{row}/{col}
+        // -> convertir vers les variables Leaflet (NE PAS ajouter /tile/{z}/{y}/{x})
+        const tpl = best.url
+          .replace(/\{level\}/gi, '{z}')
+          .replace(/\{row\}/gi, '{y}')
+          .replace(/\{col\}/gi, '{x}');
+        // securite : si une variable inconnue subsiste, on abandonne (sinon Leaflet jette -> ecran blanc)
+        if (/\{[^}]+\}/.test(tpl.replace(/\{[zxysr]\}/gi, ''))) return;
+        if (cancelled) return;
+        setWaybackUrl(tpl);
         setWaybackDate(best.date);
-      })
-      .catch(() => {});
+      } catch { /* repli S2 conserve, jamais de crash */ }
+    })();
     return () => { cancelled = true; };
   }, [refEnd]);
 
