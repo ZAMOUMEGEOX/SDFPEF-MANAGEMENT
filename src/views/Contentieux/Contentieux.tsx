@@ -1465,8 +1465,8 @@ function CaseDetail({ caseData, onBack, onDelete, onEdit, allCases, onSelectCase
               </h3>
               {caseData.pvNumber && (
                 <div>
-                  <label className="text-xs text-stone-500">رقم المحضر</label>
-                  <p className="font-bold font-mono text-sm">{caseData.pvNumber}</p>
+                  <label className="text-xs text-stone-500">محضر الضابطة القضائية المرتبط بالملف</label>
+                  <p className="font-bold font-mono text-sm text-blue-700">{caseData.pvNumber}</p>
                   {caseData.pvDate && <p className="text-xs text-stone-400 font-mono">{caseData.pvDate}</p>}
                 </div>
               )}
@@ -2186,6 +2186,7 @@ export function Contentieux() {
                         <SortTh l="الوضعية" k="status" />
                         <SortTh l="آخر إجراء / حكم" k="nextSession" />
                         <SortTh l="الأجل الأقرب" k="__deadline" />
+                        <th className={`${densityCls.cell} font-bold`}>محضر الضابطة المرتبط</th>
                         <th className={`${densityCls.cell} font-bold`}>أدوات</th>
                       </tr>
                     </thead>
@@ -2287,6 +2288,16 @@ export function Contentieux() {
                               </span>
                             ) : <span className="text-stone-300 text-xs">—</span>}
                           </td>
+                          {/* محضر الضابطة القضائية المرتبط بالملف */}
+                          <td className={densityCls.cell}>
+                            {(() => {
+                              const linkedPV = pvLinkedToCase(c, pvRecords);
+                              const label = linkedPV ? pvSearchLabel(linkedPV) : (c.pvNumber || '');
+                              return label
+                                ? <span className={`font-mono font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-1 rounded-lg ${densityCls.text}`}>{label}</span>
+                                : <span className="text-stone-300 text-xs">—</span>;
+                            })()}
+                          </td>
                           {/* أدوات */}
                           <td className={densityCls.cell} onClick={e => e.stopPropagation()}>
                             <div className="flex items-center gap-1 transition-opacity">
@@ -2302,7 +2313,7 @@ export function Contentieux() {
                         );
                       })}
                       {processedCases.length === 0 && (
-                        <tr><td colSpan={11} className="px-6 py-14 text-center">
+                        <tr><td colSpan={12} className="px-6 py-14 text-center">
                           <Search className="size-10 text-stone-200 mx-auto mb-3" />
                           <p className="text-stone-400 font-medium">لا توجد نتائج مطابقة</p>
                           {searchQuery && <p className="text-xs text-stone-400 mt-1">جرب كلمات أخرى</p>}
@@ -3035,6 +3046,96 @@ async function deletePVRecordDB(id: string): Promise<boolean> {
 // ─── قسم محاضر الضابطة القضائية — مكوّنات العرض ─────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
 
+// ─── أدوات تنظيم/تصدير محاضر الضابطة القضائية (v7.6) ─────────────────────────
+// محاضر الضابطة تُرقَّم من 1 وتُعاد كل سنة، فالمعرّف التعريفي = «رقم/سنة».
+// السنة تُستخرج بثبات من رقم المحضر بالمحكمة (آخر مقطع 20XX)، ثم من الملف المرتبط.
+const pvYearOfRecord = (pv: PVRecord): string => {
+  const m1 = String(pv.pvCourtRef || '').match(/\b(20\d{2})\b/);
+  if (m1) return m1[1];
+  if (pv.fileYear && /^20\d{2}$/.test(pv.fileYear)) return pv.fileYear;
+  const m2 = String(pv.linkedFileNumber || '').match(/\b(20\d{2})\b/);
+  if (m2) return m2[1];
+  const m3 = String(pv.pvInputNumber || '').match(/\b(20\d{2})\b/);
+  return m3 ? m3[1] : '';
+};
+const pvNumOfRecord = (pv: PVRecord): string => {
+  const n = (pv.pvInputNumber || '').trim();
+  if (n) return n.split('/')[0];
+  return String(pv.pvCourtRef || '').split('/')[0] || '';
+};
+const pvNumInt = (pv: PVRecord): number => {
+  const d = pvNumOfRecord(pv).replace(/\D/g, '');
+  const n = parseInt(d, 10);
+  return isNaN(n) ? 0 : n;
+};
+/** الرقم التعريفي للبحث: «رقم/سنة» مثل 8/2025 */
+const pvSearchLabel = (pv: PVRecord): string => {
+  const num = pvNumOfRecord(pv);
+  const yr = pvYearOfRecord(pv);
+  return num ? (yr ? `${num}/${yr}` : num) : '—';
+};
+/** ترتيب تصاعدي: حسب السنة ثم حسب الرقم (1، 2، 5، 9 ...) */
+const sortPVsAsc = (pvs: PVRecord[]): PVRecord[] =>
+  [...pvs].sort((a, b) =>
+    (pvYearOfRecord(a) || '').localeCompare(pvYearOfRecord(b) || '') || (pvNumInt(a) - pvNumInt(b))
+  );
+/** المحضر المرتبط بملف معيّن (لعرضه في صفحة الملفات) */
+const pvLinkedToCase = (c: Case, pvRecords: PVRecord[]): PVRecord | undefined =>
+  pvRecords.find(p => p.linkedCaseId === c.id ||
+    (!!p.linkedFileNumber && !!c.mahakimId && p.linkedFileNumber.replace(/\s/g, '') === c.mahakimId.replace(/\s/g, '')));
+
+function exportPVsXLSX(pvs: PVRecord[]) {
+  const headers = [
+    'رقم البحث', 'السنة', 'رقم المحضر بالمحكمة', 'تاريخ المحضر', 'النوع',
+    'الموضوع / المخالفة', 'الجهة', 'صنف الضابط', 'الإجراء',
+    'المحكمة', 'الملف الجنحي المرتبط', 'مرتبط بملف؟',
+    'الأطراف (ملخص)', 'عدد الإجراءات',
+  ];
+  const data = sortPVsAsc(pvs).map(pv => [
+    pvSearchLabel(pv), pvYearOfRecord(pv), pv.pvCourtRef || '', pv.pvDate || '', pv.pvType || '',
+    pv.pvSubject || pv.pvOffense || '', pv.pvAgency || '', pv.pvAgentType || '', pv.pvAction || '',
+    pv.court || '', pv.linkedFileNumber || '', pv.linkedFileNumber ? 'نعم' : 'لا',
+    (pv.parties || []).map(p => `${p.role}: ${p.name}`).join(' | '), (pv.procedures || []).length,
+  ]);
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
+  ws['!cols'] = headers.map((h, i) => ({ wch: [12, 8, 20, 14, 14, 32, 18, 16, 18, 24, 20, 10, 40, 10][i] || 16 }));
+  styleArabicSheet(ws, { headerRows: [0] });
+  XLSX.utils.book_append_sheet(wb, ws, 'محاضر الضابطة القضائية');
+  writeStyledWorkbook(wb, `محاضر_الضابطة_القضائية_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.xlsx`);
+}
+
+async function exportPVsPDF(pvs: PVRecord[]) {
+  const sorted = sortPVsAsc(pvs);
+  const td = 'style="border:1px solid #e7e5e4; padding:6px;"';
+  const rows = sorted.map((pv, i) => `
+    <tr>
+      <td ${td} style="border:1px solid #e7e5e4; padding:6px; text-align:center;">${i + 1}</td>
+      <td ${td} style="border:1px solid #e7e5e4; padding:6px; font-family:monospace; font-weight:700; text-align:center; color:#1e3a8a;">${esc(pvSearchLabel(pv))}</td>
+      <td ${td} style="border:1px solid #e7e5e4; padding:6px; font-family:monospace; text-align:center;">${esc(pv.pvCourtRef || '—')}</td>
+      <td ${td}>${esc(pv.pvSubject || pv.pvOffense || '—')}</td>
+      <td ${td}>${esc(pv.pvAgency || '—')}</td>
+      <td ${td} style="border:1px solid #e7e5e4; padding:6px; font-family:monospace; text-align:center; color:#047857;">${esc(pv.linkedFileNumber || '—')}</td>
+    </tr>`).join('');
+  const html = `
+    <div dir="rtl" style="font-family:'Tahoma','Segoe UI',Arial,sans-serif; padding:24px;">
+      <div style="font-size:20px; font-weight:900; color:#1e3a8a; text-align:center; margin-bottom:4px;">محاضر الضابطة القضائية</div>
+      <div style="font-size:11px; color:#78716c; text-align:center; margin-bottom:16px;">العدد: ${sorted.length} — ${esc(new Date().toLocaleString('fr-MA'))}</div>
+      <table style="width:100%; border-collapse:collapse; font-size:11px;">
+        <thead><tr style="background:#dbeafe; color:#1e3a8a;">
+          <th style="border:1px solid #bfdbfe; padding:6px;">#</th>
+          <th style="border:1px solid #bfdbfe; padding:6px;">رقم البحث</th>
+          <th style="border:1px solid #bfdbfe; padding:6px;">رقم المحكمة</th>
+          <th style="border:1px solid #bfdbfe; padding:6px;">الموضوع / المخالفة</th>
+          <th style="border:1px solid #bfdbfe; padding:6px;">الجهة</th>
+          <th style="border:1px solid #bfdbfe; padding:6px;">الملف المرتبط</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  await htmlToPDF(html, `محاضر_الضابطة_القضائية_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.pdf`, true);
+}
+
 /** قائمة محاضر الضابطة القضائية في قسم "القضايا المحلية" */
 function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCase, cases }: {
   pvRecords: PVRecord[];
@@ -3046,18 +3147,40 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
 }) {
   const [pvSearch, setPvSearch] = useState('');
 
+  const [yearTab, setYearTab] = useState<string>('all');
+  const [selIds, setSelIds]   = useState<Set<string>>(new Set());
+
+  // السنوات المتاحة (الأحدث أولاً) — لأن الترقيم يُعاد كل سنة
+  const years = useMemo(() => {
+    const s = new Set<string>();
+    pvRecords.forEach(p => { const y = pvYearOfRecord(p); if (y) s.add(y); });
+    return Array.from(s).sort((a, b) => b.localeCompare(a));
+  }, [pvRecords]);
+
+  // فلترة بالسنة ثم بالبحث، ثم ترتيب تصاعدي حسب الرقم (1، 2، 5، 9 ...)
   const filtered = useMemo(() => {
-    if (!pvSearch.trim()) return pvRecords;
-    const q = pvSearch.toLowerCase();
-    return pvRecords.filter(p =>
+    let list = pvRecords;
+    if (yearTab !== 'all') list = list.filter(p => pvYearOfRecord(p) === yearTab);
+    const q = pvSearch.trim().toLowerCase();
+    if (q) list = list.filter(p =>
       (p.pvCourtRef||'').toLowerCase().includes(q) ||
       (p.pvInputNumber||'').toLowerCase().includes(q) ||
+      pvSearchLabel(p).toLowerCase().includes(q) ||
       (p.linkedFileNumber||'').includes(q) ||
       (p.pvSubject||'').includes(q) ||
       (p.pvAgency||'').includes(q) ||
       p.parties.some(pt => pt.name.includes(q))
     );
-  }, [pvRecords, pvSearch]);
+    return sortPVsAsc(list);
+  }, [pvRecords, pvSearch, yearTab]);
+
+  const allSel = filtered.length > 0 && filtered.every(p => selIds.has(p.id));
+  const toggleAll = () => setSelIds(prev => {
+    if (filtered.every(p => prev.has(p.id))) { const n = new Set(prev); filtered.forEach(p => n.delete(p.id)); return n; }
+    const n = new Set(prev); filtered.forEach(p => n.add(p.id)); return n;
+  });
+  const toggleOne = (id: string) => setSelIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const selectedPVs = pvRecords.filter(p => selIds.has(p.id));
 
   return (
     <div className="space-y-4">
@@ -3090,6 +3213,56 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
         </div>
       ) : (
         <div className="space-y-3">
+          {/* تبويبات السنوات — لأن المحاضر تُعاد ترقيمها كل سنة */}
+          {years.length > 0 && (
+            <div className="flex gap-2 flex-wrap items-center bg-white border border-stone-200 rounded-xl p-2">
+              <span className="text-xs font-bold text-stone-400 px-1 flex items-center gap-1"><CalendarClock className="size-3.5"/> السنة:</span>
+              <button onClick={() => setYearTab('all')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${yearTab==='all' ? 'bg-blue-600 text-white shadow-sm' : 'bg-stone-50 text-stone-600 hover:bg-stone-100'}`}>
+                الكل <span className="opacity-70">({pvRecords.length})</span>
+              </button>
+              {years.map(y => {
+                const cnt = pvRecords.filter(p => pvYearOfRecord(p) === y).length;
+                return (
+                  <button key={y} onClick={() => setYearTab(y)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-colors ${yearTab===y ? 'bg-blue-600 text-white shadow-sm' : 'bg-stone-50 text-stone-600 hover:bg-stone-100'}`}>
+                    {y} <span className="opacity-70">({cnt})</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* شريط الأدوات: تعليم الكل + تصدير المحدّد + تحميل Excel/PDF */}
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between bg-white border border-stone-200 rounded-xl p-2.5">
+            <div className="flex items-center gap-2 flex-wrap">
+              <label className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-stone-50 cursor-pointer text-xs font-bold text-stone-600">
+                <input type="checkbox" checked={allSel} onChange={toggleAll}
+                  className="size-4 accent-blue-600 cursor-pointer"/>
+                تعليم الكل
+              </label>
+              <span className="text-xs text-stone-400 font-bold">{filtered.length}{filtered.length !== pvRecords.length ? ` / ${pvRecords.length}` : ''} محضر</span>
+              {selIds.size > 0 && (
+                <div className="flex items-center gap-1.5 bg-blue-50 px-2.5 py-1.5 rounded-xl border border-blue-200 animate-in fade-in">
+                  <span className="text-xs font-bold text-blue-800">{selIds.size} محدد</span>
+                  <button onClick={() => exportPVsXLSX(selectedPVs)} title="Excel للمحدّد" className="p-1 hover:bg-blue-200 rounded text-emerald-700"><FileSpreadsheet className="size-4"/></button>
+                  <button onClick={() => exportPVsPDF(selectedPVs)} title="PDF للمحدّد" className="p-1 hover:bg-blue-200 rounded text-rose-600"><FileDown className="size-4"/></button>
+                  <button onClick={() => { if (confirm(`حذف ${selIds.size} محضر؟`)) { selectedPVs.forEach(p => onDelete(p.id)); setSelIds(new Set()); } }} title="حذف المحدّد" className="p-1 hover:bg-red-200 rounded text-red-600"><Trash2 className="size-4"/></button>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button onClick={() => exportPVsXLSX(filtered)}
+                className="flex items-center gap-2 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm">
+                <FileSpreadsheet className="size-4"/> تحميل Excel
+              </button>
+              <button onClick={() => exportPVsPDF(filtered)}
+                className="flex items-center gap-2 px-3 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-sm">
+                <FileDown className="size-4"/> تحميل PDF
+              </button>
+            </div>
+          </div>
+
           {/* شريط البحث */}
           <div className="relative">
             <input value={pvSearch} onChange={e => setPvSearch(e.target.value)}
@@ -3099,13 +3272,17 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
             {pvSearch && <button onClick={() => setPvSearch('')} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600"><X className="size-4"/></button>}
           </div>
 
-          {/* الجدول */}
+          {/* الجدول — مرتّب تصاعدياً، مع عمود «رقم البحث» التعريفي */}
           <div className="bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
             <table className="w-full text-sm text-right">
               <thead className="bg-blue-50 text-blue-800 border-b border-blue-200">
                 <tr>
-                  <th className="px-4 py-3 font-bold">#</th>
-                  <th className="px-4 py-3 font-bold">رقم المحضر</th>
+                  <th className="px-3 py-3 font-bold w-10">
+                    <input type="checkbox" checked={allSel} onChange={toggleAll} className="size-4 accent-blue-600 cursor-pointer"/>
+                  </th>
+                  <th className="px-3 py-3 font-bold">#</th>
+                  <th className="px-4 py-3 font-bold">رقم البحث</th>
+                  <th className="px-4 py-3 font-bold">رقم المحكمة</th>
                   <th className="px-4 py-3 font-bold">الموضوع / المخالفة</th>
                   <th className="px-4 py-3 font-bold">الجهة</th>
                   <th className="px-4 py-3 font-bold">الملف الجنحي</th>
@@ -3116,13 +3293,22 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
               <tbody className="divide-y divide-stone-100">
                 {filtered.map((pv, idx) => {
                   const relCase = cases.find(c => c.id === pv.linkedCaseId || c.mahakimId === pv.linkedFileNumber);
+                  const sel = selIds.has(pv.id);
                   return (
                     <tr key={pv.id} onClick={() => onSelect(pv)}
-                      className="hover:bg-blue-50/50 cursor-pointer transition-colors group">
-                      <td className="px-4 py-3 text-stone-400 text-xs">{idx+1}</td>
+                      className={`hover:bg-blue-50/50 cursor-pointer transition-colors group ${sel ? 'bg-blue-50/60' : ''}`}>
+                      <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                        <input type="checkbox" checked={sel} onChange={() => toggleOne(pv.id)} className="size-4 accent-blue-600 cursor-pointer"/>
+                      </td>
+                      <td className="px-3 py-3 text-stone-400 text-xs font-bold">{idx+1}</td>
                       <td className="px-4 py-3">
-                        <span className="font-mono font-bold text-blue-700 bg-blue-50 px-2 py-1 rounded-lg text-xs">
-                          {pv.pvCourtRef || pv.pvInputNumber || '—'}
+                        <span className="font-mono font-black text-blue-800 bg-blue-100 px-2 py-1 rounded-lg text-xs">
+                          {pvSearchLabel(pv)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="font-mono font-bold text-stone-600 text-xs">
+                          {pv.pvCourtRef || '—'}
                         </span>
                         {pv.pvDate && <p className="text-[10px] text-stone-400 font-mono mt-0.5">{pv.pvDate}</p>}
                       </td>
@@ -3164,12 +3350,13 @@ function PVList({ pvRecords, onSelect, onDelete, onGoToMahakim, onOpenRelatedCas
                   );
                 })}
                 {filtered.length === 0 && (
-                  <tr><td colSpan={7} className="px-6 py-10 text-center text-stone-400 text-sm">لا توجد نتائج مطابقة</td></tr>
+                  <tr><td colSpan={9} className="px-6 py-10 text-center text-stone-400 text-sm">لا توجد نتائج مطابقة</td></tr>
                 )}
               </tbody>
             </table>
             <div className="px-4 py-2 border-t border-stone-100 bg-stone-50 text-xs text-stone-500">
               {filtered.length} محضر{filtered.length !== pvRecords.length ? ` (من أصل ${pvRecords.length})` : ''}
+              {yearTab !== 'all' && <span className="font-bold text-blue-600"> — سنة {yearTab}</span>}
             </div>
           </div>
         </div>
