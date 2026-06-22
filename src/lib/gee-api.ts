@@ -44,6 +44,10 @@ export interface PolygonProps {
   ndvi_change: number; nbr_change: number; ndmi_change: number;
   hansen_year: number | null;
   lng?: number; lat?: number; n_scenes?: number | null;
+  // v16 — detail des preuves par polygone (pour le terrain)
+  preuves?: string;
+  ev_optic?: number; ev_persist?: number; ev_radar?: number;
+  ev_external?: number; ev_seasonal?: number; ev_temporal?: number;
 }
 export interface PolygonFeature {
   type: "Feature";
@@ -192,7 +196,7 @@ export function exportPolygonsShp(p: AnalyzeParams): Promise<void> {
 // CSV genere cote client a partir des polygones deja charges
 export function exportPolygonsCsv(features: PolygonFeature[], zone: string): void {
   const BOM = "\uFEFF";
-  const header = "ID,Confiance,Score,Aire_ha,Aire_m2,Lng_X,Lat_Y,NDVI_Delta,NBR_Delta,N_Scenes,Hansen_Annee\n";
+  const header = "ID,Confiance,Score,Aire_ha,Aire_m2,Lng_X,Lat_Y,NDVI_Delta,NBR_Delta,N_Scenes,Hansen_Annee,Preuves\n";
   const centroid = (f: PolygonFeature): [number, number] => {
     if (f.properties.lng != null && f.properties.lat != null) return [f.properties.lng, f.properties.lat];
     // fallback : moyenne des sommets
@@ -211,7 +215,8 @@ export function exportPolygonsCsv(features: PolygonFeature[], zone: string): voi
       (p.area_ha ?? 0).toFixed(4), Math.round(p.area_m2 ?? 0),
       lng.toFixed(6), lat.toFixed(6),
       (p.ndvi_change ?? 0).toFixed(4), (p.nbr_change ?? 0).toFixed(4),
-      p.n_scenes ?? "", p.hansen_year ?? ""].join(",");
+      p.n_scenes ?? "", p.hansen_year ?? "",
+      `"${(p.preuves ?? "").replace(/"/g, "'")}"`].join(",");
   });
   const blob = new Blob([BOM + header + rows.join("\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);

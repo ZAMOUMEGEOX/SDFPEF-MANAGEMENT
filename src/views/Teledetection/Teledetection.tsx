@@ -167,6 +167,7 @@ function LayerPanes() {
   useEffect(() => {
     const defs: [string, number][] = [
       ['paneS2', 210],        // images Sentinel-2 (avant) — juste au-dessus du fond
+      ['paneWaybackLeft', 215], // v16 — image historique (Wayback) clippee a GAUCHE du split
       ['paneIndices', 360],   // NDVI Δ / Hansen / SAR / Phéno — sous les alertes
       ['paneAlertes', 410],   // raster de confiance (changements)
       ['paneMultiscene', 415],
@@ -207,8 +208,10 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
     if (!pane) return;
 
     const applyClip = () => {
+      const leftPane = map.getPane('paneWaybackLeft');
       if (!toggles.s2Split) {
         pane.style.display = 'none';
+        if (leftPane) leftPane.style.clip = '';
         return;
       }
       pane.style.display = 'block';
@@ -216,7 +219,10 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
       const se = map.containerPointToLayerPoint(map.getSize() as any);
       const clipX = nw.x + map.getSize().x * (splitPos / 100);
       // clip: rect(top, right, bottom, left) en coordonnées layer
+      // droite (image actuelle / S2 apres) : du split au bord droit
       pane.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${clipX}px)`;
+      // gauche (image historique Wayback) : du bord gauche au split -> suit le swipe
+      if (leftPane) leftPane.style.clip = `rect(${nw.y}px, ${clipX}px, ${se.y}px, ${nw.x}px)`;
     };
 
     applyClip();
@@ -271,6 +277,8 @@ export function Teledetection() {
   // v15 — niveau d'analyse : 'cpf' (centre entier, comportement actuel) ou 'forest' (forêt seule)
   const [analysisLevel, setAnalysisLevel] = useState<'cpf'|'forest'>('cpf');
   const [selectedForest, setSelectedForest] = useState<string>('');
+  // v16 — canton (section forestiere) optionnel pour affiner encore l'analyse
+  const [selectedCanton, setSelectedCanton] = useState<string>('');
 
   const [toggles, setToggles] = useState({
     s2Split: true, disturbance: true, polygons: true,
@@ -400,6 +408,7 @@ export function Teledetection() {
     setPolygons([]); setTopPolys([]); setSelectedPolyId(null); setPolyError(null);
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
     setSelectedForest('');   // v15 — la liste des forêts dépend du centre
+    setSelectedCanton('');   // v16 — reset canton
   }, [selectedZone]);
 
   useEffect(() => { if (phenologyData) setIsPhenologyExpanded(true); }, [phenologyData]);
@@ -425,12 +434,33 @@ export function Teledetection() {
   // Forêts du centre actuellement sélectionné
   const forestsForZone: string[] = forestsByCpf[ZONE_TO_CPF[selectedZone] ?? ''] ?? [];
 
+  // v16 — Cantons (sections) de la forêt choisie, limités au CPF courant
+  const cantonsForForest = useMemo(() => {
+    if (!selectedForest) return [] as string[];
+    const cpf = ZONE_TO_CPF[selectedZone] ?? '';
+    const set = new Set<string>();
+    for (const f of forestFeatures) {
+      if (normForest(f?.properties?.FORET) !== selectedForest) continue;
+      if (cpf && normTxt(f?.properties?.CPF) !== cpf) continue;
+      const ct = normTxt(f?.properties?.CANTON);
+      if (ct && !/^-+$/.test(ct)) set.add(ct);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [forestFeatures, selectedForest, selectedZone]);
+
   // FeatureCollection (parcelles) de la forêt sélectionnée -> envoyé comme roi_geojson
   // FIX v15 — GEE exige system:index string ; les id entiers (QGIS/SHP) causent l'erreur
   // "Value of property 'system:index' must be a string" → on les convertit ici.
-  const buildForestRoi = (forestName: string) => {
+  // FIX v16 — on filtre AUSSI par CPF (évite de capter une forêt homonyme d'un autre centre)
+  // et par CANTON si sélectionné. Les forêts multi-polygones sont gérées (toutes les parcelles).
+  const buildForestRoi = (forestName: string, cantonName?: string) => {
+    const cpf = ZONE_TO_CPF[selectedZone] ?? '';
     const feats = forestFeatures
-      .filter(f => normForest(f?.properties?.FORET) === forestName)
+      .filter(f =>
+        normForest(f?.properties?.FORET) === forestName &&
+        (!cpf || normTxt(f?.properties?.CPF) === cpf) &&
+        (!cantonName || normTxt(f?.properties?.CANTON) === cantonName)
+      )
       .map(f => {
         if (typeof f?.id === 'number') {
           const { id, ...rest } = f;
@@ -441,16 +471,16 @@ export function Teledetection() {
     return feats.length ? { type: 'FeatureCollection', features: feats } : null;
   };
 
-  // Recentre la carte sur la forêt choisie
+  // Recentre la carte sur la forêt (ou le canton) choisi
   useEffect(() => {
     if (analysisLevel !== 'forest' || !selectedForest) return;
-    const roi = buildForestRoi(selectedForest);
+    const roi = buildForestRoi(selectedForest, selectedCanton || undefined);
     if (!roi) return;
     try {
       const b = L.geoJSON(roi as any).getBounds();
       if (b.isValid()) mapRef.current?.fitBounds(b, { padding: [25, 25], maxZoom: 15 });
     } catch { /* noop */ }
-  }, [analysisLevel, selectedForest]);
+  }, [analysisLevel, selectedForest, selectedCanton]);
 
   const handleToggle = (key: keyof typeof toggles) => setToggles(prev => ({ ...prev, [key]: !prev[key] }));
 
@@ -458,9 +488,9 @@ export function Teledetection() {
     // v15 — mode forêt : on envoie la géométrie de la forêt comme roi_geojson.
     // `zone` devient le nom de la forêt (pas une clé de centre) -> le backend utilise le roi.
     const forestMode = analysisLevel === 'forest' && !!selectedForest;
-    const roiGeojson = forestMode ? buildForestRoi(selectedForest) : undefined;
+    const roiGeojson = forestMode ? buildForestRoi(selectedForest, selectedCanton || undefined) : undefined;
     return {
-    zone: forestMode ? selectedForest : selectedZone,
+    zone: forestMode ? (selectedCanton ? `${selectedForest}/${selectedCanton}` : selectedForest) : selectedZone,
     roiGeojson: roiGeojson ?? undefined,
     date1Start: refStart, date1End: refEnd,
     date2Start: actStart, date2End: actEnd,
@@ -632,8 +662,9 @@ export function Teledetection() {
     const p = f.properties ?? {};
     layer.bindPopup(
       `<div style="font-size:11px;line-height:1.7;min-width:170px">
-        <strong>#${p.id} — ${p.confidence}</strong> (score ${Number(p.conf_score ?? 0).toFixed(1)}/${p.n_scenes != null ? 5 : 4})<br/>
+        <strong>#${p.id} — ${p.confidence}</strong> (score ${Number(p.conf_score ?? 0).toFixed(1)}/6)<br/>
         Aire: <strong>${Number(p.area_ha ?? 0).toFixed(3)} ha</strong> (${Math.round(p.area_m2 ?? 0)} m²)<br/>
+        ${p.preuves ? `Preuves: <strong>${p.preuves}</strong><br/>` : ''}
         NDVI Δ: ${Number(p.ndvi_change ?? 0).toFixed(3)}<br/>
         NBR Δ: ${Number(p.nbr_change ?? 0).toFixed(3)}<br/>
         ${p.n_scenes != null ? `Scènes confirmées: ${Math.round(p.n_scenes)}<br/>` : ''}
@@ -675,14 +706,15 @@ export function Teledetection() {
             <EditControl position="topleft" draw={{ rectangle: true, polygon: true, circle: false, circlemarker: false, marker: false, polyline: false }} />
           </FeatureGroup>
 
-          {/* AVANT (gauche) — Esri Wayback historique date (leger). Repli: S2 GEE avant. */}
+          {/* AVANT (gauche) — Esri Wayback historique date (leger), CLIPPE a gauche du split.
+              Repli: S2 GEE avant. v16 — pane=paneWaybackLeft -> se limite au cote gauche et suit le swipe. */}
           {toggles.s2Split && waybackUrl && (
-            <TileLayer key={`wb-${waybackUrl}`} url={waybackUrl} pane="paneS2"
+            <TileLayer key={`wb-${waybackUrl}`} url={waybackUrl} pane="paneWaybackLeft"
               {...TILE_PERF} maxNativeZoom={18}
               attribution={`Esri Wayback ${waybackDate}`} />
           )}
           {toggles.s2Split && !waybackUrl && beforeTileUrl && (
-            <TileLayer key={`before-${beforeTileUrl}`} url={beforeTileUrl} pane="paneS2" {...TILE_PERF} attribution="© GEE / Copernicus S2 (avant)" />
+            <TileLayer key={`before-${beforeTileUrl}`} url={beforeTileUrl} pane="paneWaybackLeft" {...TILE_PERF} attribution="© GEE / Copernicus S2 (avant)" />
           )}
 
           {/* S2 APRÈS — pane droite clippée */}
@@ -763,6 +795,8 @@ export function Teledetection() {
                 const se = mapInst.containerPointToLayerPoint(mapInst.getSize() as any);
                 const clipX = nw.x + mapInst.getSize().x * (p / 100);
                 pane.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${clipX}px)`;
+                const leftPane = mapInst.getPane('paneWaybackLeft');
+                if (leftPane) leftPane.style.clip = `rect(${nw.y}px, ${clipX}px, ${se.y}px, ${nw.x}px)`;
               };
 
               const onMove = (ev: MouseEvent) => {
@@ -797,6 +831,8 @@ export function Teledetection() {
                   const se = mapInst.containerPointToLayerPoint(mapInst.getSize() as any);
                   const clipX = nw.x + mapInst.getSize().x * (p / 100);
                   pane.style.clip = `rect(${nw.y}px, ${se.x}px, ${se.y}px, ${clipX}px)`;
+                  const leftPane = mapInst.getPane('paneWaybackLeft');
+                  if (leftPane) leftPane.style.clip = `rect(${nw.y}px, ${clipX}px, ${se.y}px, ${nw.x}px)`;
                 }
               }
             }}
@@ -819,9 +855,9 @@ export function Teledetection() {
           </div>
         )}
 
-        {/* v15 — Frise temporelle Wayback : change la date de l'image "avant" (gauche du swipe) */}
+        {/* v16 — Frise temporelle Wayback : a GAUCHE (liee a l'image "avant" = cote gauche du swipe) */}
         {toggles.s2Split && waybackList.length > 0 && waybackIdx >= 0 && (
-          <div className="absolute top-2 md:top-4 left-1/2 -translate-x-1/2 z-[500] pointer-events-auto bg-black/80 backdrop-blur-xl border border-white/10 rounded-xl px-3 py-2 shadow-2xl flex items-center gap-3 w-[300px] max-w-[88vw]">
+          <div className="absolute top-12 md:top-16 left-2 md:left-4 z-[500] pointer-events-auto bg-black/80 backdrop-blur-xl border border-white/10 rounded-xl px-3 py-2 shadow-2xl flex items-center gap-3 w-[300px] max-w-[88vw]">
             <div className="flex flex-col leading-none">
               <span className="text-[8px] text-white/50 font-bold uppercase tracking-widest">Image avant</span>
               <span className="text-[12px] text-white font-mono font-bold">{waybackDate}</span>
@@ -854,7 +890,7 @@ export function Teledetection() {
         {/* Gestion des couches — boutons compacts en bas à droite, à côté de la légende */}
         <div className="absolute bottom-10 right-2 md:bottom-14 md:right-4 z-[500] pointer-events-auto flex flex-col gap-1.5 items-end">
           {/* High confidence only — bascule la couche Alertes vers score >= 3 uniquement */}
-          {(toggles.disturbance || toggles.polygons) && polygons.length > 0 && (
+          {(toggles.disturbance || toggles.polygons) && (polygons.length > 0 || !!distTileUrl) && (
             <button onClick={toggleHighOnly} title="Régénérer la couche en haute confiance uniquement"
               className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold shadow-lg backdrop-blur-md border transition-all",
                 highConfOnly ? "bg-[#7f1d1d] text-white border-red-400/40" : "bg-black/65 text-white/90 border-white/10 hover:bg-black/80")}>
@@ -1026,7 +1062,7 @@ export function Teledetection() {
                     </div>
                     {analysisLevel === 'forest' && (
                       <>
-                        <select value={selectedForest} onChange={e => setSelectedForest(e.target.value)}
+                        <select value={selectedForest} onChange={e => { setSelectedForest(e.target.value); setSelectedCanton(''); }}
                           className="w-full p-2 rounded border border-[var(--border-color)] bg-[var(--bg-main)] text-[var(--text-main)] text-sm">
                           <option value="">— Choisir une forêt —</option>
                           {forestsForZone.map(f => <option key={f} value={f}>{f}</option>)}
@@ -1034,8 +1070,17 @@ export function Teledetection() {
                         {!forestsForZone.length && (
                           <p className="text-[10px] text-[var(--text-muted)] mt-1">Aucune forêt pour ce centre (vérifier le champ CPF du GeoJSON).</p>
                         )}
+                        {selectedForest && cantonsForForest.length > 0 && (
+                          <select value={selectedCanton} onChange={e => setSelectedCanton(e.target.value)}
+                            className="w-full p-2 mt-2 rounded border border-[var(--border-color)] bg-[var(--bg-main)] text-[var(--text-main)] text-sm">
+                            <option value="">— Tous les cantons ({cantonsForForest.length}) —</option>
+                            {cantonsForForest.map(c => <option key={c} value={c}>{c}</option>)}
+                          </select>
+                        )}
                         {selectedForest && (
-                          <p className="text-[10px] text-[var(--brand)] mt-1 font-semibold">Analyse limitée à : {selectedForest}</p>
+                          <p className="text-[10px] text-[var(--brand)] mt-1 font-semibold">
+                            Analyse limitée à : {selectedForest}{selectedCanton ? ` / ${selectedCanton}` : ''}
+                          </p>
                         )}
                       </>
                     )}
