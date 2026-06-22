@@ -1402,10 +1402,3 @@ export function Teledetection() {
                 {isAnalyzing ? <><Hexagon className="w-4 h-4 md:w-5 md:h-5 animate-spin" /> Traitement GEE en cours...</>
                             : <><Play className="w-4 h-4 md:w-5 md:h-5 fill-current" /> Lancer l'analyse</>}
               </button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
