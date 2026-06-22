@@ -28,6 +28,8 @@ export interface AnalyzeParams {
   useRadar?: boolean; useTemporal?: boolean; useSeasonal?: boolean; useExternal?: boolean;
   useForest?: boolean;
   useMultiscene?: boolean; minScenes?: number;
+  // v15 — analyse foret-par-foret : geometrie GeoJSON de la foret selectionnee
+  roiGeojson?: unknown;
 }
 
 export interface AnalyzeStats {
@@ -86,7 +88,7 @@ export interface ForestWatchResult {
 
 // ── Helpers HTTP ─────────────────────────────────────────────────────────────
 function buildBody(p: AnalyzeParams): Record<string, unknown> {
-  return {
+  const body: Record<string, unknown> = {
     zone: toFlaskZone(p.zone),
     date1Start: p.date1Start, date1End: p.date1End,
     date2Start: p.date2Start, date2End: p.date2End,
@@ -100,6 +102,10 @@ function buildBody(p: AnalyzeParams): Record<string, unknown> {
     useForest: p.useForest ?? true,
     useMultiscene: p.useMultiscene ?? true, minScenes: p.minScenes ?? 2,
   };
+  // v15 — si une foret est selectionnee, on envoie sa geometrie : le backend (get_roi)
+  // l'utilise des lors que `zone` n'est pas une cle de centre connue.
+  if (p.roiGeojson) body.roi_geojson = p.roiGeojson;
+  return body;
 }
 
 async function geePost<T>(path: string, body: Record<string, unknown>, timeoutMs = 290_000): Promise<T> {

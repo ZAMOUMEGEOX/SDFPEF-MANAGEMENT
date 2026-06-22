@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { cn } from '../../lib/utils';
 import {
   Satellite, Play, Calendar, CloudRain, ShieldAlert, Layers,
@@ -41,6 +41,20 @@ const ANOMALY_CONFIG: Record<AnomalyLabel, { color: string; label: string; emoji
 const CONF_COLOR: Record<string, string> = {
   highest: '#7f1d1d', high: '#ef4444', medium: '#f97316', low: '#eab308',
 };
+
+// ── Analyse forêt-par-forêt (v15) ───────────────────────────────────────────
+// Mappe la zone (centre/CPF) sélectionnée vers la valeur du champ CPF du GeoJSON.
+const ZONE_TO_CPF: Record<string, string> = {
+  mdiq: 'MDIQ_FNIDEQ', df_mdiq: 'MDIQ_FNIDEQ',
+  tetouan_est: 'TETOUAN_EST', tetouan_ouest: 'TETOUAN_OUEST',
+};
+// Alias d'orthographe -> nom canonique (étendre librement selon les données).
+const FOREST_ALIAS: Record<string, string> = { 'BENI IDER': 'BENI IDDER' };
+const normTxt = (s: unknown): string =>
+  String(s ?? '').trim().toUpperCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
+const normForest = (s: unknown): string => { const n = normTxt(s); return FOREST_ALIAS[n] ?? n; };
+const isJunkForest = (n: string): boolean => !n || n === 'NONE' || /^-+$/.test(n);
 
 // Options anti-flicker pour les tuiles GEE : garde l'ancien niveau visible
 // pendant le chargement du nouveau, et ne recharge qu'à l'arrêt du zoom/pan.
@@ -244,6 +258,9 @@ export function Teledetection() {
   const [isExportExpanded, setIsExportExpanded]             = useState(false);
   const [isTopExpanded, setIsTopExpanded]                   = useState(false);
   const [selectedZone, setSelectedZone]   = useState('mdiq');
+  // v15 — niveau d'analyse : 'cpf' (centre entier, comportement actuel) ou 'forest' (forêt seule)
+  const [analysisLevel, setAnalysisLevel] = useState<'cpf'|'forest'>('cpf');
+  const [selectedForest, setSelectedForest] = useState<string>('');
 
   const [toggles, setToggles] = useState({
     s2Split: true, disturbance: true, polygons: true,
@@ -365,16 +382,60 @@ export function Teledetection() {
     setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null); setMultisceneTileUrl(null);
     setPolygons([]); setTopPolys([]); setSelectedPolyId(null); setPolyError(null);
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
+    setSelectedForest('');   // v15 — la liste des forêts dépend du centre
   }, [selectedZone]);
 
   useEffect(() => { if (phenologyData) setIsPhenologyExpanded(true); }, [phenologyData]);
   useEffect(() => { if (s1Data || realStats) setIsStatsExpanded(true); }, [s1Data, realStats]);
   useEffect(() => { if (topPolys.length) setIsTopExpanded(true); }, [topPolys]);
 
+  // ── v15 — Index des forêts par centre (CPF), dérivé du GeoJSON déjà chargé ──
+  const forestFeatures: any[] = (forestBoundary?.features ?? []);
+  // Map normalisée CPF -> liste triée des forêts (noms canoniques, sans doublons/junk)
+  const forestsByCpf = useMemo(() => {
+    const idx: Record<string, Set<string>> = {};
+    for (const f of forestFeatures) {
+      const cpf = normTxt(f?.properties?.CPF);
+      const name = normForest(f?.properties?.FORET);
+      if (isJunkForest(name)) continue;
+      (idx[cpf] ??= new Set()).add(name);
+    }
+    const out: Record<string, string[]> = {};
+    for (const k of Object.keys(idx)) out[k] = Array.from(idx[k]).sort((a, b) => a.localeCompare(b));
+    return out;
+  }, [forestFeatures]);
+
+  // Forêts du centre actuellement sélectionné
+  const forestsForZone: string[] = forestsByCpf[ZONE_TO_CPF[selectedZone] ?? ''] ?? [];
+
+  // FeatureCollection (parcelles) de la forêt sélectionnée -> envoyé comme roi_geojson
+  const buildForestRoi = (forestName: string) => {
+    const feats = forestFeatures.filter(f => normForest(f?.properties?.FORET) === forestName);
+    return feats.length ? { type: 'FeatureCollection', features: feats } : null;
+  };
+
+  // Recentre la carte sur la forêt choisie
+  useEffect(() => {
+    if (analysisLevel !== 'forest' || !selectedForest) return;
+    const roi = buildForestRoi(selectedForest);
+    if (!roi) return;
+    try {
+      const b = L.geoJSON(roi as any).getBounds();
+      if (b.isValid()) mapRef.current?.fitBounds(b, { padding: [25, 25], maxZoom: 15 });
+    } catch { /* noop */ }
+  }, [analysisLevel, selectedForest]);
+
   const handleToggle = (key: keyof typeof toggles) => setToggles(prev => ({ ...prev, [key]: !prev[key] }));
 
-  const buildParams = (highOnly?: boolean): AnalyzeParams => ({
-    zone: selectedZone, date1Start: refStart, date1End: refEnd,
+  const buildParams = (highOnly?: boolean): AnalyzeParams => {
+    // v15 — mode forêt : on envoie la géométrie de la forêt comme roi_geojson.
+    // `zone` devient le nom de la forêt (pas une clé de centre) -> le backend utilise le roi.
+    const forestMode = analysisLevel === 'forest' && !!selectedForest;
+    const roiGeojson = forestMode ? buildForestRoi(selectedForest) : undefined;
+    return {
+    zone: forestMode ? selectedForest : selectedZone,
+    roiGeojson: roiGeojson ?? undefined,
+    date1Start: refStart, date1End: refEnd,
     date2Start: actStart, date2End: actEnd,
     cloud: cloudMax, sensitivity: ndviThreshold, nbr: nbrThreshold, ndmi: ndmiThreshold,
     // Haute confiance -> on ne garde que score >= 3 (high + highest)
@@ -387,7 +448,8 @@ export function Teledetection() {
     useExternal: true, // Hansen + DIST-ALERT global peu couteux -> toujours actif
     useForest: true,   // contexte vegetal (NDVI ref u couvert arbore) -> domaine boise
     useMultiscene: true, minScenes,  // persistance multi-scenes = colonne vertebrale
-  });
+    };
+  };
 
   const resetParams = () => {
     setCloudMax(30); setNdviThreshold(0.15); setNbrThreshold(0.15);
@@ -900,6 +962,37 @@ export function Teledetection() {
                         <z.icon className="w-4 h-4" />{z.label}
                       </button>
                     ))}
+                  </div>
+
+                  {/* v15 — Niveau d'analyse : centre entier (CPF) ou forêt seule */}
+                  <div className="mt-3 pt-3 border-t border-stone-200/40 dark:border-stone-800/40">
+                    <div className="flex gap-1 mb-2">
+                      <button onClick={() => setAnalysisLevel('cpf')}
+                        className={cn("flex-1 py-1.5 rounded text-[11px] font-bold border transition-all",
+                          analysisLevel === 'cpf' ? "bg-[var(--brand-light)] border-[var(--brand)] text-[var(--brand)]" : "bg-transparent border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
+                        Centre (CPF)
+                      </button>
+                      <button onClick={() => setAnalysisLevel('forest')}
+                        className={cn("flex-1 py-1.5 rounded text-[11px] font-bold border transition-all",
+                          analysisLevel === 'forest' ? "bg-[var(--brand-light)] border-[var(--brand)] text-[var(--brand)]" : "bg-transparent border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
+                        Forêt
+                      </button>
+                    </div>
+                    {analysisLevel === 'forest' && (
+                      <>
+                        <select value={selectedForest} onChange={e => setSelectedForest(e.target.value)}
+                          className="w-full p-2 rounded border border-[var(--border-color)] bg-[var(--bg-main)] text-[var(--text-main)] text-sm">
+                          <option value="">— Choisir une forêt —</option>
+                          {forestsForZone.map(f => <option key={f} value={f}>{f}</option>)}
+                        </select>
+                        {!forestsForZone.length && (
+                          <p className="text-[10px] text-[var(--text-muted)] mt-1">Aucune forêt pour ce centre (vérifier le champ CPF du GeoJSON).</p>
+                        )}
+                        {selectedForest && (
+                          <p className="text-[10px] text-[var(--brand)] mt-1 font-semibold">Analyse limitée à : {selectedForest}</p>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               </section>
