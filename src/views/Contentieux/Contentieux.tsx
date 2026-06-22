@@ -3530,6 +3530,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
   const [autoCurrent, setAutoCurrent]       = useState<number | null>(null);
   const [autoLog, setAutoLog]               = useState<{ num: number; status: 'ok'|'fail'|'linked'|'created'; msg: string }[]>([]);
   const autoResolverRef                     = useRef<((pv: PVRecord | null) => void) | null>(null);
+  const dossierResolverRef                  = useRef<((r: ReturnType<typeof performParsing> | null) => void) | null>(null);
   const autoAbortRef                        = useRef(false);
   const createdCasesRef                     = useRef<Map<string, string>>(new Map());
 
@@ -3628,6 +3629,15 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
 
       // ✅ نتيجة بحث الملفات
       if (d.type === 'MAHAKIM_RESULT' && d.text) {
+        // أثناء أتمتة الملف المرتبط: التقط النتيجة وحُلّها للحلقة (دون تلويث العرض)
+        if (dossierResolverRef.current) {
+          const parsedAuto = performParsing(d.text);
+          const r = dossierResolverRef.current; dossierResolverRef.current = null;
+          freshSearchRef.current = false;
+          setIsSearching(false); setSearchStage('');
+          r(parsedAuto);
+          return;
+        }
         const isFresh = freshSearchRef.current;
         freshSearchRef.current = false;
         if (isFresh) {
@@ -3663,6 +3673,12 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
         return;
       }
       if (d.type === 'MAHAKIM_ERROR') {
+        // أثناء أتمتة الملف: مرّر فشلاً للحلقة لتتابع للمحضر التالي
+        if (dossierResolverRef.current) {
+          const r = dossierResolverRef.current; dossierResolverRef.current = null;
+          freshSearchRef.current = false; setIsSearching(false); setSearchStage('');
+          r(null); return;
+        }
         freshSearchRef.current = false; setIsSearching(false); setSearchStage('');
         const ERR: Record<string,string> = {
           no_results: 'لا توجد نتيجة لهذا الرقم', timeout: 'انتهت المهلة',
@@ -3795,32 +3811,36 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
   // ── الأتمتة: معالجة نطاق أرقام محاضر تلقائياً (النقطة 18) ──────────────
   // ════════════════════════════════════════════════════════════════════
 
-  /** حفظ محضر تلقائياً مع ربط بملف مطابق أو إنشاء ملف جديد. يُستخدم داخل الحلقة. */
-  const autoSavePV = async (pv: PVRecord): Promise<'ok'|'linked'|'created'> => {
-    const ref = pv.linkedFileNumber
-      || [(pv as any).fileNum, (pv as any).fileMark, (pv as any).fileYear].filter(Boolean).join('/');
-    const k = fileNumKey(ref);
-    let linkedId = pv.linkedCaseId || '';
-    let status: 'ok'|'linked'|'created' = 'ok';
-    if (k) {
-      const match = allCases.find(c => c.mahakimId && fileNumKey(c.mahakimId) === k);
-      if (match) { linkedId = match.id; status = 'linked'; }
-      else if (createdCasesRef.current.has(k)) { linkedId = createdCasesRef.current.get(k)!; status = 'linked'; }
-      else {
-        const nc = pvRecordToCase(pv);
-        await onSave(nc);
-        createdCasesRef.current.set(k, nc.id);
-        linkedId = nc.id; status = 'created';
-      }
-    }
-    const finalPV: PVRecord = { ...pv, linkedCaseId: linkedId || undefined, lastSyncedAt: new Date().toISOString() };
+  /** حفظ سجل المحضر في قاعدة المحاضر (مع ربط اختياري بملف). لا يُنشئ ملفاً هنا. */
+  const autoSavePVRecord = async (pv: PVRecord, linkedCaseId?: string) => {
+    const finalPV: PVRecord = {
+      ...pv,
+      linkedCaseId: linkedCaseId || pv.linkedCaseId || undefined,
+      lastSyncedAt: new Date().toISOString(),
+    };
     await savePVRecordDB(finalPV);
     setPvRecords(prev => {
       const exists = prev.find(p => p.id === finalPV.id);
       return exists ? prev.map(p => p.id === finalPV.id ? finalPV : p) : [finalPV, ...prev];
     });
     onSavePV?.(finalPV);
-    return status;
+  };
+
+  /** يبني ملفاً قضائياً من نتيجة تتبع الملفات ويحفظه عبر onSave. يُرجِع معرّف الملف. */
+  const saveDossierResult = async (r: ReturnType<typeof performParsing>, fixedId?: string): Promise<string> => {
+    const id = fixedId || `CTX-${new Date().getFullYear()}-${Math.floor(Math.random()*9000)+1000}`;
+    await onSave({
+      id,
+      mahakimId:  r.mahakimId  !== '-' ? r.mahakimId  : undefined,
+      nationalId: r.nationalId !== '-' ? r.nationalId : undefined,
+      court: r.court, type: r.type, subject: r.subject, date: r.date,
+      judge:   r.judge   !== '-' ? r.judge   : undefined,
+      section: r.section !== '-' ? r.section : undefined,
+      status: r.status, nextSession: r.nextSession !== '-' ? r.nextSession : undefined,
+      defendant: r.defendant, parties: r.parties, procedures: r.procedures,
+      lastSyncedAt: new Date().toISOString(), syncCount: 1,
+    });
+    return id;
   };
 
   /** بحث عن محضر واحد ويُرجِع وعداً يُحَلّ عند وصول النتيجة (أو فشلاً/مهلة). */
@@ -3838,7 +3858,33 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     }}, '*');
   });
 
-  /** حلقة الأتمتة على نطاق الأرقام: بحث → حفظ → ربط/إنشاء → التالي. */
+  /** بحث عن ملف قضائي واحد في "تتبع الملفات" ويُرجِع نتيجة التحليل (أو null). */
+  const searchDossierOnce = (num: string, mark: string, year: string, court: string): Promise<ReturnType<typeof performParsing> | null> =>
+    new Promise((resolve) => {
+      const isAppeal = court.startsWith('استئناف ');
+      const courtName = isAppeal ? court.replace('استئناف ', '').trim() : court;
+      const PRIMARY = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
+      const isPrimary = !isAppeal && PRIMARY.includes(court);
+      let done = false;
+      const finish = (r: ReturnType<typeof performParsing> | null) => { if (done) return; done = true; dossierResolverRef.current = null; clearTimeout(to); resolve(r); };
+      dossierResolverRef.current = finish;
+      freshSearchRef.current = true;
+      setRemoteNum(num); setRemoteMark(mark); setRemoteYear(year); setRemoteCourt(court);
+      setExtractMode('portal');
+      const to = setTimeout(() => finish(null), 100000);
+      window.postMessage({ type: 'MAHAKIM_TO_EXTENSION', payload: {
+        searchType: 'dossier', numero: num, mark, year, court: courtName, isPrimary,
+      }}, '*');
+    });
+
+  /**
+   * حلقة الأتمتة على نطاق الأرقام — الدورة الكاملة لكل محضر بضغطة واحدة:
+   *   1) بحث المحضر في البوابة (مع إعادة محاولة واحدة عند فشل عابر).
+   *   2) حفظ المحضر تلقائياً في قاعدة المحاضر.
+   *   3) بحث تلقائي عن الملف القضائي المرتبط (المستخرج رقمه من المحضر) في
+   *      "تتبع الملفات"، ثم حفظه في القاعدة القضائية تلقائياً.
+   *   4) ربط المحضر بالملف، تفريغ البوابة، والانتقال للمحضر التالي.
+   */
   const runAutomation = async () => {
     const from = parseInt(autoFrom, 10), to = parseInt(autoTo, 10);
     if (isNaN(from) || isNaN(to) || from < 1 || to < from) { alert('أدخل نطاقاً صحيحاً (من ≤ إلى).'); return; }
@@ -3847,22 +3893,75 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     if (to - from > 200 && !confirm(`ستُعالَج ${to - from + 1} محضراً تلقائياً. هل تتابع؟`)) return;
 
     setAutoRunning(true); setAutoLog([]); autoAbortRef.current = false; createdCasesRef.current.clear();
+    setMainTab('pv'); setExtractMode('portal');
+
     for (let n = from; n <= to; n++) {
       if (autoAbortRef.current) break;
       setAutoCurrent(n); setPvNumber(String(n)); setPvSearchStage(`أتمتة: محضر رقم ${n}`);
-      const pv = await searchPVOnce(String(n));
+
+      // 1) بحث المحضر — مع إعادة محاولة واحدة عند الفشل العابر
+      let pv = await searchPVOnce(String(n));
+      if (!pv && !autoAbortRef.current) {
+        setPvSearchStage(`إعادة محاولة محضر رقم ${n}`);
+        await new Promise(r => setTimeout(r, 1300));
+        pv = await searchPVOnce(String(n));
+      }
       const hasData = !!(pv && (pv.pvCourtRef || pv.linkedFileNumber || (pv.parties && pv.parties.length)));
       if (!hasData) {
         setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'لا نتيجة' }]);
-      } else {
-        try {
-          const st = await autoSavePV(pv!);
-          setAutoLog(l => [...l, { num: n, status: st, msg: st === 'created' ? 'حُفظ + أُنشئ ملف' : st === 'linked' ? 'حُفظ + رُبط بملف' : 'حُفظ' }]);
-        } catch {
-          setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'فشل الحفظ' }]);
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+
+      // 2) استخراج رقم الملف المرتبط
+      let fnum = pv!.fileNum || '', fmark = pv!.fileMark || '', fyear = pv!.fileYear || '';
+      if (!fnum && pv!.linkedFileNumber) {
+        const s = splitFileRef(pv!.linkedFileNumber); fnum = s.num; fmark = s.mark; fyear = s.year;
+      }
+
+      // 3) بحث الملف المرتبط في "تتبع الملفات" وحفظه — ثم ربط المحضر به
+      let linkedCaseId = ''; let fileMsg = '';
+      if (fnum) {
+        const fKey = fileNumKey(`${fnum}/${fmark}/${fyear}`);
+        const cached = createdCasesRef.current.get(fKey);
+        if (cached) {
+          linkedCaseId = cached; fileMsg = ' + الملف (مرتبط)';
+        } else {
+          const court = pv!.linkedFile?.court || pv!.court || pvCourt;
+          setPvSearchStage(`أتمتة: ملف ${fnum}/${fmark}/${fyear}`);
+          let dres = await searchDossierOnce(fnum, fmark, fyear, court);
+          if (!dres && !autoAbortRef.current) {
+            await new Promise(r => setTimeout(r, 1300));
+            dres = await searchDossierOnce(fnum, fmark, fyear, court);
+          }
+          const dossierOk = !!(dres && ((dres.mahakimId && dres.mahakimId !== '-') || (dres.procedures && dres.procedures.length) || (dres.parties && dres.parties.length)));
+          if (dossierOk) {
+            try {
+              const caseId = `CTX-FILE-${fKey}`;
+              await saveDossierResult(dres!, caseId);
+              createdCasesRef.current.set(fKey, caseId);
+              linkedCaseId = caseId; fileMsg = ' + حُفظ الملف';
+            } catch { fileMsg = ' (فشل حفظ الملف)'; }
+          } else {
+            fileMsg = ' (الملف بلا نتيجة)';
+          }
         }
       }
-      await new Promise(r => setTimeout(r, 700)); // مهلة قصيرة بين المحاضر
+
+      // 4) حفظ المحضر (مربوطاً بالملف إن وُجد)
+      let pvStatus: 'ok'|'linked'|'created' = linkedCaseId ? 'linked' : 'ok';
+      try {
+        await autoSavePVRecord(pv!, linkedCaseId || undefined);
+      } catch {
+        setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'فشل حفظ المحضر' }]);
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+      setAutoLog(l => [...l, { num: n, status: pvStatus, msg: `حُفظ المحضر${fileMsg}` }]);
+
+      // 5) تفريغ والانتقال للتالي
+      setResult(null); setPasteData(''); pasteCount.current = 0;
+      await new Promise(r => setTimeout(r, 800));
     }
     setAutoRunning(false); setAutoCurrent(null); setPvSearchStage('');
   };
@@ -4239,7 +4338,8 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
                         <Sparkles className="size-3.5"/> أتمتة نطاق المحاضر
                       </p>
                       <p className="text-[9px] text-stone-500 leading-snug">
-                        يبحث عن كل محضر في النطاق، يستخرجه، يحفظه، ويربطه بملفه القضائي (أو يُنشئه) — دون أي تدخّل.
+                        لكل محضر في النطاق وبضغطة واحدة: يبحث عن المحضر ويستخرجه ويحفظه، ثم يبحث تلقائياً عن
+                        <strong> الملف القضائي المرتبط</strong> في «تتبع الملفات» ويحفظه ويربطه بالمحضر — دون أي تدخّل.
                         تُستعمل <strong>السنة والمحكمة والمصلحة المختارة أعلاه</strong>.
                       </p>
                       <div className="flex gap-2 items-end">
