@@ -278,6 +278,9 @@ export function Teledetection() {
   const [s1TileUrl, setS1TileUrl]           = useState<string|null>(null);
   const [phenologyTileUrl, setPhenologyTileUrl] = useState<string|null>(null);
   const [multisceneTileUrl, setMultisceneTileUrl] = useState<string|null>(null);
+  // Esri Wayback — imagerie historique datee pour le "avant" du swipe (legere)
+  const [waybackUrl, setWaybackUrl]         = useState<string|null>(null);
+  const [waybackDate, setWaybackDate]       = useState<string>('');
   const [polygons, setPolygons]             = useState<PolygonFeature[]>([]);
   const [beforeLabel, setBeforeLabel]       = useState<string>('Sentinel-2 (avant)');
   const [afterLabel, setAfterLabel]         = useState<string>('Sentinel-2 (après)');
@@ -303,6 +306,29 @@ export function Teledetection() {
   useEffect(() => {
     fetch('/assets/data/forest_limits.json').then(r => r.json()).then(setForestBoundary).catch(() => {});
   }, []);
+
+  // Esri Wayback : choisit le millesime historique le plus proche (<=) de la periode de reference
+  useEffect(() => {
+    let cancelled = false;
+    fetch('https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json')
+      .then(r => r.json())
+      .then((cfg: Record<string, any>) => {
+        if (cancelled) return;
+        const items = Object.values(cfg)
+          .map((v: any) => ({
+            url: v.itemURL as string,
+            date: (String(v.itemTitle || '').match(/\d{4}-\d{2}-\d{2}/) || [''])[0],
+          }))
+          .filter(i => i.date)
+          .sort((a, b) => a.date.localeCompare(b.date));
+        if (!items.length) return;
+        const best = items.filter(i => i.date <= refEnd).pop() || items[0];
+        setWaybackUrl(best.url + '/tile/{z}/{y}/{x}');
+        setWaybackDate(best.date);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [refEnd]);
 
   // Centrer la carte sur les limites du domaine forestier de la zone sélectionnée
   useEffect(() => {
@@ -345,10 +371,10 @@ export function Teledetection() {
     // Triple confirmation -> rigueur max (optique + radar + persistance + Hansen + saisonnier)
     useRadar:    tripleConf || toggles.sentinel1,
     useTemporal: tripleConf,
-    useSeasonal: tripleConf || toggles.phenology,
-    useExternal: true, // Hansen peu coûteux -> toujours actif
-    useForest: true,   // masque forêt (couvert arboré) -> ne signale que le domaine boisé
-    useMultiscene: multiScene, minScenes,
+    useSeasonal: true,               // toujours: tue les alertes saisonnieres (jachere/secheresse)
+    useExternal: true, // Hansen + DIST-ALERT global peu couteux -> toujours actif
+    useForest: true,   // contexte vegetal (NDVI ref u couvert arbore) -> domaine boise
+    useMultiscene: true, minScenes,  // persistance multi-scenes = colonne vertebrale
   });
 
   const resetParams = () => {
@@ -511,6 +537,8 @@ export function Teledetection() {
         NBR Δ: ${Number(p.nbr_change ?? 0).toFixed(3)}<br/>
         ${p.n_scenes != null ? `Scènes confirmées: ${Math.round(p.n_scenes)}<br/>` : ''}
         ${p.hansen_year ? `Hansen: ${p.hansen_year}<br/>` : ''}
+        ${(p.lat != null && p.lng != null) ? `<span style="color:#555">${Number(p.lat).toFixed(5)}, ${Number(p.lng).toFixed(5)}</span><br/>
+        <a href="https://earth.google.com/web/@${p.lat},${p.lng},500a,800d,35y,0h,0t,0r" target="_blank" rel="noopener" style="color:#2563eb;font-weight:bold">📍 Ouvrir dans Google Earth</a>` : ''}
       </div>`
     );
     layer.on('click', () => applySelection(layer));
@@ -546,8 +574,13 @@ export function Teledetection() {
             <EditControl position="topleft" draw={{ rectangle: true, polygon: true, circle: false, circlemarker: false, marker: false, polyline: false }} />
           </FeatureGroup>
 
-          {/* S2 AVANT — pane S2 (sous tout le reste, ne recouvre rien) */}
-          {toggles.s2Split && beforeTileUrl && (
+          {/* AVANT (gauche) — Esri Wayback historique date (leger). Repli: S2 GEE avant. */}
+          {toggles.s2Split && waybackUrl && (
+            <TileLayer key={`wb-${waybackUrl}`} url={waybackUrl} pane="paneS2"
+              {...TILE_PERF} maxNativeZoom={18}
+              attribution={`Esri Wayback ${waybackDate}`} />
+          )}
+          {toggles.s2Split && !waybackUrl && beforeTileUrl && (
             <TileLayer key={`before-${beforeTileUrl}`} url={beforeTileUrl} pane="paneS2" {...TILE_PERF} attribution="© GEE / Copernicus S2 (avant)" />
           )}
 

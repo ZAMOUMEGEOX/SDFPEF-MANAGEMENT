@@ -94,11 +94,11 @@ function buildBody(p: AnalyzeParams): Record<string, unknown> {
     sensitivity: p.sensitivity ?? 0.15,
     nbr: p.nbr ?? 0.15, ndmi: p.ndmi ?? 0.12, vv: p.vv ?? 2.0,
     minScore: p.minScore ?? 2, minArea: p.minArea ?? 500,
-    // Defaut LEGER (rapide) — les preuves lourdes ne tournent que si activees via les toggles
+    // v14 — persistance multi-scenes + saisonnier = colonne vertebrale anti-faux-positifs (ON par defaut)
     useRadar: p.useRadar ?? false, useTemporal: p.useTemporal ?? false,
-    useSeasonal: p.useSeasonal ?? false, useExternal: p.useExternal ?? true,
+    useSeasonal: p.useSeasonal ?? true, useExternal: p.useExternal ?? true,
     useForest: p.useForest ?? true,
-    useMultiscene: p.useMultiscene ?? false, minScenes: p.minScenes ?? 2,
+    useMultiscene: p.useMultiscene ?? true, minScenes: p.minScenes ?? 2,
   };
 }
 
