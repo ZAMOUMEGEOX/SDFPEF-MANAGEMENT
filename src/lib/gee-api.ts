@@ -48,6 +48,7 @@ export interface PolygonProps {
   preuves?: string;
   ev_optic?: number; ev_persist?: number; ev_radar?: number;
   ev_external?: number; ev_seasonal?: number; ev_temporal?: number;
+  score_w?: number;   // v17 — score pondere brut (0..9)
 }
 export interface PolygonFeature {
   type: "Feature";

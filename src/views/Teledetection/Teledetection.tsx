@@ -662,7 +662,7 @@ export function Teledetection() {
     const p = f.properties ?? {};
     layer.bindPopup(
       `<div style="font-size:11px;line-height:1.7;min-width:170px">
-        <strong>#${p.id} — ${p.confidence}</strong> (score ${Number(p.conf_score ?? 0).toFixed(1)}/6)<br/>
+        <strong>#${p.id} — ${p.confidence}</strong> (classe ${Number(p.conf_score ?? 0).toFixed(0)}/4${p.score_w != null ? ` · pond. ${Number(p.score_w).toFixed(1)}` : ''})<br/>
         Aire: <strong>${Number(p.area_ha ?? 0).toFixed(3)} ha</strong> (${Math.round(p.area_m2 ?? 0)} m²)<br/>
         ${p.preuves ? `Preuves: <strong>${p.preuves}</strong><br/>` : ''}
         NDVI Δ: ${Number(p.ndvi_change ?? 0).toFixed(3)}<br/>
@@ -920,7 +920,7 @@ export function Teledetection() {
               </div>
               {!isLegendMinimized && (
                 <div className="p-2.5 md:p-3 space-y-2">
-                  {[['#7f1d1d','Très haute (4 preuves)'],['#ef4444','Haute (3)'],['#f97316','Moyenne (2)'],['#eab308','Faible (1)']].map(([c, label]) => (
+                  {[['#7f1d1d','Très haute (corrob. forte)'],['#ef4444','Haute (2 preuves fortes)'],['#f97316','Moyenne (1 preuve forte)'],['#eab308','Faible (détecté)']].map(([c, label]) => (
                     <div key={label} className="flex items-center gap-2">
                       <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: c as string, boxShadow: `0 0 8px ${c}88` }} />
                       <span className="text-[10px] md:text-[11px] text-white/90">{label}</span>
