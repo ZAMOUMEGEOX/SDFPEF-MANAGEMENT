@@ -161,6 +161,55 @@ export async function checkGeeHealth(): Promise<GeeHealthStatus | null> {
 export async function runAnalyze(p: AnalyzeParams): Promise<AnalyzeResult> {
   return geePost<AnalyzeResult>("/gee/analyze", buildBody(p));
 }
+
+// v19 — Analyse ASYNCHRONE : lance une tâche, interroge l'état (barre de
+// progression), aucun timeout sur grandes forêts, annulation possible.
+export interface AnalyzeProgress { progress: number; message: string; status: string }
+export interface AnalyzeHandle { taskId: string; cancel: () => Promise<void> }
+
+export async function runAnalyzeAsync(
+  p: AnalyzeParams,
+  onProgress?: (u: AnalyzeProgress) => void,
+  onHandle?: (h: AnalyzeHandle) => void,
+): Promise<AnalyzeResult> {
+  // 1) Lancement -> task_id immédiat
+  const start = await geePost<{ task_id: string; cached?: boolean }>("/gee/analyze-async", buildBody(p));
+  const taskId = start.task_id;
+  let cancelled = false;
+
+  const cancel = async () => {
+    cancelled = true;
+    try { await fetch(`${API_BASE}/gee/analyze-cancel/${taskId}`, { method: "POST" }); } catch { /* noop */ }
+  };
+  onHandle?.({ taskId, cancel });
+
+  // 2) Polling de l'état toutes les 1.5 s (léger)
+  const POLL_MS = 1500;
+  const MAX_MS = 15 * 60_000;   // garde-fou : 15 min max
+  const t0 = Date.now();
+
+  while (true) {
+    if (cancelled) throw new Error("Analyse annulée");
+    await new Promise(r => setTimeout(r, POLL_MS));
+    if (Date.now() - t0 > MAX_MS) throw new Error("Délai maximal dépassé");
+
+    let st: any;
+    try {
+      const res = await fetch(`${API_BASE}/gee/analyze-status/${taskId}`);
+      st = await res.json();
+      if (!res.ok) throw new Error(st?.error ?? `HTTP ${res.status}`);
+    } catch (e) {
+      // erreur réseau transitoire -> on retente au prochain tour
+      continue;
+    }
+
+    onProgress?.({ progress: st.progress ?? 0, message: st.message ?? "", status: st.status });
+
+    if (st.status === "done") return st.result as AnalyzeResult;
+    if (st.status === "error") throw new Error(st.error ?? "Erreur GEE");
+    if (st.status === "cancelled") throw new Error("Analyse annulée");
+  }
+}
 // NB : le Top-N est dérivé directement de runAnalyze().polygons (déjà triés par aire),
 // donc aucune requête séparée n'est nécessaire (perf).
 
@@ -172,6 +221,79 @@ export async function fetchForestWatchLayer(p: AnalyzeParams): Promise<ForestWat
 export async function fetchSentinel1Change(p: AnalyzeParams): Promise<Sentinel1Result | null> {
   try { return await geePost<Sentinel1Result>("/gee/sentinel1-change", buildBody(p)); }
   catch (e) { console.warn("[Sentinel-1]", e); return null; }
+}
+
+// v18 — Scenes Sentinel-2 historiques avec dates de capture REELLES (frise "avant")
+export interface S2Scene { date: string; url: string; cloud: number }
+export async function fetchS2Scenes(p: AnalyzeParams, start: string, end: string): Promise<S2Scene[]> {
+  try {
+    const body = { ...buildBody(p), start, end, cloud: 45, limit: 24 };
+    const r = await geePost<{ scenes: S2Scene[] }>("/gee/s2-scenes", body);
+    return r.scenes ?? [];
+  } catch (e) { console.warn("[S2-scenes]", e); return []; }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// v20 — Suivi des alertes + retour terrain (Supabase, via le backend Flask)
+// ───────────────────────────────────────────────────────────────────────────
+export type Verdict = "confirme" | "faux" | "en_cours" | "cloture";
+export interface AccuracyRow { conf_score: number; confirme: number; faux: number; total: number; accuracy_pct: number | null }
+
+// Enregistre les alertes haute-confiance de la dernière analyse (idempotent par geohash)
+export async function saveAlerts(features: PolygonFeature[], zone: string, minScore = 3, type: "changement" | "incendie" = "changement"): Promise<number> {
+  try {
+    const r = await geePost<{ saved: number }>("/gee/alerts/save", { features, zone, min_score: minScore, type });
+    return r.saved ?? 0;
+  } catch (e) { console.warn("[alerts/save]", e); return 0; }
+}
+
+// v22 — Lecture des alertes archivées (pour les afficher à l'ouverture d'une zone)
+export interface SavedAlert {
+  geohash: string; zone: string; type: string;
+  lat: number; lng: number; conf_score: number; confidence: string;
+  area_ha: number; preuves: string; status: string;
+  detections: number; first_seen: string; last_seen: string;
+}
+export async function fetchSavedAlerts(zone: string, includeClosed = false): Promise<{ alerts: SavedAlert[]; by_status: Record<string, number> }> {
+  try {
+    const qs = `?zone=${encodeURIComponent(zone)}${includeClosed ? "&all=true" : ""}`;
+    const r = await fetch(`${API_BASE}/gee/alerts/list${qs}`);
+    const j = await r.json();
+    return { alerts: j?.alerts ?? [], by_status: j?.by_status ?? {} };
+  } catch (e) { console.warn("[alerts/list]", e); return { alerts: [], by_status: {} }; }
+}
+
+// Verdict terrain sur une alerte (par coordonnées -> le backend calcule le geohash)
+export async function sendAlertVerdict(lat: number, lng: number, verdict: Verdict, confScore?: number, note?: string): Promise<boolean> {
+  try {
+    await geePost("/gee/alerts/feedback", { lat, lng, verdict, conf_score: confScore, note });
+    return true;
+  } catch (e) { console.warn("[alerts/feedback]", e); return false; }
+}
+
+// Taux de fiabilité réel par classe (validation scientifique)
+export async function fetchAccuracy(): Promise<AccuracyRow[]> {
+  try {
+    const r = await fetch(`${API_BASE}/gee/alerts/accuracy`);
+    const j = await r.json();
+    return j?.by_class ?? [];
+  } catch (e) { console.warn("[accuracy]", e); return []; }
+}
+
+// v21 — Détection des incendies de forêt (dNBR + thermique MODIS/VIIRS FIRMS)
+export interface FireResult {
+  dnbrTileUrl: string | null;
+  thermalTileUrl: string | null;
+  firms_points: { lat: number; lng: number }[];
+  firms_count: number;
+  burned_ha: number | null;
+  fire_confirmed: boolean;
+  verdict: string;
+  period: string;
+}
+export async function fetchFireDetection(p: AnalyzeParams): Promise<FireResult | null> {
+  try { return await geePost<FireResult>("/gee/fire-detection", buildBody(p)); }
+  catch (e) { console.warn("[fire]", e); return null; }
 }
 
 export async function fetchPhenology(zone: string, dateStart: string, dateEnd: string, cloud = 30): Promise<PhenologyResult | null> {
