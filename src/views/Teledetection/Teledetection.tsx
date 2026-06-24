@@ -32,6 +32,7 @@ import {
   exportPolygonsKml,
   exportPolygonsShp,
   exportPolygonsCsv,
+  exportAnnualCsv,
   type PolygonFeature,
   type AnalyzeParams,
   type AnomalyLabel,
@@ -77,6 +78,18 @@ const isJunkForest = (n: string): boolean => !n || n === 'NONE' || /^-+$/.test(n
 
 // Imagerie "actuelle" (côté droit du swipe) quand aucune image S2 "après" n'existe encore.
 const ARCGIS_IMAGERY = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+
+// Index de l'image la PLUS PROCHE d'une date cible (pour ne pas se perdre entre les dates).
+const nearestIdx = (list: { date: string }[], target: string): number => {
+  if (!list.length) return -1;
+  const t = new Date(target).getTime();
+  let best = 0, bestD = Infinity;
+  list.forEach((it, i) => {
+    const d = Math.abs(new Date(it.date).getTime() - t);
+    if (Number.isFinite(d) && d < bestD) { bestD = d; best = i; }
+  });
+  return best;
+};
 
 // Options anti-flicker pour les tuiles GEE : garde l'ancien niveau visible
 // pendant le chargement du nouveau, et ne recharge qu'à l'arrêt du zoom/pan.
@@ -582,13 +595,12 @@ export function Teledetection() {
         items.sort((a, b) => a.date.localeCompare(b.date));
         waybackAllRef.current = items;
         setWaybackList(items);
-        let idx = items.findIndex(i => i.date > refEnd);
-        idx = idx === -1 ? items.length - 1 : Math.max(0, idx - 1);
-        setWaybackIdx(idx);
+        // défaut : image Wayback la plus proche de la date d'analyse (actEnd)
+        setWaybackIdx(nearestIdx(items, actEnd));
       } catch { /* repli S2 conservé, jamais de crash */ }
     })();
     return () => { cancelled = true; };
-  }, [refEnd]);
+  }, [refEnd, actEnd]);
 
   // Conversion lat/lng -> tuile XYZ (pour interroger les services Wayback par lieu)
   const lonLatToTile = (lng: number, lat: number, z: number) => {
@@ -644,9 +656,10 @@ export function Teledetection() {
       // déduplique par date de capture réelle (zéro mosaïque répétée)
       refined.sort((a, b) => a.capture.localeCompare(b.capture));
       const deduped = refined.filter(r => (seen.has(r.capture) ? false : (seen.add(r.capture), true)));
-      const list = deduped.map(r => ({ url: r.url, date: r.capture }));
-      setWaybackList(list);
-      setWaybackIdx(list.length - 1);
+      // honnêteté : on garde la VRAIE date de capture ; on marque les dates de publication.
+      const list = deduped.map(r => ({ url: r.url, date: r.capture, real: r.capture !== r.date }));
+      setWaybackList(list as any);
+      setWaybackIdx(nearestIdx(list, actEnd));   // défaut = plus proche de l'analyse
     } catch { /* repli : on garde la liste complète déjà affichée */ }
   };
 
@@ -725,7 +738,7 @@ export function Teledetection() {
         if (cancelled || !list?.length) { setS2List([]); setS2Idx(-1); return; }
         list.sort((a, b) => a.date.localeCompare(b.date));
         setS2List(list);
-        setS2Idx(list.length - 1);  // la plus récente par défaut
+        setS2Idx(nearestIdx(list, actEnd));  // défaut : scène la plus proche de la date d'analyse
       } catch { if (!cancelled) { setS2List([]); setS2Idx(-1); } }
       finally { if (!cancelled) setS2Loading(false); }
     })();
@@ -1054,6 +1067,8 @@ export function Teledetection() {
 
   // v21 — détection d'incendies (dNBR + thermique FIRMS) sur la zone/période
   const runFireDetection = async () => {
+    // Déjà calculé -> simple bascule de visibilité (zéro recalcul GEE).
+    if (fireData) { setShowFire(true); setFireVisible(v => !v); return; }
     if (geeStatus === 'error') { setErrorMsg('GEE hors-ligne'); return; }
     setFireLoading(true); setErrorMsg(null);
     try {
@@ -1327,47 +1342,49 @@ export function Teledetection() {
               visibilité via l'opacité (0 = masquée). Ainsi un toggle OFF/ON ne
               démonte pas la couche : les tuiles restent en cache → réaffichage
               instantané, sans recalcul ni rechargement. */}
-          {ndviTileUrl && (
+          {/* Indices — montés UNIQUEMENT si activés. Une couche opacity:0 charge
+              quand même ses tuiles (= calcul GEE invisible à chaque pan/zoom) :
+              les démonter quand elles sont OFF supprime ce gaspillage. Avec le
+              cache de tuiles (USE_TILE_PROXY), le ré-affichage reste rapide. */}
+          {toggles.ndviDelta && ndviTileUrl && (
             <TileLayer key={`ndvi-${ndviTileUrl}`} url={ndviTileUrl} pane="paneIndices"
-              opacity={toggles.ndviDelta ? opacity.ndvi : 0} {...TILE_PERF} attribution="GEE NDVI Δ" />
+              opacity={opacity.ndvi} {...TILE_PERF} attribution="GEE NDVI Δ" />
           )}
-          {nbrTileUrl && (
+          {toggles.nbrDelta && nbrTileUrl && (
             <TileLayer key={`nbr-${nbrTileUrl}`} url={nbrTileUrl} pane="paneIndices"
-              opacity={toggles.nbrDelta ? opacity.nbr : 0} {...TILE_PERF} attribution="GEE NBR Δ (dNBR)" />
+              opacity={opacity.nbr} {...TILE_PERF} attribution="GEE NBR Δ (dNBR)" />
           )}
-          {hansenTileUrl && (
+          {toggles.forestWatch && hansenTileUrl && (
             <TileLayer key={`hansen-${hansenTileUrl}`} url={hansenTileUrl} pane="paneIndices"
-              opacity={toggles.forestWatch ? opacity.hansen : 0} {...TILE_PERF} attribution="UMD Hansen GFC" />
+              opacity={opacity.hansen} {...TILE_PERF} attribution="UMD Hansen GFC" />
           )}
-          {distAlertTileUrl && (
+          {toggles.forestWatch && distAlertTileUrl && (
             <TileLayer key={`distalert-${distAlertTileUrl}`} url={distAlertTileUrl} pane="paneIndices"
-              opacity={toggles.forestWatch ? opacity.hansen : 0} {...TILE_PERF} attribution="OPERA DIST-ALERT" />
+              opacity={opacity.hansen} {...TILE_PERF} attribution="OPERA DIST-ALERT" />
           )}
-          {s1TileUrl && (
+          {toggles.sentinel1 && s1TileUrl && (
             <TileLayer key={`s1-${s1TileUrl}`} url={s1TileUrl} pane="paneIndices"
-              opacity={toggles.sentinel1 ? opacity.s1 : 0} {...TILE_PERF} attribution="GEE Sentinel-1 SAR" />
+              opacity={opacity.s1} {...TILE_PERF} attribution="GEE Sentinel-1 SAR" />
           )}
-          {phenologyTileUrl && (
+          {toggles.phenology && phenologyTileUrl && (
             <TileLayer key={`pheno-${phenologyTileUrl}`} url={phenologyTileUrl} pane="paneIndices"
-              opacity={toggles.phenology ? opacity.pheno : 0} {...TILE_PERF} attribution="GEE Phénologie" />
+              opacity={opacity.pheno} {...TILE_PERF} attribution="GEE Phénologie" />
           )}
 
-          {/* ALERTES (raster de confiance, toutes classes) — pane alertes.
-              Reste montée tant que distTileUrl existe ; le toggle ne fait que
-              changer l'opacité (zéro recalcul, zéro latence au retour). */}
+          {/* ALERTES (raster de confiance) — couche PRIMAIRE : reste montée,
+              le toggle ne change que l'opacité (ré-affichage instantané). */}
           {distTileUrl && (
             <TileLayer key={`dist-${distTileUrl}`} url={distTileUrl} pane="paneAlertes"
               opacity={toggles.disturbance ? opacity.alertes : 0} {...TILE_PERF} attribution="GEE Confiance" />
           )}
-          {/* HAUTE CONFIANCE — couche INDÉPENDANTE (score ≥ 3), palette magenta,
-              propre toggle + opacité. N'altère jamais la couche Alertes. */}
-          {highOnlyTileUrl && (
+          {/* HAUTE CONFIANCE (score ≥ 3) — montée uniquement si activée */}
+          {toggles.highOnly && highOnlyTileUrl && (
             <TileLayer key={`high-${highOnlyTileUrl}`} url={highOnlyTileUrl} pane="paneMultiscene"
-              opacity={toggles.highOnly ? opacity.highOnly : 0} {...TILE_PERF} attribution="GEE Haute confiance (≥3)" />
+              opacity={opacity.highOnly} {...TILE_PERF} attribution="GEE Haute confiance (≥3)" />
           )}
-          {multisceneTileUrl && (
+          {multiScene && multisceneTileUrl && (
             <TileLayer key={`ms-${multisceneTileUrl}`} url={multisceneTileUrl} pane="paneMultiscene"
-              opacity={multiScene ? opacity.multiscene : 0} {...TILE_PERF} attribution="GEE Multi-scène S2" />
+              opacity={opacity.multiscene} {...TILE_PERF} attribution="GEE Multi-scène S2" />
           )}
 
           {/* Limites — pane limits (au-dessus, cliquable) */}
@@ -1509,43 +1526,61 @@ export function Teledetection() {
               </div>
             </div>
 
-            {beforeSource === 'wayback' ? (
-              <>
-                <input type="range" min={0} max={Math.max(0, waybackList.length - 1)} step={1} value={Math.max(0, waybackIdx)}
-                  onChange={e => setWaybackIdx(Number(e.target.value))}
-                  className="w-full accent-[var(--brand)] cursor-pointer" />
-                <div className="flex justify-between items-center text-[8px] text-white/40 font-mono gap-1">
-                  <span>{waybackList[0]?.date}</span>
-                  <span className="text-amber-300/90 truncate">
-                    {captureInfo ? `📷 ${captureInfo}` : 'date de publication'}
-                  </span>
-                  <span>{waybackList[waybackList.length - 1]?.date}</span>
-                </div>
-              </>
-            ) : (
-              <>
-                {s2Loading ? (
-                  <div className="text-[10px] text-white/60 py-1 text-center animate-pulse">Chargement des scènes Sentinel-2…</div>
-                ) : s2List.length > 0 ? (
-                  <>
-                    <input type="range" min={0} max={s2List.length - 1} step={1} value={Math.max(0, s2Idx)}
-                      onChange={e => setS2Idx(Number(e.target.value))}
-                      className="w-full accent-[var(--brand)] cursor-pointer" />
-                    <div className="flex justify-between items-center text-[8px] text-white/40 font-mono">
-                      <span>{s2List[0]?.date}</span>
-                      <span className="text-emerald-300/90">
-                        {s2List[s2Idx]?.url === null
-                          ? <span className="animate-pulse">⏳ {s2List[s2Idx]?.date} · chargement…</span>
-                          : <>{s2List.length} scènes · ☁ {s2List[s2Idx]?.cloud ?? 0}%</>}
-                      </span>
-                      <span>{s2List[s2List.length - 1]?.date}</span>
+            {/* Frise temporelle type Google Earth Pro : ◀ ▶ + repères de scènes,
+                pour naviguer sans se perdre entre les dates. Défaut = plus proche de l'analyse. */}
+            {(() => {
+              const isS2 = beforeSource === 's2';
+              if (isS2 && s2Loading) {
+                return <div className="text-[10px] text-white/60 py-1 text-center animate-pulse">Chargement des scènes Sentinel-2 (&lt; 20% nuages)…</div>;
+              }
+              const list: any[] = isS2 ? s2List : waybackList;
+              const idx = isS2 ? s2Idx : waybackIdx;
+              const setIdx = isS2 ? setS2Idx : setWaybackIdx;
+              const n = list.length;
+              if (!n) {
+                return isS2
+                  ? <div className="text-[10px] text-white/50 py-1 text-center">Aucune scène S2 (&lt; 20% nuages) sur la période.</div>
+                  : <div className="text-[10px] text-white/50 py-1 text-center">Chargement de l'imagerie historique…</div>;
+              }
+              const i0 = Math.max(0, Math.min(n - 1, idx));
+              const cur: any = list[i0];
+              const go = (d: number) => setIdx(Math.max(0, Math.min(n - 1, i0 + d)));
+              return (
+                <>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => go(-1)} disabled={i0 <= 0}
+                      className="w-7 h-7 shrink-0 rounded-md bg-white/10 hover:bg-[var(--brand)] hover:text-black disabled:opacity-30 text-white flex items-center justify-center font-bold text-lg leading-none">‹</button>
+                    <div className="relative flex-1 h-7 flex items-center">
+                      <div className="absolute inset-x-0 h-[3px] bg-white/15 rounded-full" />
+                      <div className="absolute h-[3px] bg-[var(--brand)] rounded-full"
+                           style={{ left: 0, width: `${n <= 1 ? 100 : (i0 / (n - 1)) * 100}%` }} />
+                      {list.map((s: any, i: number) => (
+                        <button key={i} onClick={() => setIdx(i)} title={s.date}
+                          className="absolute -translate-x-1/2 inset-y-0 flex items-center group"
+                          style={{ left: `${n <= 1 ? 50 : (i / (n - 1)) * 100}%` }}>
+                          <span className={`block w-[2px] rounded-full transition-all ${i === i0 ? 'bg-[var(--brand)] h-4' : (s.real === false ? 'bg-amber-400/70 h-3' : 'bg-white/40 h-3')} group-hover:bg-white group-hover:h-4`} />
+                        </button>
+                      ))}
+                      <input type="range" min={0} max={n - 1} step={1} value={i0}
+                        onChange={e => setIdx(Number(e.target.value))}
+                        className="absolute inset-0 w-full opacity-0 cursor-pointer" />
                     </div>
-                  </>
-                ) : (
-                  <div className="text-[10px] text-white/50 py-1 text-center">Aucune scène S2 nette sur la période.</div>
-                )}
-              </>
-            )}
+                    <button onClick={() => go(1)} disabled={i0 >= n - 1}
+                      className="w-7 h-7 shrink-0 rounded-md bg-white/10 hover:bg-[var(--brand)] hover:text-black disabled:opacity-30 text-white flex items-center justify-center font-bold text-lg leading-none">›</button>
+                  </div>
+                  <div className="flex justify-between items-center text-[8px] text-white/40 font-mono mt-1 gap-1">
+                    <span>{list[0]?.date}</span>
+                    <span className="text-[var(--brand)] font-bold truncate">
+                      {i0 + 1}/{n}
+                      {isS2
+                        ? (cur?.url === null ? ' · ⏳ chargement…' : ` · ☁ ${cur?.cloud ?? 0}%`)
+                        : (cur?.real === false ? ' · 🕒 publié' : (captureInfo ? ` · 📷 ${captureInfo}` : ' · 📷 capture'))}
+                    </span>
+                    <span>{list[n - 1]?.date}</span>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         )}
 
@@ -1887,6 +1922,7 @@ export function Teledetection() {
                     <ToggleCard label="Forest Watch" icon={Globe}                 checked={toggles.forestWatch} onChange={() => handleToggle('forestWatch')} activeColor="#d946ef" />
                     <ToggleCard label="Sentinel-1"   icon={Waves}                 checked={toggles.sentinel1}   onChange={() => handleToggle('sentinel1')}   activeColor="#8b5cf6" />
                     <ToggleCard label="Phénologie"   icon={TrendingUp}            checked={toggles.phenology}   onChange={() => handleToggle('phenology')}   activeColor="#f59e0b" />
+                    <ToggleCard label="Incendies (FIRMS)" icon={Flame}            checked={showFire && fireVisible} onChange={() => { if (!fireData) runFireDetection(); else setFireVisible(v => !v); }} activeColor="#ea580c" />
                   </div>
 
                   {/* Opacités fines des couches actives (pas de cartes séparées) */}
@@ -2296,9 +2332,15 @@ export function Teledetection() {
                     </table>
                   </div>
 
-                  <p className="text-[10px] text-[var(--text-muted)] leading-relaxed bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)]">
-                    🛡️ {annualData.note}
-                  </p>
+                  <div className="flex items-stretch gap-2">
+                    <button onClick={() => annualData && exportAnnualCsv(annualData)}
+                      className="flex items-center gap-1.5 px-3 rounded-lg text-xs font-bold bg-[var(--brand)] text-[var(--bg-main)] hover:brightness-110 transition-all shrink-0">
+                      <Download className="w-3.5 h-3.5" /> Rapport CSV
+                    </button>
+                    <p className="flex-1 text-[10px] text-[var(--text-muted)] leading-relaxed bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)]">
+                      🛡️ {annualData.note}
+                    </p>
+                  </div>
                 </>
               )}
             </div>

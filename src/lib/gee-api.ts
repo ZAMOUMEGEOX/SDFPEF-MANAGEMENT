@@ -258,12 +258,12 @@ export async function fetchSentinel1Change(p: AnalyzeParams): Promise<Sentinel1R
 
 // v18 — Scenes Sentinel-2 historiques avec dates de capture REELLES (frise "avant")
 export interface S2Scene { date: string; url: string | null; cloud: number; id?: string }
-export async function fetchS2Scenes(p: AnalyzeParams, start: string, end: string): Promise<S2Scene[]> {
+export async function fetchS2Scenes(p: AnalyzeParams, start: string, end: string, cloudMax = 20): Promise<S2Scene[]> {
   try {
-    // limit élevé : on veut le maximum de dates de capture réelles sur toute la période.
-    const body = { ...buildBody(p), start, end, cloud: 45, limit: 300 };
+    // nuages <= 20 % (frise nette) + limit élevé pour un max de dates de capture réelles.
+    const body = { ...buildBody(p), start, end, cloud: cloudMax, limit: 300 };
     const r = await geePost<{ scenes: S2Scene[] }>("/gee/s2-scenes", body);
-    return r.scenes ?? [];
+    return (r.scenes ?? []).slice().sort((x, y) => x.date.localeCompare(y.date)); // ascendant
   } catch (e) { console.warn("[S2-scenes]", e); return []; }
 }
 
@@ -425,3 +425,18 @@ export function exportPolygonsCsv(features: PolygonFeature[], zone: string): voi
 // Disponible côté API ; à brancher sur un bouton si besoin d'un raster pour SIG.
 export const exportGeoTiff = (p: AnalyzeParams) =>
   geePost<{ message: string }>("/gee/export-geotiff", buildBody(p));
+
+
+// Rapport annuel (CSV) — pour les rapports de la DRANEF (courbe de dégradation)
+export function exportAnnualCsv(d: AnnualStatsResult): void {
+  const BOM = "\uFEFF";
+  const head = "Annee,Periode,NDVI_moyen,Haute_confiance_ha,Detecte_total_ha\n";
+  const rows = d.series.map(r =>
+    [r.year, r.period, r.ndvi_mean ?? "", r.high_conf_ha ?? "", r.degraded_ha ?? ""].join(","));
+  const foot = `\nPente_NDVI_par_an,${d.ndvi_slope_per_year ?? ""}\nTendance,${d.trend}\nCumul_haute_conf_ha,${d.total_high_conf_ha}\n`;
+  const blob = new Blob([BOM + head + rows.join("\n") + foot], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), { href: url, download: `rapport_annuel_${d.zone}.csv` });
+  a.click();
+  URL.revokeObjectURL(url);
+}
