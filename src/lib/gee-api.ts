@@ -1,29 +1,39 @@
+// src/lib/gee-api.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// Client GEE v21 — Lazy Tiles, Pagination, FIRMS Controlled, Wayback Fix
+// Client GEE v12 — polygones reels, swipe before/after, exports backend (GeoJSON/KML/SHP)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const API_BASE = "/api/gee";
 
+// Clé API partagée Front<->Back (durcissement production). Injectée via la
+// variable d'environnement de build VITE_API_KEY. Si vide -> aucun en-tête
+// (mode dev où le backend n'exige pas de clé). N'expose JAMAIS de secret
+// sensible ici : cette clé ne fait qu'autoriser l'appel à NOTRE backend, qui
+// garde lui les vrais secrets (Service Account GEE, clé Supabase).
 const API_KEY: string =
   (typeof import.meta !== "undefined" && (import.meta as any)?.env?.VITE_API_KEY) || "";
 
+// En-têtes communs (Content-Type + clé API si présente)
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
   const h: Record<string, string> = { "Content-Type": "application/json", ...(extra ?? {}) };
   if (API_KEY) h["X-API-Key"] = API_KEY;
   return h;
 }
 
+// Message d'erreur lisible selon le code HTTP (pour l'afficher à l'utilisateur)
 function httpErrorMessage(status: number, fallback?: string): string {
   if (status === 401) return "Accès refusé : clé API manquante ou invalide.";
   if (status === 403) return "Accès interdit.";
-  if (status === 413) return "Zone trop volumineuse ou trop complexe.";
+  if (status === 413) return "Zone trop volumineuse ou trop complexe. Réduisez la sélection.";
   if (status === 429) return "Trop de requêtes. Patientez avant de relancer.";
-  if (status === 503) return "Service GEE momentanément indisponible.";
+  if (status === 503) return "Service GEE momentanément indisponible. Réessayez.";
   return fallback || `Erreur serveur (${status}).`;
 }
 
 const ZONE_MAP: Record<string, string> = {
-  mdiq: "df_mdiq", tetouan_est: "tetouan_est", tetouan_ouest: "tetouan_ouest",
+  mdiq: "df_mdiq",
+  tetouan_est: "tetouan_est",
+  tetouan_ouest: "tetouan_ouest",
 };
 export const toFlaskZone = (z: string): string => ZONE_MAP[z] ?? z;
 
@@ -36,10 +46,14 @@ export interface AnalyzeParams {
   zone: string;
   date1Start: string; date1End: string;
   date2Start: string; date2End: string;
-  cloud?: number; sensitivity?: number; nbr?: number; ndmi?: number; vv?: number;
-  minScore?: number; minArea?: number;
+  cloud?: number;
+  sensitivity?: number; nbr?: number; ndmi?: number; vv?: number;
+  minScore?: number;     // 1..5
+  minArea?: number;      // m²
   useRadar?: boolean; useTemporal?: boolean; useSeasonal?: boolean; useExternal?: boolean;
-  useForest?: boolean; useMultiscene?: boolean; minScenes?: number;
+  useForest?: boolean;
+  useMultiscene?: boolean; minScenes?: number;
+  // v15 — analyse foret-par-foret : geometrie GeoJSON de la foret selectionnee
   roiGeojson?: unknown;
 }
 
@@ -53,39 +67,55 @@ export interface PolygonProps {
   area_m2: number; area_ha: number;
   conf_score: number; confidence: "low" | "medium" | "high" | "highest";
   ndvi_change: number; nbr_change: number; ndmi_change: number;
-  hansen_year: number | null; lng?: number; lat?: number; n_scenes?: number | null;
-  preuves?: string; cause?: string; // v21: ajout de la cause probable
+  hansen_year: number | null;
+  lng?: number; lat?: number; n_scenes?: number | null;
+  // v16 — detail des preuves par polygone (pour le terrain)
+  preuves?: string;
   ev_optic?: number; ev_persist?: number; ev_radar?: number;
   ev_external?: number; ev_seasonal?: number; ev_temporal?: number;
-  score_w?: number;
+  score_w?: number;   // v17 — score pondere brut (0..9)
 }
 export interface PolygonFeature {
   type: "Feature";
   geometry: { type: "Polygon" | "MultiPolygon"; coordinates: any };
   properties: PolygonProps;
 }
-export interface PolygonFC { type: "FeatureCollection"; features: PolygonFeature[] }
+export interface PolygonFC { type: "FeatureCollection"; features: PolygonFeature[]; }
 
 export interface AnalyzeResult {
-  success: boolean; zone: string; taskId: string; // Indispensable pour le lazy loading
+  success: boolean; zone: string;
   beforeTileUrl: string | null; afterTileUrl: string | null;
-  distTileUrl: string | null;
-  // Les tuiles ci-dessous sont SUPPRIMÉES du retour initial pour gagner en vitesse
-  // Elles seront chargées via fetchLazyTile()
+  distTileUrl: string | null; ndviTileUrl: string | null;
+  nbrTileUrl?: string | null; highOnlyTileUrl?: string | null;
+  multisceneTileUrl?: string | null; max_score?: number;
   beforeLabel: string; afterLabel: string;
   period1: string; period2: string;
-  count: number; stats: AnalyzeStats;
-  algorithm: string; evidence_used?: string[]; error?: string;
+  polygons: PolygonFC; count: number; stats: AnalyzeStats;
+  algorithm: string; evidence_used?: string[]; poly_error?: string | null; error?: string;
 }
 
-// Types pour la pagination (Pour éviter de faire planter le UI avec des JSON de 2Mo)
-export interface PaginatedPolygons {
-  total: number; page: number; per_page: number;
-  features: PolygonFeature[]; has_more: boolean;
+export interface Sentinel1Result {
+  success: boolean; tileUrl: string | null; zone: string;
+  loss_ha: number; period1: string; period2: string;
+  dVV_stats: { mean: number; stdDev: number; min: number; max: number };
 }
 
-export interface AnalyzeProgress { progress: number; message: string; status: string }
-export interface AnalyzeHandle { taskId: string; cancel: () => Promise<void> }
+export type AnomalyLabel =
+  | "severe_deficit" | "moderate_deficit" | "slight_deficit"
+  | "normal" | "above_average" | "unknown";
+
+export interface PhenologyResult {
+  success: boolean; period_current: string; baseline_years: number[];
+  baseline_ndvi: number | null; current_ndvi: number;
+  ndvi_anomaly: number | null; anomaly_label: AnomalyLabel;
+  tileUrl: string | null; zone: string;
+}
+
+export interface ForestWatchResult {
+  success: boolean; zone: string;
+  hansenTileUrl: string | null; distAlertTileUrl: string | null;
+  hansen_ha: number; note: string;
+}
 
 // ── Helpers HTTP ─────────────────────────────────────────────────────────────
 function buildBody(p: AnalyzeParams): Record<string, unknown> {
@@ -93,14 +123,18 @@ function buildBody(p: AnalyzeParams): Record<string, unknown> {
     zone: toFlaskZone(p.zone),
     date1Start: p.date1Start, date1End: p.date1End,
     date2Start: p.date2Start, date2End: p.date2End,
-    cloud: p.cloud ?? 30, sensitivity: p.sensitivity ?? 0.15,
+    cloud: p.cloud ?? 30,
+    sensitivity: p.sensitivity ?? 0.15,
     nbr: p.nbr ?? 0.15, ndmi: p.ndmi ?? 0.12, vv: p.vv ?? 2.0,
     minScore: p.minScore ?? 2, minArea: p.minArea ?? 500,
+    // v14 — persistance multi-scenes + saisonnier = colonne vertebrale anti-faux-positifs (ON par defaut)
     useRadar: p.useRadar ?? false, useTemporal: p.useTemporal ?? false,
     useSeasonal: p.useSeasonal ?? true, useExternal: p.useExternal ?? true,
     useForest: p.useForest ?? true,
     useMultiscene: p.useMultiscene ?? true, minScenes: p.minScenes ?? 2,
   };
+  // v15 — si une foret est selectionnee, on envoie sa geometrie : le backend (get_roi)
+  // l'utilise des lors que `zone` n'est pas une cle de centre connue.
   if (p.roiGeojson) body.roi_geojson = p.roiGeojson;
   return body;
 }
@@ -115,16 +149,19 @@ async function geePost<T>(path: string, body: Record<string, unknown>, timeoutMs
     });
     let data: any = null;
     try { data = await res.json(); } catch { /* réponse non-JSON */ }
-    if (!res.ok || data?.success === false) throw new Error(data?.error ?? httpErrorMessage(res.status));
+    if (!res.ok || data?.success === false) {
+      throw new Error(data?.error ?? httpErrorMessage(res.status));
+    }
     return data as T;
   } catch (e: any) {
-    if (e?.name === "AbortError") throw new Error("Délai dépassé.");
+    if (e?.name === "AbortError") throw new Error("Délai dépassé. Réduisez la zone ou réessayez.");
     throw e;
   } finally { clearTimeout(t); }
 }
 
 async function geeGet<T>(path: string, params?: Record<string, string>): Promise<T> {
-  const qs = params ? "?" + Object.entries(params).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&") : "";
+  const qs = params ? "?" + Object.entries(params)
+    .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&") : "";
   const res = await fetch(`${API_BASE}${path}${qs}`, { headers: authHeaders() });
   let data: any = null;
   try { data = await res.json(); } catch { /* non-JSON */ }
@@ -132,17 +169,44 @@ async function geeGet<T>(path: string, params?: Record<string, string>): Promise
   return data as T;
 }
 
-// ── API PUBLIQUE ─────────────────────────────────────────────────────────────
+// Telecharge un fichier produit par un endpoint POST (geojson/kml/shp)
+async function downloadFile(path: string, body: Record<string, unknown>, filename: string): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST", headers: authHeaders(), body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let msg = httpErrorMessage(res.status);
+    try { const j = await res.json(); msg = j.error ?? msg; } catch { /* binary */ }
+    throw new Error(msg);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), { href: url, download: filename });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── API publique ─────────────────────────────────────────────────────────────
 export async function checkGeeHealth(): Promise<GeeHealthStatus | null> {
   try { return await geeGet<GeeHealthStatus>("/health"); } catch { return null; }
 }
+
+export async function runAnalyze(p: AnalyzeParams): Promise<AnalyzeResult> {
+  return geePost<AnalyzeResult>("/gee/analyze", buildBody(p));
+}
+
+// v19 — Analyse ASYNCHRONE : lance une tâche, interroge l'état (barre de
+// progression), aucun timeout sur grandes forêts, annulation possible.
+export interface AnalyzeProgress { progress: number; message: string; status: string }
+export interface AnalyzeHandle { taskId: string; cancel: () => Promise<void> }
 
 export async function runAnalyzeAsync(
   p: AnalyzeParams,
   onProgress?: (u: AnalyzeProgress) => void,
   onHandle?: (h: AnalyzeHandle) => void,
 ): Promise<AnalyzeResult> {
-  const start = await geePost<{ task_id: string }("/gee/analyze-async", buildBody(p));
+  // 1) Lancement -> task_id immédiat
+  const start = await geePost<{ task_id: string; cached?: boolean }>("/gee/analyze-async", buildBody(p));
   const taskId = start.task_id;
   let cancelled = false;
 
@@ -152,114 +216,235 @@ export async function runAnalyzeAsync(
   };
   onHandle?.({ taskId, cancel });
 
-  const POLL_MS = 1500; const MAX_MS = 15 * 60_000; const t0 = Date.now();
+  // 2) Polling de l'état toutes les 1.5 s (léger)
+  const POLL_MS = 1500;
+  const MAX_MS = 15 * 60_000;   // garde-fou : 15 min max
+  const t0 = Date.now();
+
   while (true) {
     if (cancelled) throw new Error("Analyse annulée");
     await new Promise(r => setTimeout(r, POLL_MS));
     if (Date.now() - t0 > MAX_MS) throw new Error("Délai maximal dépassé");
+
     let st: any;
     try {
       const res = await fetch(`${API_BASE}/gee/analyze-status/${taskId}`, { headers: authHeaders() });
       st = await res.json();
       if (!res.ok) throw new Error(st?.error ?? `HTTP ${res.status}`);
-    } catch (e) { continue; }
+    } catch (e) {
+      // erreur réseau transitoire -> on retente au prochain tour
+      continue;
+    }
+
     onProgress?.({ progress: st.progress ?? 0, message: st.message ?? "", status: st.status });
+
     if (st.status === "done") return st.result as AnalyzeResult;
     if (st.status === "error") throw new Error(st.error ?? "Erreur GEE");
     if (st.status === "cancelled") throw new Error("Analyse annulée");
   }
 }
+// NB : le Top-N est dérivé directement de runAnalyze().polygons (déjà triés par aire),
+// donc aucune requête séparée n'est nécessaire (perf).
 
-// v21 — Lazy Tiles : Charge une couche lourde uniquement quand l'utilisateur l'active
-export async function fetchLazyTile(taskId: string, layerType: 'nbr' | 'ndvi' | 'multiscene' | 'high_only'): Promise<string | null> {
+export async function fetchForestWatchLayer(p: AnalyzeParams): Promise<ForestWatchResult | null> {
+  try { return await geePost<ForestWatchResult>("/gee/forest-watch-layer", buildBody(p)); }
+  catch (e) { console.warn("[ForestWatch]", e); return null; }
+}
+
+export async function fetchSentinel1Change(p: AnalyzeParams): Promise<Sentinel1Result | null> {
+  try { return await geePost<Sentinel1Result>("/gee/sentinel1-change", buildBody(p)); }
+  catch (e) { console.warn("[Sentinel-1]", e); return null; }
+}
+
+// v18 — Scenes Sentinel-2 historiques avec dates de capture REELLES (frise "avant")
+export interface S2Scene { date: string; url: string | null; cloud: number; id?: string }
+export async function fetchS2Scenes(p: AnalyzeParams, start: string, end: string, cloud?: number): Promise<S2Scene[]> {
   try {
-    const r = await geeGet<{ url: string }>(`/gee/lazy-tile/${taskId}/${layerType}`);
+    // Seuil nuages = celui de l'utilisateur (cap a 30 pour garantir des images
+    // nettes). On ne liste que les scenes exploitables -> plus d'images qui
+    // "disparaissent" parce qu'elles etaient en realite tres nuageuses.
+    const cloudPct = Math.min(cloud ?? p.cloud ?? 30, 30);
+    const body = { ...buildBody(p), start, end, cloud: cloudPct, limit: 300 };
+    const r = await geePost<{ scenes: S2Scene[] }>("/gee/s2-scenes", body);
+    return r.scenes ?? [];
+  } catch (e) { console.warn("[S2-scenes]", e); return []; }
+}
+
+// Charge à la demande l'URL de tuiles d'une scène S2 (frise temporelle paresseuse).
+// On envoie la DATE : le backend renvoie un composite propre masque-nuages, sans trou.
+export async function fetchS2SceneTile(p: AnalyzeParams, scene: { id?: string; date?: string }, cloud?: number): Promise<string | null> {
+  try {
+    const cloudPct = Math.min(cloud ?? p.cloud ?? 30, 30);
+    const r = await geePost<{ url: string }>("/gee/s2-scene-tile", {
+      ...buildBody(p), id: scene.id, date: scene.date, cloud: cloudPct });
     return r.url ?? null;
-  } catch (e) { console.warn(`[lazy-tile:${layerType}]`, e); return null; }
+  } catch (e) { console.warn("[S2-scene-tile]", e); return null; }
 }
 
-// v21 — Pagination des polygones (Évite les JSON de 2Mo qui gelent l'UI)
-export async function fetchPaginatedPolygons(
-  taskId: string, page = 1, perPage = 50, minScore = 2
-): Promise<PaginatedPolygons> {
-  return geeGet<PaginatedPolygons>(`/gee/polygons/${taskId}`, {
-    page: String(page), per_page: String(perPage), min_score: String(minScore)
-  });
-}
+// ───────────────────────────────────────────────────────────────────────────
+// v20 — Suivi des alertes + retour terrain (Supabase, via le backend Flask)
+// ───────────────────────────────────────────────────────────────────────────
+export type Verdict = "confirme" | "faux" | "en_cours" | "cloture";
+export interface AccuracyRow { conf_score: number; confirme: number; faux: number; total: number; accuracy_pct: number | null }
 
-// v21 — FIRMS avec contrôle total
-export interface FirmsCluster {
-  id: number; bbox: [number, number, number, number];
-  center: [number, number]; point_count: number;
-  date_range: [string, string] | null; max_frp: number;
-  estimated_area_ha: number; mean_dnbr?: number; fire_confirmed?: boolean;
-}
-export interface FirmsControlledResult {
-  success: boolean;
-  firms_points: Array<{latitude: number; longitude: number; confidence: number; acq_date: string}>;
-  clusters: FirmsCluster[]; firms_count: number; confirmed_count: number;
-}
-export async function fetchFirmsControlled(
-  p: AnalyzeParams,
-  opts: { confidence?: 'n' | 'l' | 'm' | 'h'; source?: string; linkDnbr?: boolean } = {}
-): Promise<FirmsControlledResult | null> {
-  try {
-    return await geePost<FirmsControlledResult>("/gee/firms-controlled", {
-      ...buildBody(p),
-      firms_confidence: opts.confidence ?? 'n',
-      firms_source: opts.source ?? 'VIIRS_SNPP_NRT',
-      link_dnbr: opts.linkDnbr ?? true,
-    });
-  } catch (e) { console.warn("[FIRMS]", e); return null; }
-}
-
-// ── ESRI WAYBACK FIX (Client-Side) ──────────────────────────────────────────
-export interface WaybackImage {
-  id: string; displayDate: string; acquisitionDate: string;
-  sourceItemId: string; url: string;
-}
-
-export function fixWaybackDates(images: WaybackImage[]): WaybackImage[] {
-  const now = new Date();
-  return images
-    .filter(img => new Date(img.acquisitionDate) <= new Date(now.getTime() + 30 * 86400000))
-    .sort((a, b) => new Date(b.acquisitionDate).getTime() - new Date(a.acquisitionDate).getTime())
-    .filter((img, i, arr) => i === arr.findIndex(o => o.sourceItemId === img.sourceItemId))
-    .map(img => ({ ...img, displayDate: img.acquisitionDate }));
-}
-
-export function prioritizeWaybackByS2(wayback: WaybackImage[], s2Dates: string[]): WaybackImage[] {
-  if (!s2Dates.length) return wayback;
-  const maxDiff = 7 * 86400000;
-  return wayback.map(img => {
-    const wTime = new Date(img.acquisitionDate).getTime();
-    const minDiff = Math.min(...s2Dates.map(d => Math.abs(wTime - new Date(d).getTime())));
-    return { ...img, _proximity: minDiff };
-  }).sort((a, b) => {
-    const aM = a._proximity < maxDiff ? 0 : 1;
-    const bM = b._proximity < maxDiff ? 0 : 1;
-    return aM - bM || a._proximity - b._proximity;
-  });
-}
-
-// ── Exports & Autres (Inchangés mais optimisés) ─────────────────────────────
+// Enregistre les alertes haute-confiance de la dernière analyse (idempotent par geohash)
 export async function saveAlerts(features: PolygonFeature[], zone: string, minScore = 3, type: "changement" | "incendie" = "changement"): Promise<number> {
-  try { const r = await geePost<{ saved: number }>("/gee/alerts/save", { features, zone, min_score: minScore, type }); return r.saved ?? 0; }
-  catch (e) { console.warn("[alerts/save]", e); return 0; }
+  try {
+    const r = await geePost<{ saved: number }>("/gee/alerts/save", { features, zone, min_score: minScore, type });
+    return r.saved ?? 0;
+  } catch (e) { console.warn("[alerts/save]", e); return 0; }
 }
 
+// v22 — Lecture des alertes archivées (pour les afficher à l'ouverture d'une zone)
+export interface SavedAlert {
+  geohash: string; zone: string; type: string;
+  lat: number; lng: number; conf_score: number; confidence: string;
+  area_ha: number; preuves: string; status: string;
+  detections: number; first_seen: string; last_seen: string;
+}
+export async function fetchSavedAlerts(zone: string, includeClosed = false): Promise<{ alerts: SavedAlert[]; by_status: Record<string, number> }> {
+  try {
+    const qs = `?zone=${encodeURIComponent(zone)}${includeClosed ? "&all=true" : ""}`;
+    const r = await fetch(`${API_BASE}/gee/alerts/list${qs}`, { headers: authHeaders() });
+    const j = await r.json();
+    return { alerts: j?.alerts ?? [], by_status: j?.by_status ?? {} };
+  } catch (e) { console.warn("[alerts/list]", e); return { alerts: [], by_status: {} }; }
+}
+
+// Verdict terrain sur une alerte (par coordonnées -> le backend calcule le geohash)
+export async function sendAlertVerdict(lat: number, lng: number, verdict: Verdict, confScore?: number, note?: string): Promise<boolean> {
+  try {
+    await geePost("/gee/alerts/feedback", { lat, lng, verdict, conf_score: confScore, note });
+    return true;
+  } catch (e) { console.warn("[alerts/feedback]", e); return false; }
+}
+
+// Taux de fiabilité réel par classe (validation scientifique)
+export async function fetchAccuracy(): Promise<AccuracyRow[]> {
+  try {
+    const r = await fetch(`${API_BASE}/gee/alerts/accuracy`, { headers: authHeaders() });
+    const j = await r.json();
+    return j?.by_class ?? [];
+  } catch (e) { console.warn("[accuracy]", e); return []; }
+}
+
+// v21 — Détection des incendies de forêt (dNBR + thermique MODIS/VIIRS FIRMS)
+export interface FireOptions {
+  dnbrThreshold?: number;   // seuil de brûlure comptée (defaut 0.27)
+  dnbrFloor?: number;       // seuil d'affichage de la sévérité (defaut 0.10)
+  firmsMinTemp?: number;    // température min des points chauds FIRMS en K (defaut 330)
+}
+export interface FireResult {
+  dnbrTileUrl: string | null;
+  thermalTileUrl: string | null;
+  firms_points: { lat: number; lng: number }[];
+  firms_count: number;
+  firms_scenes?: number;
+  burned_ha: number | null;
+  severe_ha?: number | null;
+  fire_confirmed: boolean;
+  verdict: string;
+  period: string;
+  period_ref?: string;
+  period_note?: string;
+  dnbr_threshold?: number;
+  dnbr_floor?: number;
+  firms_min_temp?: number;
+}
+export async function fetchFireDetection(p: AnalyzeParams, opts?: FireOptions): Promise<FireResult | null> {
+  try {
+    const body: Record<string, unknown> = { ...buildBody(p) };
+    if (opts?.dnbrThreshold != null) body.dnbr_threshold = opts.dnbrThreshold;
+    if (opts?.dnbrFloor != null)     body.dnbr_floor = opts.dnbrFloor;
+    if (opts?.firmsMinTemp != null)  body.firms_min_temp = opts.firmsMinTemp;
+    return await geePost<FireResult>("/gee/fire-detection", body);
+  } catch (e) { console.warn("[fire]", e); return null; }
+}
+
+export async function fetchPhenology(zone: string, dateStart: string, dateEnd: string, cloud = 30): Promise<PhenologyResult | null> {
+  try {
+    return await geePost<PhenologyResult>("/gee/phenology-baseline", {
+      zone: toFlaskZone(zone), dateStart, dateEnd, cloud });
+  } catch (e) { console.warn("[Phenology]", e); return null; }
+}
+
+// ── Statistiques annuelles (courbe de dégradation pluriannuelle) ──────────────
+export interface AnnualStatRow {
+  year: number; period: string;
+  ndvi_mean: number | null;
+  high_conf_ha: number | null;
+  degraded_ha: number | null;
+}
+export interface AnnualStatsResult {
+  success: boolean; zone: string; season_window: string;
+  ref_year: number; years: number[]; series: AnnualStatRow[];
+  ndvi_slope_per_year: number | null; trend: string;
+  total_high_conf_ha: number; note: string;
+}
+export async function fetchAnnualStats(
+  p: AnalyzeParams, years: number[],
+  opts?: { monthStart?: number; monthEnd?: number; refYear?: number; cloud?: number },
+): Promise<AnnualStatsResult | null> {
+  try {
+    const body = {
+      ...buildBody(p),
+      years: years.join(","),
+      monthStart: opts?.monthStart ?? 6,
+      monthEnd: opts?.monthEnd ?? 7,
+      refYear: opts?.refYear ?? 2018,
+      cloud: opts?.cloud ?? 35,
+    };
+    return await geePost<AnnualStatsResult>("/gee/annual-stats", body);
+  } catch (e) { console.warn("[AnnualStats]", e); throw e; }
+}
+
+// ── Exports reels (polygones, cote backend) ──────────────────────────────────
 const stamp = () => new Date().toISOString().split("T")[0];
+
+export function exportPolygonsGeoJson(p: AnalyzeParams): Promise<void> {
+  return downloadFile("/gee/export-geojson", buildBody(p), `disturbances_${p.zone}_${stamp()}.geojson`);
+}
+export function exportPolygonsKml(p: AnalyzeParams): Promise<void> {
+  return downloadFile("/gee/export-kml", buildBody(p), `disturbances_${p.zone}_${stamp()}.kml`);
+}
+export function exportPolygonsShp(p: AnalyzeParams): Promise<void> {
+  return downloadFile("/gee/export-shp", buildBody(p), `disturbances_${p.zone}_${stamp()}.zip`);
+}
+
+// CSV genere cote client a partir des polygones deja charges
 export function exportPolygonsCsv(features: PolygonFeature[], zone: string): void {
   const BOM = "\uFEFF";
-  const header = "ID,Confiance,Score,Cause,Aire_ha,Lng_X,Lat_Y,NBR_Delta,Preuves\n";
-  const rows = features.map(f => {
+  const header = "ID,Confiance,Score,Aire_ha,Aire_m2,Lng_X,Lat_Y,NDVI_Delta,NBR_Delta,N_Scenes,Hansen_Annee,Preuves\n";
+  const centroid = (f: PolygonFeature): [number, number] => {
+    if (f.properties.lng != null && f.properties.lat != null) return [f.properties.lng, f.properties.lat];
+    // fallback : moyenne des sommets
+    try {
+      const g: any = f.geometry;
+      const ring = g.type === "MultiPolygon" ? g.coordinates[0][0] : g.coordinates[0];
+      let sx = 0, sy = 0;
+      ring.forEach((c: number[]) => { sx += c[0]; sy += c[1]; });
+      return [sx / ring.length, sy / ring.length];
+    } catch { return [0, 0]; }
+  };
+  const rows = features.map((f) => {
     const p = f.properties;
-    return [p.id, p.confidence, p.conf_score, p.cause ?? "", p.area_ha.toFixed(4),
-      p.lng?.toFixed(6) ?? 0, p.lat?.toFixed(6) ?? 0, p.nbr_change?.toFixed(4) ?? 0,
+    const [lng, lat] = centroid(f);
+    return [p.id, p.confidence, (p.conf_score ?? 0).toFixed(1),
+      (p.area_ha ?? 0).toFixed(4), Math.round(p.area_m2 ?? 0),
+      lng.toFixed(6), lat.toFixed(6),
+      (p.ndvi_change ?? 0).toFixed(4), (p.nbr_change ?? 0).toFixed(4),
+      p.n_scenes ?? "", p.hansen_year ?? "",
       `"${(p.preuves ?? "").replace(/"/g, "'")}"`].join(",");
   });
   const blob = new Blob([BOM + header + rows.join("\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
-  const a = Object.assign(document.createElement("a"), { href: url, download: `alerts_${zone}_${stamp()}.csv` });
-  a.click(); URL.revokeObjectURL(url);
+  const a = Object.assign(document.createElement("a"), {
+    href: url, download: `disturbances_${zone}_${stamp()}.csv` });
+  a.click();
+  URL.revokeObjectURL(url);
 }
+
+// Export GeoTIFF (raster confiance + indices) vers Google Drive du compte de service.
+// Disponible côté API ; à brancher sur un bouton si besoin d'un raster pour SIG.
+export const exportGeoTiff = (p: AnalyzeParams) =>
+  geePost<{ message: string }>("/gee/export-geotiff", buildBody(p));
