@@ -87,12 +87,27 @@ const ARCGIS_IMAGERY = 'https://server.arcgisonline.com/ArcGIS/rest/services/Wor
 // au-delà de z15 ; Leaflet agrandit les tuiles déjà en cache (upsampling) au lieu
 // de relancer un calcul serveur. keepBuffer élevé + updateWhenIdle = pan fluide,
 // rechargement uniquement à l'arrêt (zéro scintillement).
+// Tuiles GEE — reglages anti-disparition / chargement fluide (uniformes a TOUTES
+// les couches GEE). Principe :
+//  • maxNativeZoom=16  -> au-dela, Leaflet AGRANDIT les tuiles deja en cache
+//    (upsampling) au lieu de relancer un calcul GEE : zero recalcul au zoom-in.
+//  • minNativeZoom=7   -> en dessous, Leaflet REDUIT des tuiles de z7 : la couche
+//    ne disparait jamais au zoom-out (plus de "trou" pendant le recalcul).
+//  • keepBuffer eleve + updateWhenIdle -> les anciennes tuiles restent visibles
+//    pendant le pan/zoom ; rechargement uniquement a l'arret (zero scintillement).
+//  • updateWhenZooming=false -> pas de rechargement pendant l'animation de zoom.
+// Combine au cache disque cote serveur (USE_TILE_PROXY), une tuile calculee une
+// fois est servie instantanement et ne reexpire pas -> fini les couches qui
+// "partent" au changement de zoom (Sentinel-1 compris).
 const TILE_PERF = {
   keepBuffer: 8,
   updateWhenZooming: false,
   updateWhenIdle: true,
-  maxNativeZoom: 15,   // GEE: dernier niveau réellement calculé
+  updateInterval: 120,
+  minNativeZoom: 7,
+  maxNativeZoom: 16,   // GEE: dernier niveau réellement calculé
   maxZoom: 19,         // Leaflet: continue à zoomer (tuiles agrandies)
+  crossOrigin: true as any,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -340,6 +355,10 @@ export function Teledetection() {
   const [fireDnbrUrl, setFireDnbrUrl]     = useState<string | null>(null);
   const [fireThermalUrl, setFireThermalUrl] = useState<string | null>(null);
   const [fireLoading, setFireLoading]     = useState(false);
+  // v23 — controles professionnels de l'outil Incendie
+  const [fireDnbrThr, setFireDnbrThr]         = useState(0.27);  // seuil de brûlure (sévérité)
+  const [fireDnbrOpacity, setFireDnbrOpacity] = useState(0.78);  // opacité couche dNBR
+  const [fireThermalOpacity, setFireThermalOpacity] = useState(0.95); // opacité points chauds
   const [showFire, setShowFire]           = useState(false);
   // Permet de masquer/réafficher la couche incendie SANS relancer la détection.
   // showFire = "une détection a tourné" ; fireVisible = "la couche est affichée".
@@ -420,8 +439,14 @@ export function Teledetection() {
   // v15 — frise temporelle : toutes les versions disponibles + index sélectionné
   const [waybackList, setWaybackList]       = useState<{ date: string; url: string }[]>([]);
   const [waybackIdx, setWaybackIdx]         = useState<number>(-1);
+  // v23 — CREDIBILITE : la frise n'affiche QUE des dates de PRISE DE VUE reelles,
+  // verifiees pour CE lieu (change-detection + metadonnees SRC_DATE d'Esri),
+  // triees du plus ancien au plus recent (comme Google Earth Pro). Les versions
+  // Wayback non verifiees (dates de publication trompeuses, ex. "2026" plus
+  // ancienne que "2025") ne sont PLUS affichees.
+  const [waybackRefining, setWaybackRefining] = useState(false);
+  const [waybackPoolReady, setWaybackPoolReady] = useState(false);
   // v18 — date de PRISE DE VUE reelle (vs date de publication Wayback) + source active
-  const [captureInfo, setCaptureInfo]       = useState<string>('');   // ex: "Maxar · 2022-08-14"
   const [beforeSource, setBeforeSource]     = useState<'wayback' | 's2'>('wayback');
   const [s2List, setS2List]                 = useState<{ date: string; url: string; cloud: number }[]>([]);
   const [s2Idx, setS2Idx]                   = useState<number>(-1);
@@ -581,10 +606,10 @@ export function Teledetection() {
         if (cancelled || !items.length) return;
         items.sort((a, b) => a.date.localeCompare(b.date));
         waybackAllRef.current = items;
-        setWaybackList(items);
-        let idx = items.findIndex(i => i.date > refEnd);
-        idx = idx === -1 ? items.length - 1 : Math.max(0, idx - 1);
-        setWaybackIdx(idx);
+        setWaybackPoolReady(true);
+        // NB (v23) : on ne remplit PLUS la frise affichee avec ces dates de
+        // PUBLICATION (trompeuses). La frise est construite uniquement par
+        // refineWaybackForLocation() a partir des vraies dates de capture du lieu.
       } catch { /* repli S2 conservé, jamais de crash */ }
     })();
     return () => { cancelled = true; };
@@ -609,45 +634,53 @@ export function Teledetection() {
     if (!all.length) return;
     const z = 15;
     const { x, y } = lonLatToTile(lng, lat, z);
+    setWaybackRefining(true);
     try {
       // 1) Releases ayant changé à cet endroit (ordre récent -> ancien)
       const cdUrl = `https://wayback.maptiles.arcgis.com/arcgis/rest/services/world_imagery/wmts/1.0.0/default028mm/MapServer/tile/changeDetection/${z}/${y}/${x}`;
       const cd = await fetch(cdUrl);
-      if (!cd.ok) return;
+      if (!cd.ok) { setWaybackRefining(false); return; }
       const releases: number[] = await cd.json();
-      if (!Array.isArray(releases) || !releases.length) return;
+      if (!Array.isArray(releases) || !releases.length) { setWaybackRefining(false); return; }
       const byRelease = new Map(all.map(i => [i.release, i]));
-      // 2) Date de capture réelle par release (métadonnées), dédupliquée par date
-      const seen = new Set<string>();
-      const refined: { url: string; date: string; release: number; capture: string }[] = [];
+      // 2) Date de CAPTURE REELLE par release (metadonnees Esri). CREDIBILITE :
+      //    on NE GARDE QUE les releases dont la date de capture est verifiee
+      //    (SRC_DATE / SRC_DATE2). Toute version sans date verifiee est ECARTEE
+      //    -> plus aucune date de publication trompeuse (ex. "2026" antedatant "2025").
+      const refined: { url: string; date: string; release: number }[] = [];
       await Promise.all(releases.map(async (rel) => {
         const base = byRelease.get(rel);
         if (!base) return;
-        let capture = base.date;
         try {
           const mdUrl = `https://wayback.maptiles.arcgis.com/arcgis/rest/services/world_imagery/wmts/1.0.0/default028mm/MapServer/tile/${rel}/${z}/${y}/${x}/metadata?f=json`;
           const md = await fetch(mdUrl);
-          if (md.ok) {
-            const j = await md.json();
-            const d = j?.SRC_DATE || j?.features?.[0]?.attributes?.SRC_DATE;
-            if (d) {
-              let ds = String(d);
-              if (/^\d{10,}$/.test(ds)) ds = new Date(Number(ds)).toISOString().slice(0, 10);
-              else if (/^\d{4}$/.test(ds)) ds = `${ds}-01-01`;
-              capture = ds;
-            }
-          }
-        } catch { /* garde la date de publication en repli */ }
-        refined.push({ ...base, capture });
+          if (!md.ok) return;
+          const j = await md.json();
+          const d = j?.SRC_DATE2 || j?.SRC_DATE
+                 || j?.features?.[0]?.attributes?.SRC_DATE2
+                 || j?.features?.[0]?.attributes?.SRC_DATE;
+          if (!d) return;                       // pas de date verifiee -> on ecarte
+          let ds = String(d);
+          if (/^\d{10,}$/.test(ds)) ds = new Date(Number(ds)).toISOString().slice(0, 10);
+          else if (/^\d{4}$/.test(ds)) ds = `${ds}-07-01`;
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) return;   // format inattendu -> ecarte
+          refined.push({ url: base.url, date: ds, release: rel });
+        } catch { /* metadonnee indisponible -> release ecartee (credibilite) */ }
       }));
-      if (!refined.length) return;
-      // déduplique par date de capture réelle (zéro mosaïque répétée)
-      refined.sort((a, b) => a.capture.localeCompare(b.capture));
-      const deduped = refined.filter(r => (seen.has(r.capture) ? false : (seen.add(r.capture), true)));
-      const list = deduped.map(r => ({ url: r.url, date: r.capture }));
+      // dedupe par date de capture reelle, tri du plus ancien au plus recent
+      refined.sort((a, b) => a.date.localeCompare(b.date));
+      const seen = new Set<string>();
+      const deduped = refined.filter(r => (seen.has(r.date) ? false : (seen.add(r.date), true)));
+      const list = deduped.map(r => ({ url: r.url, date: r.date }));
       setWaybackList(list);
-      setWaybackIdx(list.length - 1);
-    } catch { /* repli : on garde la liste complète déjà affichée */ }
+      // par defaut : l'image verifiee la plus proche AVANT la periode de reference,
+      // sinon la plus recente verifiee.
+      let idx = list.length - 1;
+      const before = list.filter(i => i.date <= refEnd);
+      if (before.length) idx = list.findIndex(i => i.date === before[before.length - 1].date);
+      setWaybackIdx(list.length ? idx : -1);
+    } catch { /* reseau : on laisse l'etat precedent, jamais de crash */ }
+    finally { setWaybackRefining(false); }
   };
 
   // Applique l'image Wayback correspondant à l'index choisi (frise temporelle)
@@ -657,55 +690,28 @@ export function Teledetection() {
     setWaybackDate(waybackList[waybackIdx].date);
   }, [waybackIdx, waybackList]);
 
-  // v18 — DATE DE PRISE DE VUE REELLE : Wayback affiche la date de PUBLICATION,
-  // pas celle de la photo. Esri WorldImagery a une couche "Metadata" qui donne
-  // SRC_DATE / SRC_DESC (Maxar, Airbus...) pour la tuile sous le centre de carte.
-  useEffect(() => {
-    if (beforeSource !== 'wayback' || !toggles.s2Split) { return; }
-    const map = mapRef.current; if (!map) return;
-    let cancelled = false;
-    const fetchCapture = async () => {
-      try {
-        const c = map.getCenter();
-        const url = 'https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/identify'
-          + `?geometry=${c.lng},${c.lat}&geometryType=esriGeometryPoint&sr=4326`
-          + '&layers=all&tolerance=2&mapExtent=' + `${c.lng - 0.01},${c.lat - 0.01},${c.lng + 0.01},${c.lat + 0.01}`
-          + '&imageDisplay=2,2,96&returnGeometry=false&f=json';
-        const r = await fetch(url); if (!r.ok || cancelled) return;
-        const j = await r.json();
-        const at = j?.results?.find((x: any) => x?.attributes?.SRC_DATE2 || x?.attributes?.SRC_DATE)?.attributes;
-        if (!at) { setCaptureInfo(''); return; }
-        const src = at.SRC_DESC || at.NICE_DESC || '';
-        const d = at.SRC_DATE2 || at.SRC_DATE || at.DATE || '';
-        // SRC_DATE est souvent un timestamp epoch ms
-        let dStr = String(d);
-        if (/^\d{10,}$/.test(dStr)) dStr = new Date(Number(dStr)).toISOString().slice(0, 10);
-        setCaptureInfo([src, dStr].filter(Boolean).join(' · '));
-      } catch { if (!cancelled) setCaptureInfo(''); }
-    };
-    fetchCapture();
-    map.on('moveend', fetchCapture);
-    return () => { cancelled = true; map.off('moveend', fetchCapture); };
-  }, [beforeSource, toggles.s2Split, waybackIdx]);
-
-  // Affine la frise Wayback pour la zone visible (vraies prises de vue, dédupliquées).
-  // Debounce léger : se déclenche quand la carte se stabilise.
+  // Affine la frise Wayback pour la zone visible (vraies prises de vue verifiees).
+  // Debounce léger ; se relance aussi des que le pool Wayback est charge.
   useEffect(() => {
     if (beforeSource !== 'wayback' || !toggles.s2Split || !mapReady) return;
     const map = mapRef.current; if (!map) return;
+    // reset de la frise quand on (re)entre : on n'affiche rien tant que les
+    // dates verifiees du nouveau lieu ne sont pas resolues (credibilite).
+    setWaybackList([]); setWaybackIdx(-1);
     let timer: any;
     const trigger = () => {
       clearTimeout(timer);
       timer = setTimeout(() => {
+        if (!waybackAllRef.current.length) return;  // pool pas encore pret
         const c = map.getCenter();
         refineWaybackForLocation(c.lat, c.lng);
-      }, 600);
+      }, 500);
     };
     trigger();
     map.on('moveend', trigger);
     return () => { clearTimeout(timer); map.off('moveend', trigger); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [beforeSource, toggles.s2Split, mapReady, selectedZone]);
+  }, [beforeSource, toggles.s2Split, mapReady, selectedZone, waybackPoolReady]);
 
   // v18 — SENTINEL-2 comme source historique "avant" : dates de capture REELLES
   // et garanties (tous les ~5 jours). Beaucoup plus de dates recentes precises.
@@ -721,7 +727,7 @@ export function Teledetection() {
         const today = new Date().toISOString().slice(0, 10);
         const end = today;
         const start = '2015-07-01';   // première imagerie Sentinel-2 disponible
-        const list = await fetchS2Scenes(buildParams(), start, end);
+        const list = await fetchS2Scenes(buildParams(), start, end, cloudMax);
         if (cancelled || !list?.length) { setS2List([]); setS2Idx(-1); return; }
         list.sort((a, b) => a.date.localeCompare(b.date));
         setS2List(list);
@@ -730,17 +736,17 @@ export function Teledetection() {
       finally { if (!cancelled) setS2Loading(false); }
     })();
     return () => { cancelled = true; };
-  }, [beforeSource, toggles.s2Split, selectedZone, selectedForest, selectedCanton]);
+  }, [beforeSource, toggles.s2Split, selectedZone, selectedForest, selectedCanton, cloudMax]);
 
   // Chargement PARESSEUX : si la scène S2 sélectionnée n'a pas encore d'URL de
   // tuiles (seules les plus récentes sont pré-calculées), on la résout à la volée.
   useEffect(() => {
     if (beforeSource !== 's2' || s2Idx < 0) return;
     const scene = s2List[s2Idx];
-    if (!scene || scene.url || !scene.id) return;
+    if (!scene || scene.url || (!scene.id && !scene.date)) return;
     let cancelled = false;
     (async () => {
-      const url = await fetchS2SceneTile(buildParams(), scene.id!);
+      const url = await fetchS2SceneTile(buildParams(), { id: scene.id, date: scene.date }, cloudMax);
       if (cancelled || !url) return;
       setS2List(prev => prev.map((s, i) => (i === s2Idx ? { ...s, url } : s)));
     })();
@@ -1057,7 +1063,7 @@ export function Teledetection() {
     if (geeStatus === 'error') { setErrorMsg('GEE hors-ligne'); return; }
     setFireLoading(true); setErrorMsg(null);
     try {
-      const fire = await fetchFireDetection(buildParams());
+      const fire = await fetchFireDetection(buildParams(), { dnbrThreshold: fireDnbrThr });
       if (fire) {
         setFireData(fire);
         setFireDnbrUrl(fire.dnbrTileUrl);
@@ -1287,10 +1293,10 @@ export function Teledetection() {
 
           {/* v21 — INCENDIES : dNBR (sévérité) + thermique FIRMS, au-dessus des alertes */}
           {showFire && fireVisible && fireDnbrUrl && (
-            <TileLayer key={`dnbr-${fireDnbrUrl}`} url={fireDnbrUrl} pane="paneAlertes" opacity={0.75} {...TILE_PERF} attribution="dNBR — sévérité de brûlure" />
+            <TileLayer key={`dnbr-${fireDnbrUrl}`} url={fireDnbrUrl} pane="paneAlertes" opacity={fireDnbrOpacity} {...TILE_PERF} attribution="dNBR — sévérité de brûlure" />
           )}
           {showFire && fireVisible && fireThermalUrl && (
-            <TileLayer key={`thermal-${fireThermalUrl}`} url={fireThermalUrl} pane="panePolygons" opacity={0.9} {...TILE_PERF} attribution="MODIS/VIIRS FIRMS" />
+            <TileLayer key={`thermal-${fireThermalUrl}`} url={fireThermalUrl} pane="panePolygons" opacity={fireThermalOpacity} {...TILE_PERF} attribution="MODIS/VIIRS FIRMS" />
           )}
           {showFire && fireVisible && (fireData?.firms_points ?? []).map((pt: any, i: number) => (
             <CircleMarker key={`firms-${i}`} center={[pt.lat, pt.lng]} radius={6} pane="panePolygons"
@@ -1488,10 +1494,11 @@ export function Teledetection() {
           </div>
         )}
 
-        {/* v18 — Frise historique "avant" : source commutable (Wayback / Sentinel-2),
-            date de PRISE DE VUE reelle, nombre de scenes disponibles. */}
-        {toggles.s2Split && (waybackList.length > 0 || beforeSource === 's2') && (
-          <div className="absolute top-12 md:top-16 left-2 md:left-4 z-[500] pointer-events-auto bg-black/85 backdrop-blur-xl border border-white/10 rounded-xl px-3 py-2 shadow-2xl flex flex-col gap-1.5 w-[320px] max-w-[90vw]">
+        {/* v23 — Frise historique "avant" : source commutable (Aérienne Wayback /
+            Sentinel-2). Côté Aérienne, frise type Google Earth Pro : un repère par
+            image DATÉE & VÉRIFIÉE (prise de vue réelle), flèches précédent/suivant. */}
+        {toggles.s2Split && (
+          <div className="absolute top-12 md:top-16 left-2 md:left-4 z-[500] pointer-events-auto bg-black/85 backdrop-blur-xl border border-white/10 rounded-xl px-3 py-2 shadow-2xl flex flex-col gap-1.5 w-[330px] max-w-[90vw]">
             <div className="flex items-center justify-between">
               <div className="flex bg-white/10 rounded-md p-0.5 text-[9px] font-bold">
                 <button onClick={() => setBeforeSource('wayback')}
@@ -1504,24 +1511,55 @@ export function Teledetection() {
                 </button>
               </div>
               <div className="flex flex-col items-end leading-none">
-                <span className="text-[7px] text-white/50 font-bold uppercase tracking-widest">Image avant</span>
+                <span className="text-[7px] text-white/50 font-bold uppercase tracking-widest">Image avant · prise de vue</span>
                 <span className="text-[13px] text-white font-mono font-bold">{activeBeforeDate || '—'}</span>
               </div>
             </div>
 
             {beforeSource === 'wayback' ? (
-              <>
-                <input type="range" min={0} max={Math.max(0, waybackList.length - 1)} step={1} value={Math.max(0, waybackIdx)}
-                  onChange={e => setWaybackIdx(Number(e.target.value))}
-                  className="w-full accent-[var(--brand)] cursor-pointer" />
-                <div className="flex justify-between items-center text-[8px] text-white/40 font-mono gap-1">
-                  <span>{waybackList[0]?.date}</span>
-                  <span className="text-amber-300/90 truncate">
-                    {captureInfo ? `📷 ${captureInfo}` : 'date de publication'}
-                  </span>
-                  <span>{waybackList[waybackList.length - 1]?.date}</span>
+              waybackRefining && waybackList.length === 0 ? (
+                <div className="text-[10px] text-white/60 py-1.5 text-center animate-pulse">📍 Localisation des images aériennes datées…</div>
+              ) : waybackList.length === 0 ? (
+                <div className="text-[10px] text-white/55 py-1.5 text-center leading-snug">
+                  Aucune image aérienne <b className="text-white/80">datée &amp; vérifiée</b> ici.<br/>
+                  Déplacez/zoomez la carte ou passez à Sentinel-2.
                 </div>
-              </>
+              ) : (
+                <>
+                  {/* Frise type Google Earth Pro */}
+                  <div className="flex items-center gap-1.5">
+                    <button onClick={() => setWaybackIdx(i => Math.max(0, i - 1))} disabled={waybackIdx <= 0}
+                      title="Image précédente (plus ancienne)"
+                      className="w-6 h-6 rounded-md bg-white/10 hover:bg-white/25 disabled:opacity-25 text-white flex items-center justify-center shrink-0 transition-colors">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                    </button>
+                    <div className="relative flex-1 h-6">
+                      <div className="absolute left-0 right-0 top-1/2 h-[2px] -translate-y-1/2 bg-white/20 rounded" />
+                      {waybackList.map((it, i) => (
+                        <div key={`${it.date}-${i}`} title={`📷 ${it.date}`} onClick={() => setWaybackIdx(i)}
+                          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 cursor-pointer px-1"
+                          style={{ left: `${waybackList.length === 1 ? 50 : (i / (waybackList.length - 1)) * 100}%` }}>
+                          <div className={cn('rounded transition-all',
+                            i === waybackIdx ? 'w-[3px] h-4 bg-[var(--brand)] shadow-[0_0_6px_var(--brand)]' : 'w-[2px] h-3 bg-white/50 hover:bg-white')} />
+                        </div>
+                      ))}
+                      <input type="range" min={0} max={Math.max(0, waybackList.length - 1)} step={1} value={Math.max(0, waybackIdx)}
+                        onChange={e => setWaybackIdx(Number(e.target.value))}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                    </div>
+                    <button onClick={() => setWaybackIdx(i => Math.min(waybackList.length - 1, i + 1))} disabled={waybackIdx >= waybackList.length - 1}
+                      title="Image suivante (plus récente)"
+                      className="w-6 h-6 rounded-md bg-white/10 hover:bg-white/25 disabled:opacity-25 text-white flex items-center justify-center shrink-0 transition-colors">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                    </button>
+                  </div>
+                  <div className="flex justify-between items-center text-[8px] text-white/40 font-mono gap-1">
+                    <span>{waybackList[0]?.date}</span>
+                    <span className="text-emerald-300/90">✓ {waybackList.length} image(s) datée(s){waybackRefining ? ' · maj…' : ''}</span>
+                    <span>{waybackList[waybackList.length - 1]?.date}</span>
+                  </div>
+                </>
+              )
             ) : (
               <>
                 {s2Loading ? (
@@ -1534,15 +1572,15 @@ export function Teledetection() {
                     <div className="flex justify-between items-center text-[8px] text-white/40 font-mono">
                       <span>{s2List[0]?.date}</span>
                       <span className="text-emerald-300/90">
-                        {s2List[s2Idx]?.url === null
+                        {!s2List[s2Idx]?.url
                           ? <span className="animate-pulse">⏳ {s2List[s2Idx]?.date} · chargement…</span>
-                          : <>{s2List.length} scènes · ☁ {s2List[s2Idx]?.cloud ?? 0}%</>}
+                          : <>{s2List.length} scènes · ☁ ≤{cloudMax}% · {s2List[s2Idx]?.cloud ?? 0}%</>}
                       </span>
                       <span>{s2List[s2List.length - 1]?.date}</span>
                     </div>
                   </>
                 ) : (
-                  <div className="text-[10px] text-white/50 py-1 text-center">Aucune scène S2 nette sur la période.</div>
+                  <div className="text-[10px] text-white/50 py-1 text-center">Aucune scène S2 nette (≤{cloudMax}% nuages) sur la période.</div>
                 )}
               </>
             )}
@@ -2409,22 +2447,64 @@ export function Teledetection() {
         </div>
       )}
 
-      {/* ═══ v21 — Carte résultat INCENDIE (apparaît quand une détection est lancée) ═══ */}
+      {/* ═══ v23 — Carte résultat + contrôles INCENDIE ═══ */}
       {showFire && fireVisible && fireData && (
-        <div className="absolute bottom-20 md:bottom-6 left-2 md:left-4 z-[600] w-[290px] max-w-[88vw] bg-black/85 backdrop-blur-xl border border-orange-500/40 rounded-xl p-3 shadow-2xl text-white pointer-events-auto">
+        <div className="absolute bottom-20 md:bottom-6 left-2 md:left-4 z-[600] w-[300px] max-w-[90vw] bg-black/85 backdrop-blur-xl border border-orange-500/40 rounded-xl p-3 shadow-2xl text-white pointer-events-auto">
           <div className="flex items-center justify-between mb-2">
             <span className="flex items-center gap-1.5 font-bold text-sm text-orange-400"><Flame className="w-4 h-4" /> Incendies de forêt</span>
             <button onClick={() => setFireVisible(false)} title="Masquer la couche incendie" className="text-white/50 hover:text-white"><X className="w-4 h-4" /></button>
           </div>
+
+          {/* Période EXACTE analysée (= période « après » de l'analyse) — mise en avant */}
+          <div className="mb-2 px-2 py-1.5 rounded bg-orange-500/10 border border-orange-400/20">
+            <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-wider text-orange-300/80 font-bold">
+              <Calendar className="w-3 h-3" /> Période détectée (= « après »)
+            </div>
+            <div className="font-mono text-[12px] text-white font-bold mt-0.5">{fireData.period}</div>
+            <div className="text-[8.5px] text-white/45 mt-0.5">réf. « avant » : {fireData.period_ref ?? '—'}</div>
+          </div>
+
           <div className={cn("text-[11px] font-semibold mb-2 px-2 py-1 rounded",
             fireData.fire_confirmed ? "bg-red-500/20 text-red-300" : (fireData.burned_ha > 0 ? "bg-amber-500/20 text-amber-300" : "bg-white/10 text-white/60"))}>
             {fireData.fire_confirmed ? '🔥 ' : ''}{fireData.verdict}
           </div>
           <div className="space-y-1 text-[11px] text-white/80">
             <div className="flex justify-between"><span>Surface brûlée</span><strong>{fireData.burned_ha != null ? `${fireData.burned_ha} ha` : '—'}</strong></div>
-            <div className="flex justify-between"><span>Points chauds (FIRMS)</span><strong>{fireData.firms_count}</strong></div>
-            <div className="flex justify-between"><span>Période</span><span className="font-mono text-[10px]">{fireData.period}</span></div>
+            <div className="flex justify-between"><span>dont sévère (dNBR≥0.44)</span><strong>{fireData.severe_ha != null ? `${fireData.severe_ha} ha` : '—'}</strong></div>
+            <div className="flex justify-between"><span>Points chauds (FIRMS)</span><strong>{fireData.firms_count}{fireData.firms_scenes != null ? ` / ${fireData.firms_scenes} passages` : ''}</strong></div>
+            <div className="flex justify-between"><span>Seuil sévérité dNBR</span><span className="font-mono">{fireData.dnbr_threshold ?? fireDnbrThr}</span></div>
           </div>
+
+          {/* Contrôles : sensibilité dNBR + opacités, relance à la demande */}
+          <div className="mt-2 pt-2 border-t border-white/10 space-y-2">
+            <div>
+              <div className="flex justify-between text-[9px] text-white/60 font-bold uppercase tracking-wider mb-0.5">
+                <span>Sensibilité (seuil dNBR)</span><span className="font-mono text-orange-300">{fireDnbrThr.toFixed(2)}</span>
+              </div>
+              <input type="range" min={0.10} max={0.66} step={0.01} value={fireDnbrThr}
+                onChange={e => setFireDnbrThr(Number(e.target.value))}
+                className="w-full h-1 cursor-pointer accent-orange-500" />
+              <div className="flex justify-between text-[7.5px] text-white/35"><span>+ sensible</span><span>+ strict</span></div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[8px] text-white/55">Opacité brûlure</span>
+                <input type="range" min={0.1} max={1} step={0.05} value={fireDnbrOpacity}
+                  onChange={e => setFireDnbrOpacity(Number(e.target.value))} className="h-1 cursor-pointer accent-orange-500" />
+              </label>
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[8px] text-white/55">Opacité pts chauds</span>
+                <input type="range" min={0.1} max={1} step={0.05} value={fireThermalOpacity}
+                  onChange={e => setFireThermalOpacity(Number(e.target.value))} className="h-1 cursor-pointer accent-red-500" />
+              </label>
+            </div>
+            <button onClick={runFireDetection} disabled={fireLoading}
+              className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-[11px] font-bold transition-colors">
+              <Flame className={cn("w-3.5 h-3.5", fireLoading && "animate-pulse")} />
+              {fireLoading ? 'Détection…' : 'Recalculer avec ce seuil'}
+            </button>
+          </div>
+
           <div className="mt-2 pt-2 border-t border-white/10 flex items-center gap-2 text-[9px] text-white/60">
             <span className="px-1.5 py-0.5 rounded" style={{ background: '#fecc5c', color: '#000' }}>faible</span>
             <span className="px-1.5 py-0.5 rounded" style={{ background: '#fd8d3c', color: '#000' }}>modérée</span>

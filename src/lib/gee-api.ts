@@ -258,19 +258,25 @@ export async function fetchSentinel1Change(p: AnalyzeParams): Promise<Sentinel1R
 
 // v18 — Scenes Sentinel-2 historiques avec dates de capture REELLES (frise "avant")
 export interface S2Scene { date: string; url: string | null; cloud: number; id?: string }
-export async function fetchS2Scenes(p: AnalyzeParams, start: string, end: string): Promise<S2Scene[]> {
+export async function fetchS2Scenes(p: AnalyzeParams, start: string, end: string, cloud?: number): Promise<S2Scene[]> {
   try {
-    // limit élevé : on veut le maximum de dates de capture réelles sur toute la période.
-    const body = { ...buildBody(p), start, end, cloud: 45, limit: 300 };
+    // Seuil nuages = celui de l'utilisateur (cap a 30 pour garantir des images
+    // nettes). On ne liste que les scenes exploitables -> plus d'images qui
+    // "disparaissent" parce qu'elles etaient en realite tres nuageuses.
+    const cloudPct = Math.min(cloud ?? p.cloud ?? 30, 30);
+    const body = { ...buildBody(p), start, end, cloud: cloudPct, limit: 300 };
     const r = await geePost<{ scenes: S2Scene[] }>("/gee/s2-scenes", body);
     return r.scenes ?? [];
   } catch (e) { console.warn("[S2-scenes]", e); return []; }
 }
 
-// Charge à la demande l'URL de tuiles d'une scène S2 (frise temporelle paresseuse)
-export async function fetchS2SceneTile(p: AnalyzeParams, sceneId: string): Promise<string | null> {
+// Charge à la demande l'URL de tuiles d'une scène S2 (frise temporelle paresseuse).
+// On envoie la DATE : le backend renvoie un composite propre masque-nuages, sans trou.
+export async function fetchS2SceneTile(p: AnalyzeParams, scene: { id?: string; date?: string }, cloud?: number): Promise<string | null> {
   try {
-    const r = await geePost<{ url: string }>("/gee/s2-scene-tile", { ...buildBody(p), id: sceneId });
+    const cloudPct = Math.min(cloud ?? p.cloud ?? 30, 30);
+    const r = await geePost<{ url: string }>("/gee/s2-scene-tile", {
+      ...buildBody(p), id: scene.id, date: scene.date, cloud: cloudPct });
     return r.url ?? null;
   } catch (e) { console.warn("[S2-scene-tile]", e); return null; }
 }
@@ -323,19 +329,36 @@ export async function fetchAccuracy(): Promise<AccuracyRow[]> {
 }
 
 // v21 — Détection des incendies de forêt (dNBR + thermique MODIS/VIIRS FIRMS)
+export interface FireOptions {
+  dnbrThreshold?: number;   // seuil de brûlure comptée (defaut 0.27)
+  dnbrFloor?: number;       // seuil d'affichage de la sévérité (defaut 0.10)
+  firmsMinTemp?: number;    // température min des points chauds FIRMS en K (defaut 330)
+}
 export interface FireResult {
   dnbrTileUrl: string | null;
   thermalTileUrl: string | null;
   firms_points: { lat: number; lng: number }[];
   firms_count: number;
+  firms_scenes?: number;
   burned_ha: number | null;
+  severe_ha?: number | null;
   fire_confirmed: boolean;
   verdict: string;
   period: string;
+  period_ref?: string;
+  period_note?: string;
+  dnbr_threshold?: number;
+  dnbr_floor?: number;
+  firms_min_temp?: number;
 }
-export async function fetchFireDetection(p: AnalyzeParams): Promise<FireResult | null> {
-  try { return await geePost<FireResult>("/gee/fire-detection", buildBody(p)); }
-  catch (e) { console.warn("[fire]", e); return null; }
+export async function fetchFireDetection(p: AnalyzeParams, opts?: FireOptions): Promise<FireResult | null> {
+  try {
+    const body: Record<string, unknown> = { ...buildBody(p) };
+    if (opts?.dnbrThreshold != null) body.dnbr_threshold = opts.dnbrThreshold;
+    if (opts?.dnbrFloor != null)     body.dnbr_floor = opts.dnbrFloor;
+    if (opts?.firmsMinTemp != null)  body.firms_min_temp = opts.firmsMinTemp;
+    return await geePost<FireResult>("/gee/fire-detection", body);
+  } catch (e) { console.warn("[fire]", e); return null; }
 }
 
 export async function fetchPhenology(zone: string, dateStart: string, dateEnd: string, cloud = 30): Promise<PhenologyResult | null> {
