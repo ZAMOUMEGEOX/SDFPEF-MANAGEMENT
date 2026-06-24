@@ -6,7 +6,7 @@ import {
   ChevronDown, Hexagon, Crosshair, Map as MapIcon, RotateCcw,
   MapPin, BarChart3, Download, FileSpreadsheet, DownloadCloud,
   PanelRightClose, PanelRightOpen, Anchor, Waves, TrendingUp, Globe,
-  Flame, LayoutDashboard, X, Target, ShieldCheck
+  Flame, LayoutDashboard, X, Target, ShieldCheck, Activity
 } from 'lucide-react';
 import { MapContainer, TileLayer, LayersControl, FeatureGroup, useMap, GeoJSON, CircleMarker, Tooltip as LeafletTooltip } from 'react-leaflet';
 import { EditControl } from 'react-leaflet-draw';
@@ -15,17 +15,19 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
 import {
   checkGeeHealth,
-  runAnalyze,
   runAnalyzeAsync,
   fetchForestWatchLayer,
   fetchSentinel1Change,
   fetchS2Scenes,
+  fetchS2SceneTile,
   saveAlerts,
   sendAlertVerdict,
   fetchAccuracy,
   fetchFireDetection,
   fetchSavedAlerts,
   fetchPhenology,
+  fetchAnnualStats,
+  type AnnualStatsResult,
   exportPolygonsGeoJson,
   exportPolygonsKml,
   exportPolygonsShp,
@@ -157,6 +159,56 @@ const DateInput = ({ value, onChange }: any) => (
   </div>
 );
 
+// ── Graphique pluriannuel : deux courbes (NDVI gauche, Haute conf. droite) ────
+// SVG pur (zéro dépendance) -> léger, fiable, rendu net. Double axe Y :
+// NDVI (0..1, vert) à gauche ; surface haute confiance (ha, rouge) à droite.
+const AnnualChart = ({ series }: { series: { year: number; ndvi_mean: number | null; high_conf_ha: number | null }[] }) => {
+  const W = 520, H = 240, PADL = 44, PADR = 48, PADT = 18, PADB = 30;
+  const pts = series.filter(s => s.ndvi_mean != null || s.high_conf_ha != null);
+  if (pts.length < 2) return <div className="text-xs text-[var(--text-muted)] py-6 text-center">Au moins 2 années sont nécessaires pour tracer une courbe.</div>;
+  const years = pts.map(p => p.year);
+  const xMin = Math.min(...years), xMax = Math.max(...years);
+  const ndviVals = pts.map(p => p.ndvi_mean).filter((v): v is number => v != null);
+  const haVals = pts.map(p => p.high_conf_ha).filter((v): v is number => v != null);
+  const ndviMin = Math.min(0, ...ndviVals), ndviMax = Math.max(0.8, ...ndviVals);
+  const haMax = Math.max(1, ...haVals);
+  const X = (y: number) => PADL + (xMax === xMin ? 0.5 : (y - xMin) / (xMax - xMin)) * (W - PADL - PADR);
+  const Yn = (v: number) => PADT + (1 - (v - ndviMin) / (ndviMax - ndviMin || 1)) * (H - PADT - PADB);
+  const Yh = (v: number) => PADT + (1 - v / (haMax || 1)) * (H - PADT - PADB);
+  const ndviPath = pts.filter(p => p.ndvi_mean != null).map((p, i) => `${i ? 'L' : 'M'}${X(p.year).toFixed(1)},${Yn(p.ndvi_mean as number).toFixed(1)}`).join(' ');
+  const haPath = pts.filter(p => p.high_conf_ha != null).map((p, i) => `${i ? 'L' : 'M'}${X(p.year).toFixed(1)},${Yh(p.high_conf_ha as number).toFixed(1)}`).join(' ');
+  const gridYs = [0, 0.25, 0.5, 0.75, 1].map(f => ndviMin + f * (ndviMax - ndviMin));
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" style={{ maxHeight: 260 }}>
+      {/* grille horizontale + labels NDVI (gauche) */}
+      {gridYs.map((g, i) => (
+        <g key={i}>
+          <line x1={PADL} x2={W - PADR} y1={Yn(g)} y2={Yn(g)} stroke="currentColor" strokeOpacity="0.12" />
+          <text x={PADL - 6} y={Yn(g) + 3} textAnchor="end" fontSize="9" fill="#16a34a">{g.toFixed(2)}</text>
+        </g>
+      ))}
+      {/* labels axe droit (ha) */}
+      {[0, 0.5, 1].map((f, i) => (
+        <text key={i} x={W - PADR + 6} y={Yh(f * haMax) + 3} textAnchor="start" fontSize="9" fill="#dc2626">{(f * haMax).toFixed(1)}</text>
+      ))}
+      {/* axes X : années */}
+      {pts.map(p => (
+        <text key={p.year} x={X(p.year)} y={H - PADB + 14} textAnchor="middle" fontSize="9" fill="currentColor" fillOpacity="0.6">{p.year}</text>
+      ))}
+      {/* courbe haute confiance (rouge, axe droit) */}
+      <path d={haPath} fill="none" stroke="#dc2626" strokeWidth="2.2" />
+      {pts.filter(p => p.high_conf_ha != null).map(p => (
+        <circle key={`h${p.year}`} cx={X(p.year)} cy={Yh(p.high_conf_ha as number)} r="3.2" fill="#dc2626" />
+      ))}
+      {/* courbe NDVI (vert, axe gauche) */}
+      <path d={ndviPath} fill="none" stroke="#16a34a" strokeWidth="2.2" />
+      {pts.filter(p => p.ndvi_mean != null).map(p => (
+        <circle key={`n${p.year}`} cx={X(p.year)} cy={Yn(p.ndvi_mean as number)} r="3.2" fill="#16a34a" />
+      ))}
+    </svg>
+  );
+};
+
 function MapResizer() {
   const map = useMap();
   useEffect(() => {
@@ -276,6 +328,12 @@ export function Teledetection() {
   const cancelRef = useRef<null | (() => Promise<void>)>(null);
   // v21 — Tableau de bord (modal à la demande) + détection incendies
   const [showDashboard, setShowDashboard] = useState(false);
+  // Statistiques historiques annuelles (panneau indépendant : courbes de tendance)
+  const [showAnnual, setShowAnnual]       = useState(false);
+  const [annualLoading, setAnnualLoading] = useState(false);
+  const [annualData, setAnnualData]       = useState<AnnualStatsResult | null>(null);
+  const [annualYears, setAnnualYears]     = useState<number[]>([2018, 2020, 2022, 2024, 2026]);
+  const [annualError, setAnnualError]     = useState<string | null>(null);
   const [accuracyRows, setAccuracyRows]   = useState<any[]>([]);
   const [dashLoading, setDashLoading]     = useState(false);
   const [fireData, setFireData]           = useState<any>(null);
@@ -283,6 +341,9 @@ export function Teledetection() {
   const [fireThermalUrl, setFireThermalUrl] = useState<string | null>(null);
   const [fireLoading, setFireLoading]     = useState(false);
   const [showFire, setShowFire]           = useState(false);
+  // Permet de masquer/réafficher la couche incendie SANS relancer la détection.
+  // showFire = "une détection a tourné" ; fireVisible = "la couche est affichée".
+  const [fireVisible, setFireVisible]     = useState(true);
   // v22 — alertes archivées (mémoire Supabase) affichées à l'ouverture d'une zone
   const [savedAlerts, setSavedAlerts]     = useState<any[]>([]);
   const [statusCounts, setStatusCounts]   = useState<Record<string, number>>({});
@@ -318,7 +379,8 @@ export function Teledetection() {
 
   const [toggles, setToggles] = useState({
     s2Split: true, disturbance: true, polygons: true,
-    ndviDelta: false, forestWatch: false, sentinel1: false, phenology: false,
+    ndviDelta: false, nbrDelta: false, forestWatch: false, sentinel1: false, phenology: false,
+    highOnly: false,
   });
   // Multi-scène (S2) — détection répétée sur plusieurs scènes réelles. OFF par défaut, indépendante.
   const [multiScene, setMultiScene] = useState(false);
@@ -328,9 +390,10 @@ export function Teledetection() {
   // Triple confirmation : ON par défaut (essentiel à toute analyse rigoureuse)
   const [tripleConf, setTripleConf] = useState(true);
   // Filtre "Haute confiance" : rattaché à la couche Alertes (raster + polygones)
-  const [highConfOnly, setHighConfOnly] = useState(false);
+  // Filtre "Haute confiance" : désormais géré par la couche raster indépendante
+  // (toggles.highOnly), plus par un filtrage de polygones. Voir highOnlyTileUrl.
   // Opacités réglables des couches raster (gain de place, pas de cartes séparées)
-  const [opacity, setOpacity] = useState({ alertes: 0.78, ndvi: 0.72, hansen: 0.80, s1: 0.70, pheno: 0.68, multiscene: 0.80 });
+  const [opacity, setOpacity] = useState({ alertes: 0.78, ndvi: 0.72, nbr: 0.78, hansen: 0.80, s1: 0.70, pheno: 0.68, multiscene: 0.80, highOnly: 0.85 });
   const setLayerOpacity = (k: keyof typeof opacity, v: number) => setOpacity(o => ({ ...o, [k]: v }));
 
   const zones = [
@@ -344,6 +407,8 @@ export function Teledetection() {
   const [afterTileUrl, setAfterTileUrl]     = useState<string|null>(null);
   const [distTileUrl, setDistTileUrl]       = useState<string|null>(null);
   const [ndviTileUrl, setNdviTileUrl]       = useState<string|null>(null);
+  const [nbrTileUrl, setNbrTileUrl]         = useState<string|null>(null);
+  const [highOnlyTileUrl, setHighOnlyTileUrl] = useState<string|null>(null);
   const [hansenTileUrl, setHansenTileUrl]   = useState<string|null>(null);
   const [distAlertTileUrl, setDistAlertTileUrl] = useState<string|null>(null);
   const [s1TileUrl, setS1TileUrl]           = useState<string|null>(null);
@@ -372,12 +437,118 @@ export function Teledetection() {
   const [fwData, setFwData]                 = useState<any>(null);
   const [phenologyData, setPhenologyData]   = useState<any>(null);
   const [errorMsg, setErrorMsg]             = useState<string|null>(null);
+  // Avertissement non-bloquant pour les couches optionnelles (FW/S1/Phéno).
+  const [layerWarnMsg, setLayerWarnMsg]     = useState<string|null>(null);
+  const setLayerWarn = (m: string) => { setLayerWarnMsg(m); setTimeout(() => setLayerWarnMsg(null), 5000); };
   const [forestBoundary, setForestBoundary] = useState<any>(null);
   const [zoneBoundary, setZoneBoundary]     = useState<any>(null);
   const [mapReady, setMapReady]             = useState(false);
+  // Fix #4 — position GPS de l'utilisateur (bouton Localiser)
+  const [userPos, setUserPos]               = useState<{ lat: number; lng: number; acc: number } | null>(null);
+  const [locating, setLocating]             = useState(false);
   const [isPhenologyExpanded, setIsPhenologyExpanded] = useState(false);
 
   const mapRef = useRef<L.Map|null>(null);
+  // Liste complète des releases Wayback (clé API) pour la détection par localisation
+  const waybackAllRef = useRef<{ url: string; date: string; release: number }[]>([]);
+
+  // Fix #6 — Persistance des préférences utilisateur (zone, couches, opacités,
+  // source historique) entre les sessions via localStorage. Chargée une fois au
+  // montage, puis sauvegardée à chaque changement (léger, sans backend).
+  const PREFS_KEY = 'atlasforest.prefs.v1';
+  const prefsLoaded = useRef(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PREFS_KEY);
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p.selectedZone) setSelectedZone(p.selectedZone);
+        if (p.toggles) setToggles(t => ({ ...t, ...p.toggles }));
+        if (p.opacity) setOpacity(o => ({ ...o, ...p.opacity }));
+        if (p.beforeSource) setBeforeSource(p.beforeSource);
+        if (typeof p.cloudMax === 'number') setCloudMax(p.cloudMax);
+      }
+    } catch { /* préférences corrompues : on ignore */ }
+    prefsLoaded.current = true;
+  }, []);
+  useEffect(() => {
+    if (!prefsLoaded.current) return;   // n'écrase pas avant le 1er chargement
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({
+        selectedZone, toggles, opacity, beforeSource, cloudMax,
+      }));
+    } catch { /* quota plein / mode privé : silencieux */ }
+  }, [selectedZone, toggles, opacity, beforeSource, cloudMax]);
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Persistance des RÉSULTATS D'ANALYSE via sessionStorage.
+  // Problème résolu : en quittant la section Rissad (Surveillance) pour une autre
+  // section du site, React démonte ce composant et perd l'analyse affichée. Au
+  // retour, tout était vide. On sauvegarde donc l'état des résultats (URLs de
+  // tuiles, polygones, stats) et on le restaure au remontage, tant qu'on reste
+  // dans le même onglet (sessionStorage survit à la navigation interne et à un
+  // refresh accidentel ; il s'efface à la fermeture de l'onglet).
+  // ───────────────────────────────────────────────────────────────────────────
+  const RESULTS_KEY = 'atlasforest.results.v1';
+  const resultsLoaded = useRef(false);
+  // Restauration unique au montage
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(RESULTS_KEY);
+      if (raw) {
+        const r = JSON.parse(raw);
+        if (r.beforeTileUrl) setBeforeTileUrl(r.beforeTileUrl);
+        if (r.afterTileUrl) setAfterTileUrl(r.afterTileUrl);
+        if (r.distTileUrl) setDistTileUrl(r.distTileUrl);
+        if (r.ndviTileUrl) setNdviTileUrl(r.ndviTileUrl);
+        if (r.nbrTileUrl) setNbrTileUrl(r.nbrTileUrl);
+        if (r.highOnlyTileUrl) setHighOnlyTileUrl(r.highOnlyTileUrl);
+        if (r.hansenTileUrl) setHansenTileUrl(r.hansenTileUrl);
+        if (r.distAlertTileUrl) setDistAlertTileUrl(r.distAlertTileUrl);
+        if (r.s1TileUrl) setS1TileUrl(r.s1TileUrl);
+        if (r.phenologyTileUrl) setPhenologyTileUrl(r.phenologyTileUrl);
+        if (r.multisceneTileUrl) setMultisceneTileUrl(r.multisceneTileUrl);
+        if (Array.isArray(r.polygons)) setPolygons(r.polygons);
+        if (Array.isArray(r.topPolys)) setTopPolys(r.topPolys);
+        if (r.realStats) setRealStats(r.realStats);
+        if (r.s1Data) setS1Data(r.s1Data);
+        if (r.fwData) setFwData(r.fwData);
+        if (r.phenologyData) setPhenologyData(r.phenologyData);
+        if (r.beforeLabel) setBeforeLabel(r.beforeLabel);
+        if (r.afterLabel) setAfterLabel(r.afterLabel);
+        if (r.selectedForest) setSelectedForest(r.selectedForest);
+        if (r.selectedCanton) setSelectedCanton(r.selectedCanton);
+        if (r.analysisLevel) setAnalysisLevel(r.analysisLevel);
+      }
+    } catch { /* snapshot corrompu : on ignore */ }
+    resultsLoaded.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Sauvegarde à chaque changement de résultat (après la 1re restauration)
+  useEffect(() => {
+    if (!resultsLoaded.current) return;
+    try {
+      // Si aucune analyse n'est présente, on nettoie l'entrée (évite de
+      // ressusciter un vieux résultat après un reset volontaire).
+      if (!afterTileUrl && !distTileUrl && polygons.length === 0) {
+        sessionStorage.removeItem(RESULTS_KEY);
+        return;
+      }
+      sessionStorage.setItem(RESULTS_KEY, JSON.stringify({
+        beforeTileUrl, afterTileUrl, distTileUrl, ndviTileUrl, nbrTileUrl,
+        highOnlyTileUrl, hansenTileUrl, distAlertTileUrl, s1TileUrl,
+        phenologyTileUrl, multisceneTileUrl, polygons, topPolys, realStats,
+        s1Data, fwData, phenologyData, beforeLabel, afterLabel,
+        selectedForest, selectedCanton, analysisLevel,
+      }));
+    } catch { /* quota plein : silencieux (les gros résultats peuvent dépasser) */ }
+  }, [
+    beforeTileUrl, afterTileUrl, distTileUrl, ndviTileUrl, nbrTileUrl,
+    highOnlyTileUrl, hansenTileUrl, distAlertTileUrl, s1TileUrl,
+    phenologyTileUrl, multisceneTileUrl, polygons, topPolys, realStats,
+    s1Data, fwData, phenologyData, beforeLabel, afterLabel,
+    selectedForest, selectedCanton, analysisLevel,
+  ]);
 
   useEffect(() => {
     checkGeeHealth().then(d => setGeeStatus(d?.gee ? 'ready' : 'error')).catch(() => setGeeStatus('error'));
@@ -387,7 +558,8 @@ export function Teledetection() {
     fetch('/assets/data/forest_limits.json').then(r => r.json()).then(setForestBoundary).catch(() => {});
   }, []);
 
-  // Esri Wayback : charge TOUTES les versions, choisit par défaut la plus proche (<=) de la référence
+  // Esri Wayback : charge TOUTES les versions publiées (repli si la détection
+  // par localisation échoue). On garde aussi le numéro de release (clé API).
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -396,21 +568,20 @@ export function Teledetection() {
         if (!r.ok) return;
         const cfg = await r.json();
         if (cancelled || !cfg || typeof cfg !== 'object') return;
-        const items: { url: string; date: string }[] = [];
+        const items: { url: string; date: string; release: number }[] = [];
         for (const k in cfg) {
           const v = (cfg as any)[k];
           const raw = v && typeof v.itemURL === 'string' ? v.itemURL : '';
           const m = String(v?.itemTitle || '').match(/\d{4}-\d{2}-\d{2}/);
           if (!raw || !m) continue;
-          // itemURL Esri = template WMTS .../{level}/{row}/{col} -> variables Leaflet
           const tpl = raw.replace(/\{level\}/gi, '{z}').replace(/\{row\}/gi, '{y}').replace(/\{col\}/gi, '{x}');
-          if (/\{[^}]+\}/.test(tpl.replace(/\{[zxysr]\}/gi, ''))) continue; // variable inconnue -> on saute
-          items.push({ url: tpl, date: m[0] });
+          if (/\{[^}]+\}/.test(tpl.replace(/\{[zxysr]\}/gi, ''))) continue;
+          items.push({ url: tpl, date: m[0], release: Number(k) });
         }
         if (cancelled || !items.length) return;
         items.sort((a, b) => a.date.localeCompare(b.date));
+        waybackAllRef.current = items;
         setWaybackList(items);
-        // index par défaut = version la plus proche AVANT la date de référence
         let idx = items.findIndex(i => i.date > refEnd);
         idx = idx === -1 ? items.length - 1 : Math.max(0, idx - 1);
         setWaybackIdx(idx);
@@ -418,6 +589,66 @@ export function Teledetection() {
     })();
     return () => { cancelled = true; };
   }, [refEnd]);
+
+  // Conversion lat/lng -> tuile XYZ (pour interroger les services Wayback par lieu)
+  const lonLatToTile = (lng: number, lat: number, z: number) => {
+    const n = 2 ** z;
+    const x = Math.floor(((lng + 180) / 360) * n);
+    const latRad = (lat * Math.PI) / 180;
+    const y = Math.floor(((1 - Math.asinh(Math.tan(latRad)) / Math.PI) / 2) * n);
+    return { x, y };
+  };
+
+  // HAUTE DÉFINITION + DATES RÉELLES + ZÉRO DOUBLON : pour le centre de carte,
+  // on demande à Esri quelles RELEASES Wayback ont réellement changé l'imagerie
+  // ici (change-detection), puis pour chacune la DATE DE CAPTURE réelle de la
+  // source (Maxar/Airbus...) via le service de métadonnées. Résultat : une frise
+  // de vraies prises de vue distinctes, plus aucune version republiée identique.
+  const refineWaybackForLocation = async (lat: number, lng: number) => {
+    const all = waybackAllRef.current;
+    if (!all.length) return;
+    const z = 15;
+    const { x, y } = lonLatToTile(lng, lat, z);
+    try {
+      // 1) Releases ayant changé à cet endroit (ordre récent -> ancien)
+      const cdUrl = `https://wayback.maptiles.arcgis.com/arcgis/rest/services/world_imagery/wmts/1.0.0/default028mm/MapServer/tile/changeDetection/${z}/${y}/${x}`;
+      const cd = await fetch(cdUrl);
+      if (!cd.ok) return;
+      const releases: number[] = await cd.json();
+      if (!Array.isArray(releases) || !releases.length) return;
+      const byRelease = new Map(all.map(i => [i.release, i]));
+      // 2) Date de capture réelle par release (métadonnées), dédupliquée par date
+      const seen = new Set<string>();
+      const refined: { url: string; date: string; release: number; capture: string }[] = [];
+      await Promise.all(releases.map(async (rel) => {
+        const base = byRelease.get(rel);
+        if (!base) return;
+        let capture = base.date;
+        try {
+          const mdUrl = `https://wayback.maptiles.arcgis.com/arcgis/rest/services/world_imagery/wmts/1.0.0/default028mm/MapServer/tile/${rel}/${z}/${y}/${x}/metadata?f=json`;
+          const md = await fetch(mdUrl);
+          if (md.ok) {
+            const j = await md.json();
+            const d = j?.SRC_DATE || j?.features?.[0]?.attributes?.SRC_DATE;
+            if (d) {
+              let ds = String(d);
+              if (/^\d{10,}$/.test(ds)) ds = new Date(Number(ds)).toISOString().slice(0, 10);
+              else if (/^\d{4}$/.test(ds)) ds = `${ds}-01-01`;
+              capture = ds;
+            }
+          }
+        } catch { /* garde la date de publication en repli */ }
+        refined.push({ ...base, capture });
+      }));
+      if (!refined.length) return;
+      // déduplique par date de capture réelle (zéro mosaïque répétée)
+      refined.sort((a, b) => a.capture.localeCompare(b.capture));
+      const deduped = refined.filter(r => (seen.has(r.capture) ? false : (seen.add(r.capture), true)));
+      const list = deduped.map(r => ({ url: r.url, date: r.capture }));
+      setWaybackList(list);
+      setWaybackIdx(list.length - 1);
+    } catch { /* repli : on garde la liste complète déjà affichée */ }
+  };
 
   // Applique l'image Wayback correspondant à l'index choisi (frise temporelle)
   useEffect(() => {
@@ -457,6 +688,25 @@ export function Teledetection() {
     return () => { cancelled = true; map.off('moveend', fetchCapture); };
   }, [beforeSource, toggles.s2Split, waybackIdx]);
 
+  // Affine la frise Wayback pour la zone visible (vraies prises de vue, dédupliquées).
+  // Debounce léger : se déclenche quand la carte se stabilise.
+  useEffect(() => {
+    if (beforeSource !== 'wayback' || !toggles.s2Split || !mapReady) return;
+    const map = mapRef.current; if (!map) return;
+    let timer: any;
+    const trigger = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const c = map.getCenter();
+        refineWaybackForLocation(c.lat, c.lng);
+      }, 600);
+    };
+    trigger();
+    map.on('moveend', trigger);
+    return () => { clearTimeout(timer); map.off('moveend', trigger); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [beforeSource, toggles.s2Split, mapReady, selectedZone]);
+
   // v18 — SENTINEL-2 comme source historique "avant" : dates de capture REELLES
   // et garanties (tous les ~5 jours). Beaucoup plus de dates recentes precises.
   useEffect(() => {
@@ -465,19 +715,37 @@ export function Teledetection() {
     (async () => {
       setS2Loading(true);
       try {
-        // fenetre : 18 mois avant la fin de reference -> couvre la periode "avant"
-        const end = refEnd || new Date().toISOString().slice(0, 10);
-        const start = (() => { const d = new Date(end); d.setMonth(d.getMonth() - 18); return d.toISOString().slice(0, 10); })();
+        // Fenêtre MAXIMALE : depuis le début de l'archive Sentinel-2 (mi-2015)
+        // jusqu'à AUJOURD'HUI -> on capte le plus grand nombre de dates de prise
+        // de vue réelles possibles, des plus anciennes aux plus récentes.
+        const today = new Date().toISOString().slice(0, 10);
+        const end = today;
+        const start = '2015-07-01';   // première imagerie Sentinel-2 disponible
         const list = await fetchS2Scenes(buildParams(), start, end);
         if (cancelled || !list?.length) { setS2List([]); setS2Idx(-1); return; }
         list.sort((a, b) => a.date.localeCompare(b.date));
         setS2List(list);
-        setS2Idx(list.length - 1);  // la plus recente <= refEnd par defaut
+        setS2Idx(list.length - 1);  // la plus récente par défaut
       } catch { if (!cancelled) { setS2List([]); setS2Idx(-1); } }
       finally { if (!cancelled) setS2Loading(false); }
     })();
     return () => { cancelled = true; };
-  }, [beforeSource, toggles.s2Split, refEnd]);
+  }, [beforeSource, toggles.s2Split, selectedZone, selectedForest, selectedCanton]);
+
+  // Chargement PARESSEUX : si la scène S2 sélectionnée n'a pas encore d'URL de
+  // tuiles (seules les plus récentes sont pré-calculées), on la résout à la volée.
+  useEffect(() => {
+    if (beforeSource !== 's2' || s2Idx < 0) return;
+    const scene = s2List[s2Idx];
+    if (!scene || scene.url || !scene.id) return;
+    let cancelled = false;
+    (async () => {
+      const url = await fetchS2SceneTile(buildParams(), scene.id!);
+      if (cancelled || !url) return;
+      setS2List(prev => prev.map((s, i) => (i === s2Idx ? { ...s, url } : s)));
+    })();
+    return () => { cancelled = true; };
+  }, [beforeSource, s2Idx, s2List]);
 
   // Resout l'URL + la date a afficher selon la source choisie
   const activeBeforeUrl = beforeSource === 's2'
@@ -505,8 +773,13 @@ export function Teledetection() {
     return () => { cancelled = true; };
   }, [mapReady, selectedZone]);
 
+  // Au CHANGEMENT de zone, on efface les résultats (ils sont propres à la zone).
+  // Exception : on saute le tout premier passage (montage) pour laisser la
+  // restauration sessionStorage réafficher l'analyse précédente intacte.
+  const zoneCleanupSkip = useRef(true);
   useEffect(() => {
-    setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
+    if (zoneCleanupSkip.current) { zoneCleanupSkip.current = false; return; }
+    setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null); setNbrTileUrl(null); setHighOnlyTileUrl(null);
     setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null); setMultisceneTileUrl(null);
     setPolygons([]); setTopPolys([]); setSelectedPolyId(null); setPolyError(null);
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
@@ -598,8 +871,8 @@ export function Teledetection() {
     date1Start: refStart, date1End: refEnd,
     date2Start: actStart, date2End: actEnd,
     cloud: cloudMax, sensitivity: ndviThreshold, nbr: nbrThreshold, ndmi: ndmiThreshold,
-    // Haute confiance -> on ne garde que score >= 3 (high + highest)
-    minScore: (highOnly ?? highConfOnly) ? 3 : minConfidence,
+    // Haute confiance -> on ne garde que score >= 3 (exports HC). Sinon minConfidence.
+    minScore: highOnly ? 3 : minConfidence,
     minArea: minSurface,
     // Triple confirmation -> rigueur max (optique + radar + persistance + Hansen + saisonnier)
     useRadar:    tripleConf || toggles.sentinel1,
@@ -614,7 +887,7 @@ export function Teledetection() {
   const resetParams = () => {
     setCloudMax(30); setNdviThreshold(0.15); setNbrThreshold(0.15);
     setNdmiThreshold(0.12); setMinSurface(500); setMinConfidence(2);
-    setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null);
+    setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null); setNbrTileUrl(null); setHighOnlyTileUrl(null);
     setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null); setMultisceneTileUrl(null);
     setPolygons([]); setTopPolys([]); setSelectedPolyId(null); setPolyError(null);
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
@@ -626,6 +899,26 @@ export function Teledetection() {
       if (b.isValid()) { mapRef.current?.fitBounds(b, { padding: [30, 30], maxZoom: 13 }); return; }
     }
     mapRef.current?.setView([35.5785, -5.3684], 11); // Tétouan
+  };
+
+  // Fix #4 — Géolocalisation : centre la carte sur la position GPS de l'agent
+  // (utile sur le terrain) et y dépose un marqueur. Aucune dépendance externe.
+  const locateMe = () => {
+    if (!('geolocation' in navigator)) { setErrorMsg('Géolocalisation non supportée par ce navigateur.'); return; }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        setUserPos({ lat: latitude, lng: longitude, acc: accuracy });
+        mapRef.current?.flyTo([latitude, longitude], 16);
+        setLocating(false);
+      },
+      (err) => {
+        setErrorMsg(err.code === 1 ? 'Autorisation de localisation refusée.' : 'Position introuvable.');
+        setLocating(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 },
+    );
   };
 
   // ── Analyse principale (v19 — asynchrone : barre de progression, sans timeout) ──
@@ -645,6 +938,8 @@ export function Teledetection() {
       setAfterTileUrl(result.afterTileUrl);
       setDistTileUrl(result.distTileUrl);
       setNdviTileUrl(result.ndviTileUrl);
+      setNbrTileUrl(result.nbrTileUrl ?? null);
+      setHighOnlyTileUrl(result.highOnlyTileUrl ?? null);
       setRealStats(result.stats);
       setPolygons(result.polygons?.features ?? []);
       if (result.beforeLabel) setBeforeLabel(result.beforeLabel);
@@ -670,25 +965,29 @@ export function Teledetection() {
           .catch(() => { /* Supabase non configuré : silencieux */ });
       }
 
-      // Forest Watch (Hansen / DIST-ALERT)
+      // Forest Watch (Hansen / DIST-ALERT) — couche optionnelle : un échec
+      // n'interrompt pas l'analyse principale, mais on prévient l'utilisateur.
       if (toggles.forestWatch) {
         fetchForestWatchLayer(params).then(fw => {
           if (fw) { setFwData(fw); setHansenTileUrl(fw.hansenTileUrl); setDistAlertTileUrl(fw.distAlertTileUrl); }
-        }).catch(e => console.warn('[FW]', e));
+          else setLayerWarn('Couche Forest Watch indisponible.');
+        }).catch(e => { console.warn('[FW]', e); setLayerWarn('Échec du chargement Forest Watch.'); });
       }
       // Sentinel-1
       if (toggles.sentinel1) {
         fetchSentinel1Change(params).then(s1 => {
           if (s1?.tileUrl) setS1TileUrl(s1.tileUrl);
           if (s1) setS1Data(s1);
-        }).catch(e => console.warn('[S1]', e));
+          else setLayerWarn('Couche Sentinel-1 indisponible.');
+        }).catch(e => { console.warn('[S1]', e); setLayerWarn('Échec du chargement Sentinel-1.'); });
       }
       // Phénologie
       if (toggles.phenology) {
         fetchPhenology(selectedZone, actStart, actEnd, cloudMax).then(ph => {
           if (ph?.tileUrl) setPhenologyTileUrl(ph.tileUrl);
           if (ph) setPhenologyData(ph);
-        }).catch(e => console.warn('[Phenology]', e));
+          else setLayerWarn('Couche Phénologie indisponible.');
+        }).catch(e => { console.warn('[Phenology]', e); setLayerWarn('Échec du chargement Phénologie.'); });
       }
     } catch (err: any) {
       const msg = err.message || 'Erreur GEE';
@@ -731,6 +1030,28 @@ export function Teledetection() {
     finally { setDashLoading(false); }
   };
 
+  // Statistiques historiques annuelles : lance le calcul pour les années choisies.
+  const runAnnualStats = async (yrs?: number[]) => {
+    const years = (yrs ?? annualYears).slice().sort((a, b) => a - b);
+    if (geeStatus === 'error') { setAnnualError('GEE hors-ligne.'); return; }
+    if (years.length < 2) { setAnnualError('Choisissez au moins 2 années pour tracer une tendance.'); return; }
+    setAnnualLoading(true); setAnnualError(null);
+    try {
+      const data = await fetchAnnualStats(buildParams(), years);
+      if (data) setAnnualData(data);
+      else setAnnualError('Aucune donnée renvoyée.');
+    } catch (e: any) {
+      setAnnualError(e?.message || 'Échec du calcul annuel.');
+    } finally { setAnnualLoading(false); }
+  };
+
+  const openAnnual = () => { setShowAnnual(true); if (!annualData) runAnnualStats(); };
+
+  // Bascule une année dans/hors la sélection (2018..année courante)
+  const toggleYear = (y: number) => {
+    setAnnualYears(prev => prev.includes(y) ? prev.filter(x => x !== y) : [...prev, y].sort((a, b) => a - b));
+  };
+
   // v21 — détection d'incendies (dNBR + thermique FIRMS) sur la zone/période
   const runFireDetection = async () => {
     if (geeStatus === 'error') { setErrorMsg('GEE hors-ligne'); return; }
@@ -742,6 +1063,7 @@ export function Teledetection() {
         setFireDnbrUrl(fire.dnbrTileUrl);
         setFireThermalUrl(fire.thermalTileUrl);
         setShowFire(true);
+        setFireVisible(true);
         // v22 — archive les incendies confirmés (points chauds) dans la même mémoire
         if (fire.fire_confirmed && (fire.firms_points?.length)) {
           const feats = fire.firms_points.map((pt: any, i: number) => ({
@@ -768,19 +1090,10 @@ export function Teledetection() {
     const feats = highOnly ? polygons.filter(f => ['high','highest'].includes(f.properties?.confidence)) : polygons;
     exportPolygonsCsv(feats, highOnly ? `${selectedZone}_HC` : selectedZone); };
 
-  // Polygones réellement affichés (respecte "Haute confiance")
-  const displayPolygons = highConfOnly
-    ? polygons.filter(f => ['high', 'highest'].includes(f.properties?.confidence)) : polygons;
-  const displayTop = highConfOnly
-    ? topPolys.filter(f => ['high', 'highest'].includes(f.properties?.confidence)) : topPolys;
-
-  // High only : régénère le RASTER + polygones côté serveur avec minScore=3
-  // (la couche Alertes devient le résultat final filtré "haute confiance").
-  const toggleHighOnly = () => {
-    const next = !highConfOnly;
-    setHighConfOnly(next);
-    if (afterTileUrl) handleAnalyze(next);   // re-analyse seulement si une analyse existe déjà
-  };
+  // Polygones affichés. (Le filtre "haute confiance" se fait désormais via la
+  // couche raster indépendante toggles.highOnly, pas par filtrage des polygones.)
+  const displayPolygons = polygons;
+  const displayTop = topPolys;
 
   // ── Sélection de polygone SANS reconstruction de la couche (anti-flicker) ──
   const polyLayerRef = useRef<any>(null);          // référence vers la couche GeoJSON Leaflet
@@ -973,13 +1286,13 @@ export function Teledetection() {
           )}
 
           {/* v21 — INCENDIES : dNBR (sévérité) + thermique FIRMS, au-dessus des alertes */}
-          {showFire && fireDnbrUrl && (
+          {showFire && fireVisible && fireDnbrUrl && (
             <TileLayer key={`dnbr-${fireDnbrUrl}`} url={fireDnbrUrl} pane="paneAlertes" opacity={0.75} {...TILE_PERF} attribution="dNBR — sévérité de brûlure" />
           )}
-          {showFire && fireThermalUrl && (
+          {showFire && fireVisible && fireThermalUrl && (
             <TileLayer key={`thermal-${fireThermalUrl}`} url={fireThermalUrl} pane="panePolygons" opacity={0.9} {...TILE_PERF} attribution="MODIS/VIIRS FIRMS" />
           )}
-          {showFire && (fireData?.firms_points ?? []).map((pt: any, i: number) => (
+          {showFire && fireVisible && (fireData?.firms_points ?? []).map((pt: any, i: number) => (
             <CircleMarker key={`firms-${i}`} center={[pt.lat, pt.lng]} radius={6} pane="panePolygons"
               pathOptions={{ color: '#fff', weight: 1.5, fillColor: '#ff3300', fillOpacity: 0.9 }}>
               <LeafletTooltip>🔥 Point chaud thermique<br/>{pt.lat.toFixed(4)}, {pt.lng.toFixed(4)}</LeafletTooltip>
@@ -1009,29 +1322,52 @@ export function Teledetection() {
           {/* S2 APRÈS — pane droite clippée */}
           <MapControls splitPos={splitPos} toggles={toggles} geeAfterUrl={afterTileUrl} />
 
-          {/* Indices (NDVI/Hansen/SAR/Phéno) — pane indices, SOUS les alertes */}
-          {toggles.ndviDelta && ndviTileUrl && (
-            <TileLayer key={ndviTileUrl} url={ndviTileUrl} pane="paneIndices" opacity={opacity.ndvi} {...TILE_PERF} attribution="GEE NDVI Δ" />
+          {/* Indices (NDVI/NBR/Hansen/SAR/Phéno) — pane indices, SOUS les alertes.
+              On garde chaque couche MONTÉE tant que son URL existe et on pilote la
+              visibilité via l'opacité (0 = masquée). Ainsi un toggle OFF/ON ne
+              démonte pas la couche : les tuiles restent en cache → réaffichage
+              instantané, sans recalcul ni rechargement. */}
+          {ndviTileUrl && (
+            <TileLayer key={`ndvi-${ndviTileUrl}`} url={ndviTileUrl} pane="paneIndices"
+              opacity={toggles.ndviDelta ? opacity.ndvi : 0} {...TILE_PERF} attribution="GEE NDVI Δ" />
           )}
-          {toggles.forestWatch && hansenTileUrl && (
-            <TileLayer key={hansenTileUrl} url={hansenTileUrl} pane="paneIndices" opacity={opacity.hansen} {...TILE_PERF} attribution="UMD Hansen GFC" />
+          {nbrTileUrl && (
+            <TileLayer key={`nbr-${nbrTileUrl}`} url={nbrTileUrl} pane="paneIndices"
+              opacity={toggles.nbrDelta ? opacity.nbr : 0} {...TILE_PERF} attribution="GEE NBR Δ (dNBR)" />
           )}
-          {toggles.forestWatch && distAlertTileUrl && (
-            <TileLayer key={distAlertTileUrl} url={distAlertTileUrl} pane="paneIndices" opacity={opacity.hansen} {...TILE_PERF} attribution="OPERA DIST-ALERT" />
+          {hansenTileUrl && (
+            <TileLayer key={`hansen-${hansenTileUrl}`} url={hansenTileUrl} pane="paneIndices"
+              opacity={toggles.forestWatch ? opacity.hansen : 0} {...TILE_PERF} attribution="UMD Hansen GFC" />
           )}
-          {toggles.sentinel1 && s1TileUrl && (
-            <TileLayer key={s1TileUrl} url={s1TileUrl} pane="paneIndices" opacity={opacity.s1} {...TILE_PERF} attribution="GEE Sentinel-1 SAR" />
+          {distAlertTileUrl && (
+            <TileLayer key={`distalert-${distAlertTileUrl}`} url={distAlertTileUrl} pane="paneIndices"
+              opacity={toggles.forestWatch ? opacity.hansen : 0} {...TILE_PERF} attribution="OPERA DIST-ALERT" />
           )}
-          {toggles.phenology && phenologyTileUrl && (
-            <TileLayer key={phenologyTileUrl} url={phenologyTileUrl} pane="paneIndices" opacity={opacity.pheno} {...TILE_PERF} attribution="GEE Phénologie" />
+          {s1TileUrl && (
+            <TileLayer key={`s1-${s1TileUrl}`} url={s1TileUrl} pane="paneIndices"
+              opacity={toggles.sentinel1 ? opacity.s1 : 0} {...TILE_PERF} attribution="GEE Sentinel-1 SAR" />
+          )}
+          {phenologyTileUrl && (
+            <TileLayer key={`pheno-${phenologyTileUrl}`} url={phenologyTileUrl} pane="paneIndices"
+              opacity={toggles.phenology ? opacity.pheno : 0} {...TILE_PERF} attribution="GEE Phénologie" />
           )}
 
-          {/* ALERTES (raster de confiance) — pane alertes, AU-DESSUS des indices */}
-          {toggles.disturbance && distTileUrl && (
-            <TileLayer key={distTileUrl} url={distTileUrl} pane="paneAlertes" opacity={opacity.alertes} {...TILE_PERF} attribution="GEE Confiance" />
+          {/* ALERTES (raster de confiance, toutes classes) — pane alertes.
+              Reste montée tant que distTileUrl existe ; le toggle ne fait que
+              changer l'opacité (zéro recalcul, zéro latence au retour). */}
+          {distTileUrl && (
+            <TileLayer key={`dist-${distTileUrl}`} url={distTileUrl} pane="paneAlertes"
+              opacity={toggles.disturbance ? opacity.alertes : 0} {...TILE_PERF} attribution="GEE Confiance" />
           )}
-          {multiScene && multisceneTileUrl && (
-            <TileLayer key={multisceneTileUrl} url={multisceneTileUrl} pane="paneMultiscene" opacity={opacity.multiscene} {...TILE_PERF} attribution="GEE Multi-scène S2" />
+          {/* HAUTE CONFIANCE — couche INDÉPENDANTE (score ≥ 3), palette magenta,
+              propre toggle + opacité. N'altère jamais la couche Alertes. */}
+          {highOnlyTileUrl && (
+            <TileLayer key={`high-${highOnlyTileUrl}`} url={highOnlyTileUrl} pane="paneMultiscene"
+              opacity={toggles.highOnly ? opacity.highOnly : 0} {...TILE_PERF} attribution="GEE Haute confiance (≥3)" />
+          )}
+          {multisceneTileUrl && (
+            <TileLayer key={`ms-${multisceneTileUrl}`} url={multisceneTileUrl} pane="paneMultiscene"
+              opacity={multiScene ? opacity.multiscene : 0} {...TILE_PERF} attribution="GEE Multi-scène S2" />
           )}
 
           {/* Limites — pane limits (au-dessus, cliquable) */}
@@ -1048,13 +1384,21 @@ export function Teledetection() {
           {toggles.polygons && displayPolygons.length > 0 && (
             <GeoJSON
               pane="panePolygons"
-              key={`polys-${selectedZone}-${displayPolygons.length}-${highConfOnly}-${Object.keys(verdictMap).length}`}
+              key={`polys-${selectedZone}-${displayPolygons.length}-${Object.keys(verdictMap).length}`}
               ref={(r: any) => { polyLayerRef.current = r; }}
               data={{ type: 'FeatureCollection', features: displayPolygons } as any}
               style={polyStyle}
               onEachFeature={onEachPoly}
               {...({ renderer: canvasRenderer } as any)}
             />
+          )}
+
+          {/* Fix #4 — marqueur de position GPS de l'utilisateur */}
+          {userPos && (
+            <CircleMarker center={[userPos.lat, userPos.lng]} radius={8} pane="paneLimits"
+              pathOptions={{ color: '#fff', weight: 2, fillColor: '#2563eb', fillOpacity: 0.9 }}>
+              <LeafletTooltip>📍 Ma position (±{Math.round(userPos.acc)} m)</LeafletTooltip>
+            </CircleMarker>
           )}
 
           <MapResizer />
@@ -1189,7 +1533,11 @@ export function Teledetection() {
                       className="w-full accent-[var(--brand)] cursor-pointer" />
                     <div className="flex justify-between items-center text-[8px] text-white/40 font-mono">
                       <span>{s2List[0]?.date}</span>
-                      <span className="text-emerald-300/90">{s2List.length} scènes · ☁ {s2List[s2Idx]?.cloud ?? 0}%</span>
+                      <span className="text-emerald-300/90">
+                        {s2List[s2Idx]?.url === null
+                          ? <span className="animate-pulse">⏳ {s2List[s2Idx]?.date} · chargement…</span>
+                          : <>{s2List.length} scènes · ☁ {s2List[s2Idx]?.cloud ?? 0}%</>}
+                      </span>
                       <span>{s2List[s2List.length - 1]?.date}</span>
                     </div>
                   </>
@@ -1213,30 +1561,46 @@ export function Teledetection() {
             <button onClick={resetMap} title="Recentrer sur la zone" className="w-8 h-8 md:w-10 md:h-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white hover:scale-110 hover:bg-white/20 transition-all shadow-lg">
               <MapIcon className="w-4 h-4 md:w-5 md:h-5" />
             </button>
-            <button title="Localiser" className="w-8 h-8 md:w-10 md:h-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white hover:scale-110 hover:bg-[var(--brand)] hover:border-transparent transition-all">
-              <Crosshair className="w-4 h-4 md:w-5 md:h-5" />
+            <button onClick={locateMe} title="Localiser ma position GPS" className="w-8 h-8 md:w-10 md:h-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white hover:scale-110 hover:bg-[var(--brand)] hover:border-transparent transition-all">
+              <Crosshair className={cn("w-4 h-4 md:w-5 md:h-5", locating && "animate-pulse")} />
             </button>
             {/* v21 — Tableau de bord (à la demande) */}
             <button onClick={openDashboard} title="Tableau de bord" className="w-8 h-8 md:w-10 md:h-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white hover:scale-110 hover:bg-sky-500 hover:border-transparent transition-all shadow-lg">
               <LayoutDashboard className="w-4 h-4 md:w-5 md:h-5" />
             </button>
-            {/* v21 — Détection incendies */}
-            <button onClick={runFireDetection} disabled={fireLoading} title="Détecter les incendies (dNBR + thermique)"
+            {/* Statistiques historiques annuelles (courbes de tendance) */}
+            <button onClick={openAnnual} title="Statistiques historiques (courbes annuelles)" className="w-8 h-8 md:w-10 md:h-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white hover:scale-110 hover:bg-emerald-600 hover:border-transparent transition-all shadow-lg">
+              <Activity className="w-4 h-4 md:w-5 md:h-5" />
+            </button>
+            {/* v21 — Détection incendies. Premier clic = lance la détection.
+                Une fois lancée, un 2e bouton (œil) masque/réaffiche la couche
+                SANS relancer le calcul GEE. */}
+            <button onClick={runFireDetection} disabled={fireLoading} title={showFire ? "Relancer la détection d'incendies" : "Détecter les incendies (dNBR + thermique)"}
               className={cn("w-8 h-8 md:w-10 md:h-10 backdrop-blur-md border rounded-full flex items-center justify-center text-white transition-all shadow-lg hover:scale-110",
                 showFire ? "bg-orange-600 border-orange-400" : "bg-black/60 border-white/10 hover:bg-orange-600 hover:border-transparent")}>
               <Flame className={cn("w-4 h-4 md:w-5 md:h-5", fireLoading && "animate-pulse")} />
             </button>
+            {showFire && (
+              <button onClick={() => setFireVisible(v => !v)} title={fireVisible ? "Masquer la couche incendie" : "Afficher la couche incendie"}
+                className={cn("w-8 h-8 md:w-10 md:h-10 backdrop-blur-md border rounded-full flex items-center justify-center transition-all shadow-lg hover:scale-110",
+                  fireVisible ? "bg-orange-500/90 border-orange-300/50 text-white" : "bg-black/60 border-white/10 text-white/60 hover:bg-white/20")}>
+                {fireVisible
+                  ? <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1 1 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.964-7.178z"/><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                  : <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.243 4.243L9.88 9.88"/></svg>}
+              </button>
+            )}
           </div>
         </div>
 
         {/* Gestion des couches — boutons compacts en bas à droite, à côté de la légende */}
         <div className="absolute bottom-10 right-2 md:bottom-14 md:right-4 z-[500] pointer-events-auto flex flex-col gap-1.5 items-end">
-          {/* High confidence only — bascule la couche Alertes vers score >= 3 uniquement */}
-          {(toggles.disturbance || toggles.polygons) && (polygons.length > 0 || !!distTileUrl) && (
-            <button onClick={toggleHighOnly} title="Régénérer la couche en haute confiance uniquement"
+          {/* Haute confiance — couche INDÉPENDANTE (score ≥ 3, magenta). Simple
+              bascule de visibilité : n'altère pas Alertes, ne relance aucun calcul. */}
+          {highOnlyTileUrl && (
+            <button onClick={() => handleToggle('highOnly')} title="Afficher/masquer la couche Haute confiance (≥ 3) — indépendante d'Alertes"
               className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold shadow-lg backdrop-blur-md border transition-all",
-                highConfOnly ? "bg-[#7f1d1d] text-white border-red-400/40" : "bg-black/65 text-white/90 border-white/10 hover:bg-black/80")}>
-              <ShieldAlert className="w-3.5 h-3.5" /> {highConfOnly ? 'Haute conf. ✓' : 'High only'}
+                toggles.highOnly ? "bg-[#a21caf] text-white border-fuchsia-300/40" : "bg-black/65 text-white/90 border-white/10 hover:bg-black/80")}>
+              <ShieldCheck className="w-3.5 h-3.5" /> {toggles.highOnly ? 'Haute conf. ✓' : 'Haute conf.'}
             </button>
           )}
           {/* Limite domaine ANEF — afficher / masquer */}
@@ -1312,6 +1676,14 @@ export function Teledetection() {
         {toggles.s2Split && !beforeTileUrl && (
           <div className="absolute top-2 md:top-4 left-1/2 -translate-x-1/2 bg-black/70 backdrop-blur-md text-white/90 px-3 py-1.5 rounded-lg text-[9px] md:text-xs font-semibold shadow-lg z-[500] pointer-events-none">
             ↓ Lancez l'analyse pour comparer Sentinel-2 (avant / après)
+          </div>
+        )}
+
+        {layerWarnMsg && !errorMsg && (
+          <div className="absolute bottom-16 left-1/2 -translate-x-1/2 bg-amber-600/95 backdrop-blur-md border border-amber-400/50 text-white text-[10px] md:text-xs px-3 py-2 rounded-lg z-[550] flex items-center gap-2 shadow-xl max-w-[90vw]">
+            <span className="shrink-0">⚠</span>
+            <span className="flex-1 leading-tight">{layerWarnMsg}</span>
+            <button onClick={() => setLayerWarnMsg(null)} className="text-amber-200 hover:text-white shrink-0 font-bold">✕</button>
           </div>
         )}
 
@@ -1510,17 +1882,21 @@ export function Teledetection() {
                     <ToggleCard label="Alertes"      icon={FileWarning}           checked={toggles.disturbance} onChange={() => handleToggle('disturbance')} activeColor="#eab308" />
                     <ToggleCard label="Polygones"    icon={ShieldAlert}           checked={toggles.polygons}    onChange={() => handleToggle('polygons')}    activeColor="#ef4444" />
                     <ToggleCard label="NDVI Δ"       icon={CloudRain}             checked={toggles.ndviDelta}   onChange={() => handleToggle('ndviDelta')}   activeColor="#10b981" />
+                    <ToggleCard label="NBR Δ (feu/coupe)" icon={Flame}            checked={toggles.nbrDelta}    onChange={() => handleToggle('nbrDelta')}    activeColor="#ef4444" />
+                    <ToggleCard label="Haute conf. (≥3)" icon={ShieldCheck}      checked={toggles.highOnly}    onChange={() => handleToggle('highOnly')}    activeColor="#a21caf" />
                     <ToggleCard label="Forest Watch" icon={Globe}                 checked={toggles.forestWatch} onChange={() => handleToggle('forestWatch')} activeColor="#d946ef" />
                     <ToggleCard label="Sentinel-1"   icon={Waves}                 checked={toggles.sentinel1}   onChange={() => handleToggle('sentinel1')}   activeColor="#8b5cf6" />
                     <ToggleCard label="Phénologie"   icon={TrendingUp}            checked={toggles.phenology}   onChange={() => handleToggle('phenology')}   activeColor="#f59e0b" />
                   </div>
 
                   {/* Opacités fines des couches actives (pas de cartes séparées) */}
-                  {(toggles.disturbance || toggles.ndviDelta || toggles.forestWatch || toggles.sentinel1 || toggles.phenology || (multiScene && multisceneTileUrl)) && (
+                  {(toggles.disturbance || toggles.ndviDelta || toggles.nbrDelta || toggles.highOnly || toggles.forestWatch || toggles.sentinel1 || toggles.phenology || (multiScene && multisceneTileUrl)) && (
                     <div className="mt-2 bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)] space-y-2">
                       <p className="text-[8px] font-bold uppercase tracking-widest text-[var(--text-muted)]">Opacité des couches</p>
                       {toggles.disturbance && <OpacityRow label="Alertes" color="#eab308" value={opacity.alertes} onChange={(v:number)=>setLayerOpacity('alertes',v)} />}
+                      {toggles.highOnly    && <OpacityRow label="Haute conf." color="#a21caf" value={opacity.highOnly} onChange={(v:number)=>setLayerOpacity('highOnly',v)} />}
                       {toggles.ndviDelta   && <OpacityRow label="NDVI Δ"  color="#10b981" value={opacity.ndvi}    onChange={(v:number)=>setLayerOpacity('ndvi',v)} />}
+                      {toggles.nbrDelta    && <OpacityRow label="NBR Δ"   color="#ef4444" value={opacity.nbr}     onChange={(v:number)=>setLayerOpacity('nbr',v)} />}
                       {toggles.forestWatch && <OpacityRow label="Hansen"  color="#d946ef" value={opacity.hansen}  onChange={(v:number)=>setLayerOpacity('hansen',v)} />}
                       {toggles.sentinel1   && <OpacityRow label="SAR S1"  color="#8b5cf6" value={opacity.s1}      onChange={(v:number)=>setLayerOpacity('s1',v)} />}
                       {toggles.phenology   && <OpacityRow label="Phéno."  color="#f59e0b" value={opacity.pheno}   onChange={(v:number)=>setLayerOpacity('pheno',v)} />}
@@ -1528,9 +1904,15 @@ export function Teledetection() {
                     </div>
                   )}
 
+                  {toggles.nbrDelta && (
+                    <p className="mt-2 text-[9px] text-red-400 font-mono leading-relaxed px-1">
+                      🔥 NBR Δ : chute forte (rouge) = sol brûlé ou coupe rase. Lecture rapide des incendies/coupes, indépendante de la détection FIRMS détaillée.
+                    </p>
+                  )}
+
                   {toggles.forestWatch && (
                     <p className="mt-2 text-[9px] text-fuchsia-400 font-mono leading-relaxed px-1">
-                      🌍 Hansen GFC v1.13 (global, couvre Tétouan). DIST-ALERT = via asset configuré côté serveur.
+                      🌍 Hansen GFC v1.13 (global). DIST-ALERT = GLAD HLSDIST quasi-global (couvre le nord du Maroc).
                     </p>
                   )}
                   {toggles.sentinel1 && (
@@ -1547,7 +1929,6 @@ export function Teledetection() {
                 <section className="border-b border-stone-200/50 dark:border-stone-800/50 pb-3 mb-3">
                   <div className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2 flex items-center justify-between">
                     <span className="flex items-center gap-2"><FileWarning className="w-4 h-4 text-amber-500" /> Niveaux d'alerte</span>
-                    {highConfOnly && <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-[#7f1d1d] text-white font-bold">HC seul</span>}
                   </div>
                   <div className="bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)]">
                     <div className="flex items-center gap-1 text-center">
@@ -1815,6 +2196,116 @@ export function Teledetection() {
         )}
       </div>
 
+      {/* ═══ STATISTIQUES HISTORIQUES ANNUELLES (modal indépendant) ═══ */}
+      {showAnnual && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setShowAnnual(false)}>
+          <div className="bg-[var(--bg-surface)] rounded-2xl shadow-2xl border border-[var(--border-color)] w-full max-w-2xl max-h-[88vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-[var(--border-color)] sticky top-0 bg-[var(--bg-surface)] z-10">
+              <h3 className="flex items-center gap-2 font-bold text-[var(--text-main)]">
+                <Activity className="w-5 h-5 text-emerald-500" /> Statistiques historiques
+              </h3>
+              <button onClick={() => setShowAnnual(false)} className="text-[var(--text-muted)] hover:text-[var(--text-main)]"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-4 space-y-4">
+              {/* Sélection des années (l'utilisateur choisit librement) */}
+              <div>
+                <div className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2">
+                  Années à comparer (même fenêtre saisonnière : juin–juillet)
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {Array.from({ length: (new Date().getFullYear()) - 2018 + 1 }, (_, i) => 2018 + i).map(y => (
+                    <button key={y} onClick={() => toggleYear(y)}
+                      className={cn("px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all",
+                        annualYears.includes(y) ? "bg-emerald-600 text-white border-emerald-400" : "bg-[var(--bg-main)] text-[var(--text-muted)] border-[var(--border-color)] hover:border-emerald-500")}>
+                      {y}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => runAnnualStats()} disabled={annualLoading}
+                  className={cn("mt-3 w-full py-2.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all",
+                    annualLoading ? "bg-[var(--bg-main)] text-emerald-500 border-2 border-emerald-500" : "bg-emerald-600 text-white hover:brightness-110 active:scale-[0.98]")}>
+                  {annualLoading ? <><Hexagon className="w-4 h-4 animate-spin" /> Calcul en cours…</> : <><Play className="w-4 h-4 fill-current" /> Calculer la tendance</>}
+                </button>
+                <p className="text-[10px] text-[var(--text-muted)] mt-1.5">
+                  Le calcul porte sur la sélection actuelle ({analysisLevel === 'forest' && selectedForest ? `forêt ${selectedForest}` : 'centre entier'}).
+                </p>
+              </div>
+
+              {annualError && (
+                <div className="bg-red-900/20 border border-red-700/40 text-red-400 text-xs px-3 py-2 rounded-lg flex items-center gap-2">
+                  <span>⚠</span><span>{annualError}</span>
+                </div>
+              )}
+
+              {annualLoading && !annualData && (
+                <div className="text-sm text-[var(--text-muted)] animate-pulse py-8 text-center">Analyse pluriannuelle sur Google Earth Engine… (peut prendre 1–2 min selon le nombre d'années)</div>
+              )}
+
+              {annualData && (
+                <>
+                  {/* Bandeau tendance */}
+                  <div className={cn("flex items-center justify-between p-3 rounded-xl border-2",
+                    annualData.trend === 'dégradation' ? "border-red-500/60 bg-red-500/10"
+                    : annualData.trend === 'amélioration' ? "border-emerald-500/60 bg-emerald-500/10"
+                    : "border-[var(--border-color)] bg-[var(--bg-main)]")}>
+                    <div className="flex items-center gap-2">
+                      <TrendingUp className={cn("w-5 h-5", annualData.trend === 'dégradation' ? "text-red-500 rotate-180" : annualData.trend === 'amélioration' ? "text-emerald-500" : "text-[var(--text-muted)]")} />
+                      <div>
+                        <p className="text-sm font-bold text-[var(--text-main)] capitalize">{annualData.trend}</p>
+                        <p className="text-[10px] text-[var(--text-muted)] font-mono">pente NDVI : {annualData.ndvi_slope_per_year != null ? `${annualData.ndvi_slope_per_year > 0 ? '+' : ''}${annualData.ndvi_slope_per_year}/an` : '—'}</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-bold text-red-500">{annualData.total_high_conf_ha} ha</p>
+                      <p className="text-[10px] text-[var(--text-muted)]">cumul haute conf.</p>
+                    </div>
+                  </div>
+
+                  {/* Légende des deux courbes */}
+                  <div className="flex items-center justify-center gap-5 text-[11px]">
+                    <span className="flex items-center gap-1.5"><span className="w-3 h-1 rounded bg-emerald-600 inline-block" /> NDVI moyen forestier</span>
+                    <span className="flex items-center gap-1.5"><span className="w-3 h-1 rounded bg-red-600 inline-block" /> Haute confiance (ha)</span>
+                  </div>
+
+                  {/* Graphique */}
+                  <div className="bg-[var(--bg-main)] rounded-xl border border-[var(--border-color)] p-3 text-[var(--text-main)]">
+                    <AnnualChart series={annualData.series} />
+                  </div>
+
+                  {/* Tableau détaillé par année */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[11px]">
+                      <thead>
+                        <tr className="text-[var(--text-muted)] uppercase tracking-wider text-[9px]">
+                          <th className="text-left py-1.5 px-2">Année</th>
+                          <th className="text-right py-1.5 px-2">NDVI moy.</th>
+                          <th className="text-right py-1.5 px-2">Haute conf. (ha)</th>
+                          <th className="text-right py-1.5 px-2">Détecté total (ha)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {annualData.series.map(r => (
+                          <tr key={r.year} className="border-t border-[var(--border-color)]">
+                            <td className="py-1.5 px-2 font-bold text-[var(--text-main)]">{r.year}{r.year === annualData.ref_year ? ' (réf.)' : ''}</td>
+                            <td className="py-1.5 px-2 text-right font-mono text-emerald-600">{r.ndvi_mean != null ? r.ndvi_mean.toFixed(3) : '—'}</td>
+                            <td className="py-1.5 px-2 text-right font-mono text-red-500 font-bold">{r.high_conf_ha != null ? r.high_conf_ha.toFixed(2) : '—'}</td>
+                            <td className="py-1.5 px-2 text-right font-mono text-[var(--text-muted)]">{r.degraded_ha != null ? r.degraded_ha.toFixed(2) : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <p className="text-[10px] text-[var(--text-muted)] leading-relaxed bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)]">
+                    🛡️ {annualData.note}
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ═══ v21 — TABLEAU DE BORD (modal à la demande, n'occupe aucun espace permanent) ═══ */}
       {showDashboard && (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setShowDashboard(false)}>
@@ -1919,11 +2410,11 @@ export function Teledetection() {
       )}
 
       {/* ═══ v21 — Carte résultat INCENDIE (apparaît quand une détection est lancée) ═══ */}
-      {showFire && fireData && (
+      {showFire && fireVisible && fireData && (
         <div className="absolute bottom-20 md:bottom-6 left-2 md:left-4 z-[600] w-[290px] max-w-[88vw] bg-black/85 backdrop-blur-xl border border-orange-500/40 rounded-xl p-3 shadow-2xl text-white pointer-events-auto">
           <div className="flex items-center justify-between mb-2">
             <span className="flex items-center gap-1.5 font-bold text-sm text-orange-400"><Flame className="w-4 h-4" /> Incendies de forêt</span>
-            <button onClick={() => setShowFire(false)} className="text-white/50 hover:text-white"><X className="w-4 h-4" /></button>
+            <button onClick={() => setFireVisible(false)} title="Masquer la couche incendie" className="text-white/50 hover:text-white"><X className="w-4 h-4" /></button>
           </div>
           <div className={cn("text-[11px] font-semibold mb-2 px-2 py-1 rounded",
             fireData.fire_confirmed ? "bg-red-500/20 text-red-300" : (fireData.burned_ha > 0 ? "bg-amber-500/20 text-amber-300" : "bg-white/10 text-white/60"))}>

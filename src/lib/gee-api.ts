@@ -5,6 +5,31 @@
 
 const API_BASE = "/api/gee";
 
+// Clé API partagée Front<->Back (durcissement production). Injectée via la
+// variable d'environnement de build VITE_API_KEY. Si vide -> aucun en-tête
+// (mode dev où le backend n'exige pas de clé). N'expose JAMAIS de secret
+// sensible ici : cette clé ne fait qu'autoriser l'appel à NOTRE backend, qui
+// garde lui les vrais secrets (Service Account GEE, clé Supabase).
+const API_KEY: string =
+  (typeof import.meta !== "undefined" && (import.meta as any)?.env?.VITE_API_KEY) || "";
+
+// En-têtes communs (Content-Type + clé API si présente)
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const h: Record<string, string> = { "Content-Type": "application/json", ...(extra ?? {}) };
+  if (API_KEY) h["X-API-Key"] = API_KEY;
+  return h;
+}
+
+// Message d'erreur lisible selon le code HTTP (pour l'afficher à l'utilisateur)
+function httpErrorMessage(status: number, fallback?: string): string {
+  if (status === 401) return "Accès refusé : clé API manquante ou invalide.";
+  if (status === 403) return "Accès interdit.";
+  if (status === 413) return "Zone trop volumineuse ou trop complexe. Réduisez la sélection.";
+  if (status === 429) return "Trop de requêtes. Patientez avant de relancer.";
+  if (status === 503) return "Service GEE momentanément indisponible. Réessayez.";
+  return fallback || `Erreur serveur (${status}).`;
+}
+
 const ZONE_MAP: Record<string, string> = {
   mdiq: "df_mdiq",
   tetouan_est: "tetouan_est",
@@ -61,6 +86,7 @@ export interface AnalyzeResult {
   success: boolean; zone: string;
   beforeTileUrl: string | null; afterTileUrl: string | null;
   distTileUrl: string | null; ndviTileUrl: string | null;
+  nbrTileUrl?: string | null; highOnlyTileUrl?: string | null;
   multisceneTileUrl?: string | null; max_score?: number;
   beforeLabel: string; afterLabel: string;
   period1: string; period2: string;
@@ -118,31 +144,38 @@ async function geePost<T>(path: string, body: Record<string, unknown>, timeoutMs
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(`${API_BASE}${path}`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: authHeaders(),
       body: JSON.stringify(body), signal: ctrl.signal,
     });
-    const data = await res.json();
-    if (!res.ok || data.success === false) throw new Error(data.error ?? `HTTP ${res.status}`);
+    let data: any = null;
+    try { data = await res.json(); } catch { /* réponse non-JSON */ }
+    if (!res.ok || data?.success === false) {
+      throw new Error(data?.error ?? httpErrorMessage(res.status));
+    }
     return data as T;
+  } catch (e: any) {
+    if (e?.name === "AbortError") throw new Error("Délai dépassé. Réduisez la zone ou réessayez.");
+    throw e;
   } finally { clearTimeout(t); }
 }
 
 async function geeGet<T>(path: string, params?: Record<string, string>): Promise<T> {
   const qs = params ? "?" + Object.entries(params)
     .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&") : "";
-  const res = await fetch(`${API_BASE}${path}${qs}`);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  const res = await fetch(`${API_BASE}${path}${qs}`, { headers: authHeaders() });
+  let data: any = null;
+  try { data = await res.json(); } catch { /* non-JSON */ }
+  if (!res.ok) throw new Error(data?.error ?? httpErrorMessage(res.status));
   return data as T;
 }
 
 // Telecharge un fichier produit par un endpoint POST (geojson/kml/shp)
 async function downloadFile(path: string, body: Record<string, unknown>, filename: string): Promise<void> {
   const res = await fetch(`${API_BASE}${path}`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    method: "POST", headers: authHeaders(), body: JSON.stringify(body),
   });
   if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
+    let msg = httpErrorMessage(res.status);
     try { const j = await res.json(); msg = j.error ?? msg; } catch { /* binary */ }
     throw new Error(msg);
   }
@@ -179,7 +212,7 @@ export async function runAnalyzeAsync(
 
   const cancel = async () => {
     cancelled = true;
-    try { await fetch(`${API_BASE}/gee/analyze-cancel/${taskId}`, { method: "POST" }); } catch { /* noop */ }
+    try { await fetch(`${API_BASE}/gee/analyze-cancel/${taskId}`, { method: "POST", headers: authHeaders() }); } catch { /* noop */ }
   };
   onHandle?.({ taskId, cancel });
 
@@ -195,7 +228,7 @@ export async function runAnalyzeAsync(
 
     let st: any;
     try {
-      const res = await fetch(`${API_BASE}/gee/analyze-status/${taskId}`);
+      const res = await fetch(`${API_BASE}/gee/analyze-status/${taskId}`, { headers: authHeaders() });
       st = await res.json();
       if (!res.ok) throw new Error(st?.error ?? `HTTP ${res.status}`);
     } catch (e) {
@@ -224,13 +257,22 @@ export async function fetchSentinel1Change(p: AnalyzeParams): Promise<Sentinel1R
 }
 
 // v18 — Scenes Sentinel-2 historiques avec dates de capture REELLES (frise "avant")
-export interface S2Scene { date: string; url: string; cloud: number }
+export interface S2Scene { date: string; url: string | null; cloud: number; id?: string }
 export async function fetchS2Scenes(p: AnalyzeParams, start: string, end: string): Promise<S2Scene[]> {
   try {
-    const body = { ...buildBody(p), start, end, cloud: 45, limit: 24 };
+    // limit élevé : on veut le maximum de dates de capture réelles sur toute la période.
+    const body = { ...buildBody(p), start, end, cloud: 45, limit: 300 };
     const r = await geePost<{ scenes: S2Scene[] }>("/gee/s2-scenes", body);
     return r.scenes ?? [];
   } catch (e) { console.warn("[S2-scenes]", e); return []; }
+}
+
+// Charge à la demande l'URL de tuiles d'une scène S2 (frise temporelle paresseuse)
+export async function fetchS2SceneTile(p: AnalyzeParams, sceneId: string): Promise<string | null> {
+  try {
+    const r = await geePost<{ url: string }>("/gee/s2-scene-tile", { ...buildBody(p), id: sceneId });
+    return r.url ?? null;
+  } catch (e) { console.warn("[S2-scene-tile]", e); return null; }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -257,7 +299,7 @@ export interface SavedAlert {
 export async function fetchSavedAlerts(zone: string, includeClosed = false): Promise<{ alerts: SavedAlert[]; by_status: Record<string, number> }> {
   try {
     const qs = `?zone=${encodeURIComponent(zone)}${includeClosed ? "&all=true" : ""}`;
-    const r = await fetch(`${API_BASE}/gee/alerts/list${qs}`);
+    const r = await fetch(`${API_BASE}/gee/alerts/list${qs}`, { headers: authHeaders() });
     const j = await r.json();
     return { alerts: j?.alerts ?? [], by_status: j?.by_status ?? {} };
   } catch (e) { console.warn("[alerts/list]", e); return { alerts: [], by_status: {} }; }
@@ -274,7 +316,7 @@ export async function sendAlertVerdict(lat: number, lng: number, verdict: Verdic
 // Taux de fiabilité réel par classe (validation scientifique)
 export async function fetchAccuracy(): Promise<AccuracyRow[]> {
   try {
-    const r = await fetch(`${API_BASE}/gee/alerts/accuracy`);
+    const r = await fetch(`${API_BASE}/gee/alerts/accuracy`, { headers: authHeaders() });
     const j = await r.json();
     return j?.by_class ?? [];
   } catch (e) { console.warn("[accuracy]", e); return []; }
@@ -301,6 +343,36 @@ export async function fetchPhenology(zone: string, dateStart: string, dateEnd: s
     return await geePost<PhenologyResult>("/gee/phenology-baseline", {
       zone: toFlaskZone(zone), dateStart, dateEnd, cloud });
   } catch (e) { console.warn("[Phenology]", e); return null; }
+}
+
+// ── Statistiques annuelles (courbe de dégradation pluriannuelle) ──────────────
+export interface AnnualStatRow {
+  year: number; period: string;
+  ndvi_mean: number | null;
+  high_conf_ha: number | null;
+  degraded_ha: number | null;
+}
+export interface AnnualStatsResult {
+  success: boolean; zone: string; season_window: string;
+  ref_year: number; years: number[]; series: AnnualStatRow[];
+  ndvi_slope_per_year: number | null; trend: string;
+  total_high_conf_ha: number; note: string;
+}
+export async function fetchAnnualStats(
+  p: AnalyzeParams, years: number[],
+  opts?: { monthStart?: number; monthEnd?: number; refYear?: number; cloud?: number },
+): Promise<AnnualStatsResult | null> {
+  try {
+    const body = {
+      ...buildBody(p),
+      years: years.join(","),
+      monthStart: opts?.monthStart ?? 6,
+      monthEnd: opts?.monthEnd ?? 7,
+      refYear: opts?.refYear ?? 2018,
+      cloud: opts?.cloud ?? 35,
+    };
+    return await geePost<AnnualStatsResult>("/gee/annual-stats", body);
+  } catch (e) { console.warn("[AnnualStats]", e); throw e; }
 }
 
 // ── Exports reels (polygones, cote backend) ──────────────────────────────────
