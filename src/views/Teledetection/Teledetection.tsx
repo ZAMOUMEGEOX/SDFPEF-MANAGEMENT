@@ -8,7 +8,7 @@ import {
   PanelRightClose, PanelRightOpen, Anchor, Waves, TrendingUp, Globe,
   Flame, LayoutDashboard, X, Target, ShieldCheck, Activity
 } from 'lucide-react';
-import { MapContainer, TileLayer, ImageOverlay, LayersControl, FeatureGroup, useMap, GeoJSON, CircleMarker, Tooltip as LeafletTooltip } from 'react-leaflet';
+import { MapContainer, TileLayer, LayersControl, FeatureGroup, useMap, GeoJSON, CircleMarker, Tooltip as LeafletTooltip } from 'react-leaflet';
 import { EditControl } from 'react-leaflet-draw';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -879,23 +879,26 @@ export function Teledetection() {
 
   // Calcule UNE couche figée à la demande quand on l'active après l'analyse.
   const onLayerEnabled = (key: keyof typeof toggles) => {
-    const p = buildParams(key === 'highOnly');
-    if (key === 'forestWatch' && !frozen.hansen) {
-      fetchForestWatchLayer(p).then(fw => { if (fw) { setFwData(fw); setFrozen(s => ({ ...s, hansen: fw.hansenFrozen ?? null, distalert: fw.distAlertFrozen ?? null })); if (fw.roiBounds) setRoiBounds(fw.roiBounds); setHansenTileUrl(fw.hansenFrozen ?? null); setDistAlertTileUrl(fw.distAlertFrozen ?? null); } }).catch(() => {});
+    const p = buildParams(false);
+    if (key === 'forestWatch' && !hansenTileUrl) {
+      fetchForestWatchLayer(p).then(fw => { if (fw) { setFwData(fw); setHansenTileUrl(fw.hansenTileUrl); setDistAlertTileUrl(fw.distAlertTileUrl); } else setLayerWarn('Couche Forest Watch indisponible.'); }).catch(() => setLayerWarn('Échec Forest Watch.'));
       return;
     }
-    if (key === 'sentinel1' && !frozen.s1) {
-      fetchSentinel1Change(p).then(s1 => { if (s1) { setS1Data(s1); setFrozen(s => ({ ...s, s1: s1.frozen ?? null })); if (s1.roiBounds) setRoiBounds(s1.roiBounds); setS1TileUrl(s1.frozen ?? null); } }).catch(() => {});
+    if (key === 'sentinel1' && !s1TileUrl) {
+      fetchSentinel1Change(p).then(s1 => { if (s1?.tileUrl) { setS1Data(s1); setS1TileUrl(s1.tileUrl); } else setLayerWarn('Couche Sentinel-1 indisponible.'); }).catch(() => setLayerWarn('Échec Sentinel-1.'));
       return;
     }
-    if (key === 'phenology' && !frozen.pheno) {
-      fetchPhenology(selectedZone, actStart, actEnd, cloudMax).then(ph => { if (ph) { setPhenologyData(ph); setFrozen(s => ({ ...s, pheno: ph.frozen ?? null })); if (ph.roiBounds) setRoiBounds(ph.roiBounds); setPhenologyTileUrl(ph.frozen ?? null); } }).catch(() => {});
+    if (key === 'phenology' && !phenologyTileUrl) {
+      fetchPhenology(selectedZone, actStart, actEnd, cloudMax).then(ph => { if (ph?.tileUrl) { setPhenologyData(ph); setPhenologyTileUrl(ph.tileUrl); } else setLayerWarn('Couche Phénologie indisponible.'); }).catch(() => setLayerWarn('Échec Phénologie.'));
       return;
     }
+    // Couches issues de l'analyse (dist/ndvi/nbr/high) : si absente et analyse faite -> on la calcule seule.
+    const setters: Record<string, (u: string) => void> = { dist: setDistTileUrl, ndvi: setNdviTileUrl, nbr: setNbrTileUrl, high: setHighOnlyTileUrl };
+    const have: Record<string, string | null> = { dist: distTileUrl, ndvi: ndviTileUrl, nbr: nbrTileUrl, high: highOnlyTileUrl };
     const map: Record<string, string> = { disturbance: 'dist', ndviDelta: 'ndvi', nbrDelta: 'nbr', highOnly: 'high' };
     const ln = map[key as string];
-    if (ln && !frozen[ln] && roiBounds) {   // analyse déjà faite, couche absente -> on la calcule seule
-      fetchLayerImage(p, ln).then(r => { if (r?.url) { setFrozen(s => ({ ...s, [ln]: r.url })); if (r.roiBounds) setRoiBounds(r.roiBounds); } }).catch(() => {});
+    if (ln && !have[ln] && roiBounds) {
+      fetchLayerImage(p, ln).then(r => { if (r?.url) setters[ln](r.url); }).catch(() => {});
     }
   };
   const handleToggle = (key: keyof typeof toggles) => {
@@ -905,8 +908,8 @@ export function Teledetection() {
   };
   // Multi-scène activée après coup -> génère sa couche figée à la demande.
   useEffect(() => {
-    if (multiScene && !frozen.ms && roiBounds) {
-      fetchLayerImage(buildParams(), 'ms').then(r => { if (r?.url) setFrozen(s => ({ ...s, ms: r.url })); }).catch(() => {});
+    if (multiScene && !multisceneTileUrl && roiBounds) {
+      fetchLayerImage(buildParams(), 'ms').then(r => { if (r?.url) setMultisceneTileUrl(r.url); }).catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [multiScene]);
@@ -995,20 +998,18 @@ export function Teledetection() {
       );
       setBeforeTileUrl(result.beforeTileUrl);   // ← swipe : S2 AVANT (tuiles)
       setAfterTileUrl(result.afterTileUrl);
-      // Couches analytiques FIGÉES (PNG) : affichage/zoom/bascule instantanés.
-      setFrozen(result.frozen ?? {});
-      setRoiBounds(result.roiBounds ?? null);
-      // compat (légende / vérifs d'existence)
-      setDistTileUrl(result.frozen?.dist ?? null);
-      setNdviTileUrl(result.frozen?.ndvi ?? null);
-      setNbrTileUrl(result.frozen?.nbr ?? null);
-      setHighOnlyTileUrl(result.frozen?.high ?? null);
+      // Couches analytiques = TUILES LIVE (cache disque côté serveur -> rapides, ne disparaissent pas)
+      setRoiBounds(result.roiBounds ?? null);   // signal "analyse faite" (pour le calcul à la demande)
+      setDistTileUrl(result.distTileUrl);
+      setNdviTileUrl(result.ndviTileUrl);
+      setNbrTileUrl(result.nbrTileUrl ?? null);
+      setHighOnlyTileUrl(result.highOnlyTileUrl ?? null);
       setRealStats(result.stats);
       setPolygons(result.polygons?.features ?? []);
       if (result.beforeLabel) setBeforeLabel(result.beforeLabel);
       if (result.afterLabel) setAfterLabel(result.afterLabel);
       setPolyError(result.poly_error ?? null);
-      setMultisceneTileUrl(result.frozen?.ms ?? null);
+      setMultisceneTileUrl(result.multisceneTileUrl ?? null);
 
       // Top-N : pris directement des polygones (déjà triés par aire) -> 0 requête en plus
       const allPolys = result.polygons?.features ?? [];
@@ -1032,21 +1033,21 @@ export function Teledetection() {
       // n'interrompt pas l'analyse principale, mais on prévient l'utilisateur.
       if (toggles.forestWatch) {
         fetchForestWatchLayer(params).then(fw => {
-          if (fw) { setFwData(fw); setFrozen(p => ({ ...p, hansen: fw.hansenFrozen ?? null, distalert: fw.distAlertFrozen ?? null })); if (fw.roiBounds) setRoiBounds(fw.roiBounds); setHansenTileUrl(fw.hansenFrozen ?? null); setDistAlertTileUrl(fw.distAlertFrozen ?? null); }
+          if (fw) { setFwData(fw); setHansenTileUrl(fw.hansenTileUrl); setDistAlertTileUrl(fw.distAlertTileUrl); }
           else setLayerWarn('Couche Forest Watch indisponible.');
         }).catch(e => { console.warn('[FW]', e); setLayerWarn('Échec du chargement Forest Watch.'); });
       }
       // Sentinel-1
       if (toggles.sentinel1) {
         fetchSentinel1Change(params).then(s1 => {
-          if (s1) { setS1Data(s1); setFrozen(p => ({ ...p, s1: s1.frozen ?? null })); if (s1.roiBounds) setRoiBounds(s1.roiBounds); setS1TileUrl(s1.frozen ?? null); }
+          if (s1?.tileUrl) { setS1Data(s1); setS1TileUrl(s1.tileUrl); }
           else setLayerWarn('Couche Sentinel-1 indisponible.');
         }).catch(e => { console.warn('[S1]', e); setLayerWarn('Échec du chargement Sentinel-1.'); });
       }
       // Phénologie
       if (toggles.phenology) {
         fetchPhenology(selectedZone, actStart, actEnd, cloudMax).then(ph => {
-          if (ph) { setPhenologyData(ph); setFrozen(p => ({ ...p, pheno: ph.frozen ?? null })); if (ph.roiBounds) setRoiBounds(ph.roiBounds); setPhenologyTileUrl(ph.frozen ?? null); }
+          if (ph?.tileUrl) { setPhenologyData(ph); setPhenologyTileUrl(ph.tileUrl); }
           else setLayerWarn('Couche Phénologie indisponible.');
         }).catch(e => { console.warn('[Phenology]', e); setLayerWarn('Échec du chargement Phénologie.'); });
       }
@@ -1390,48 +1391,49 @@ export function Teledetection() {
               visibilité via l'opacité (0 = masquée). Ainsi un toggle OFF/ON ne
               démonte pas la couche : les tuiles restent en cache → réaffichage
               instantané, sans recalcul ni rechargement. */}
-          {/* Couches analytiques = IMAGES FIGÉES (PNG statique placé sur l'emprise ROI).
-              Restent montées en permanence : bascule / opacité / zoom / déplacement
-              sont INSTANTANÉS (image statique en cache navigateur, zéro recalcul GEE).
-              -> fini la disparition/rechargement des rasters au zoom. */}
-          {roiBounds && frozen.ndvi && (
-            <ImageOverlay url={frozen.ndvi} bounds={roiBounds} pane="paneIndices"
-              opacity={toggles.ndviDelta ? opacity.ndvi : 0} attribution="GEE NDVI Δ" />
+          {/* Couches analytiques = TUILES LIVE. Montées dès que leur URL existe ;
+              la bascule ne change que l'opacité (ré-affichage instantané, pas de
+              démontage). Le cache disque serveur (USE_TILE_PROXY) garde les tuiles
+              -> elles ne disparaissent plus au zoom. On ne génère que les couches
+              demandées (cases cochées) ou calculées à la demande après coup. */}
+          {ndviTileUrl && (
+            <TileLayer key={`ndvi-${ndviTileUrl}`} url={ndviTileUrl} pane="paneIndices"
+              opacity={toggles.ndviDelta ? opacity.ndvi : 0} {...TILE_PERF} attribution="GEE NDVI Δ" />
           )}
-          {roiBounds && frozen.nbr && (
-            <ImageOverlay url={frozen.nbr} bounds={roiBounds} pane="paneIndices"
-              opacity={toggles.nbrDelta ? opacity.nbr : 0} attribution="GEE NBR Δ (dNBR)" />
+          {nbrTileUrl && (
+            <TileLayer key={`nbr-${nbrTileUrl}`} url={nbrTileUrl} pane="paneIndices"
+              opacity={toggles.nbrDelta ? opacity.nbr : 0} {...TILE_PERF} attribution="GEE NBR Δ (dNBR)" />
           )}
-          {roiBounds && frozen.hansen && (
-            <ImageOverlay url={frozen.hansen} bounds={roiBounds} pane="paneIndices"
-              opacity={toggles.forestWatch ? opacity.hansen : 0} attribution="UMD Hansen GFC" />
+          {hansenTileUrl && (
+            <TileLayer key={`hansen-${hansenTileUrl}`} url={hansenTileUrl} pane="paneIndices"
+              opacity={toggles.forestWatch ? opacity.hansen : 0} {...TILE_PERF} attribution="UMD Hansen GFC" />
           )}
-          {roiBounds && frozen.distalert && (
-            <ImageOverlay url={frozen.distalert} bounds={roiBounds} pane="paneIndices"
-              opacity={toggles.forestWatch ? opacity.hansen : 0} attribution="GLAD DIST-ALERT" />
+          {distAlertTileUrl && (
+            <TileLayer key={`distalert-${distAlertTileUrl}`} url={distAlertTileUrl} pane="paneIndices"
+              opacity={toggles.forestWatch ? opacity.hansen : 0} {...TILE_PERF} attribution="GLAD DIST-ALERT" />
           )}
-          {roiBounds && frozen.s1 && (
-            <ImageOverlay url={frozen.s1} bounds={roiBounds} pane="paneIndices"
-              opacity={toggles.sentinel1 ? opacity.s1 : 0} attribution="GEE Sentinel-1 SAR" />
+          {s1TileUrl && (
+            <TileLayer key={`s1-${s1TileUrl}`} url={s1TileUrl} pane="paneIndices"
+              opacity={toggles.sentinel1 ? opacity.s1 : 0} {...TILE_PERF} attribution="GEE Sentinel-1 SAR" />
           )}
-          {roiBounds && frozen.pheno && (
-            <ImageOverlay url={frozen.pheno} bounds={roiBounds} pane="paneIndices"
-              opacity={toggles.phenology ? opacity.pheno : 0} attribution="GEE Phénologie" />
+          {phenologyTileUrl && (
+            <TileLayer key={`pheno-${phenologyTileUrl}`} url={phenologyTileUrl} pane="paneIndices"
+              opacity={toggles.phenology ? opacity.pheno : 0} {...TILE_PERF} attribution="GEE Phénologie" />
           )}
 
-          {/* ALERTES (raster de confiance) — couche PRIMAIRE figée */}
-          {roiBounds && frozen.dist && (
-            <ImageOverlay url={frozen.dist} bounds={roiBounds} pane="paneAlertes"
-              opacity={toggles.disturbance ? opacity.alertes : 0} attribution="GEE Confiance" />
+          {/* ALERTES (raster de confiance) — couche PRIMAIRE */}
+          {distTileUrl && (
+            <TileLayer key={`dist-${distTileUrl}`} url={distTileUrl} pane="paneAlertes"
+              opacity={toggles.disturbance ? opacity.alertes : 0} {...TILE_PERF} attribution="GEE Confiance" />
           )}
-          {/* HAUTE CONFIANCE (score ≥ 3) figée */}
-          {roiBounds && frozen.high && (
-            <ImageOverlay url={frozen.high} bounds={roiBounds} pane="paneMultiscene"
-              opacity={toggles.highOnly ? opacity.highOnly : 0} attribution="GEE Haute confiance (≥3)" />
+          {/* HAUTE CONFIANCE (score ≥ 3) */}
+          {highOnlyTileUrl && (
+            <TileLayer key={`high-${highOnlyTileUrl}`} url={highOnlyTileUrl} pane="paneMultiscene"
+              opacity={toggles.highOnly ? opacity.highOnly : 0} {...TILE_PERF} attribution="GEE Haute confiance (≥3)" />
           )}
-          {roiBounds && frozen.ms && (
-            <ImageOverlay url={frozen.ms} bounds={roiBounds} pane="paneMultiscene"
-              opacity={multiScene ? opacity.multiscene : 0} attribution="GEE Multi-scène S2" />
+          {multisceneTileUrl && (
+            <TileLayer key={`ms-${multisceneTileUrl}`} url={multisceneTileUrl} pane="paneMultiscene"
+              opacity={multiScene ? opacity.multiscene : 0} {...TILE_PERF} attribution="GEE Multi-scène S2" />
           )}
 
           {/* Limites — pane limits (au-dessus, cliquable) */}
