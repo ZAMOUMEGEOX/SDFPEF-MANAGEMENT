@@ -55,6 +55,7 @@ export interface AnalyzeParams {
   useMultiscene?: boolean; minScenes?: number;
   // v15 — analyse foret-par-foret : geometrie GeoJSON de la foret selectionnee
   roiGeojson?: unknown;
+  layers?: string[];   // couches à générer (cases cochées) : dist/ndvi/nbr/high/ms
 }
 
 export interface AnalyzeStats {
@@ -92,12 +93,16 @@ export interface AnalyzeResult {
   period1: string; period2: string;
   polygons: PolygonFC; count: number; stats: AnalyzeStats;
   algorithm: string; evidence_used?: string[]; poly_error?: string | null; error?: string;
+  // Couches figées (PNG statique) + emprise pour ImageOverlay
+  frozen?: Record<string, string | null>;
+  roiBounds?: [[number, number], [number, number]] | null;
 }
 
 export interface Sentinel1Result {
   success: boolean; tileUrl: string | null; zone: string;
   loss_ha: number; period1: string; period2: string;
   dVV_stats: { mean: number; stdDev: number; min: number; max: number };
+  frozen?: string | null; roiBounds?: [[number, number], [number, number]] | null;
 }
 
 export type AnomalyLabel =
@@ -109,11 +114,14 @@ export interface PhenologyResult {
   baseline_ndvi: number | null; current_ndvi: number;
   ndvi_anomaly: number | null; anomaly_label: AnomalyLabel;
   tileUrl: string | null; zone: string;
+  frozen?: string | null; roiBounds?: [[number, number], [number, number]] | null;
 }
 
 export interface ForestWatchResult {
   success: boolean; zone: string;
   hansenTileUrl: string | null; distAlertTileUrl: string | null;
+  hansenFrozen?: string | null; distAlertFrozen?: string | null;
+  roiBounds?: [[number, number], [number, number]] | null;
   hansen_ha: number; note: string;
 }
 
@@ -136,6 +144,7 @@ function buildBody(p: AnalyzeParams): Record<string, unknown> {
   // v15 — si une foret est selectionnee, on envoie sa geometrie : le backend (get_roi)
   // l'utilise des lors que `zone` n'est pas une cle de centre connue.
   if (p.roiGeojson) body.roi_geojson = p.roiGeojson;
+  if (p.layers && p.layers.length) body.layers = p.layers;
   return body;
 }
 
@@ -439,4 +448,12 @@ export function exportAnnualCsv(d: AnnualStatsResult): void {
   const a = Object.assign(document.createElement("a"), { href: url, download: `rapport_annuel_${d.zone}.csv` });
   a.click();
   URL.revokeObjectURL(url);
+}
+
+
+// Génère UNE couche analytique figée (PNG) à la demande (couche cochée après l'analyse)
+export interface LayerImageResult { layer: string; url: string | null; roiBounds?: [[number, number], [number, number]] | null; }
+export async function fetchLayerImage(p: AnalyzeParams, layer: string): Promise<LayerImageResult | null> {
+  try { return await geePost<LayerImageResult>("/gee/layer-image", { ...buildBody(p), layer }); }
+  catch (e) { console.warn("[layer-image]", e); return null; }
 }
