@@ -120,6 +120,62 @@ const clearSession = () => { try { localStorage.removeItem(SESSION_KEY); } catch
 // ─── Module-level GeoJSON data store ─────────────────────────────────────────
 const _officialGeoData: Record<string, any> = {};
 
+// ─── Domaine forestier personnalisé (généralisation multi-régions) ───────────
+// Par défaut, le référentiel « ملك غابوي » provient de forest_limits.json (TTH).
+// Lorsqu'un utilisateur d'une AUTRE région importe ses propres limites de
+// domaine forestier (kind = 'forest'), on les fusionne dans _officialGeoData.forest
+// et on bascule _customForestActive = true. Dans ce mode, l'analyse de
+// chevauchement se fait EN LOCAL contre ce référentiel fusionné (PostGIS ne
+// connaît que le domaine TTH par défaut).
+let _customForestActive = false;
+
+/**
+ * Fusionne (non destructif) une couche de limites de domaine forestier dans le
+ * référentiel _officialGeoData.forest, puis active le mode « domaine personnalisé ».
+ * Retourne true si au moins un polygone a été intégré.
+ */
+function mergeForestReference(geojson: any, label: string): boolean {
+  try {
+    const incoming =
+      geojson?.type === 'FeatureCollection' ? geojson.features
+      : geojson?.type === 'Feature' ? [geojson]
+      : geojson ? [turf.feature(geojson)] : [];
+    const polys = (incoming || [])
+      .filter((f: any) => f?.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'))
+      .map((f: any) => {
+        const p = { ...(f.properties || {}) };
+        // Garantit la compatibilité avec runChevauchementAnalysis (lecture FORET/CANTON)
+        if (!p.FORET && !p.foret) p.FORET = label;
+        return { type: 'Feature', geometry: f.geometry, properties: p };
+      });
+    if (polys.length === 0) return false;
+    const base = _officialGeoData.forest?.features ? _officialGeoData.forest.features : [];
+    _officialGeoData.forest = { type: 'FeatureCollection', features: [...base, ...polys] };
+    _customForestActive = true;
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * Reconstruit le référentiel forestier après suppression d'une couche ملك غابوي :
+ * recharge le domaine par défaut (forest_limits.json) puis re-fusionne les
+ * couches forestières importées encore présentes. Désactive le mode personnalisé
+ * s'il n'en reste aucune.
+ */
+async function rebuildForestReferenceFromLayers(remainingForestLayers: any[]): Promise<void> {
+  let baseFeatures: any[] = [];
+  try {
+    const res = await fetch('/assets/data/forest_limits.json');
+    const def = await res.json();
+    baseFeatures = def?.features || [];
+  } catch { baseFeatures = []; }
+  _officialGeoData.forest = { type: 'FeatureCollection', features: [...baseFeatures] };
+  _customForestActive = false;
+  for (const l of remainingForestLayers) {
+    if (l?.geojson) mergeForestReference(l.geojson, l.name || 'Domaine forestier');
+  }
+}
+
 // ─── Map helper components (unchanged) ───────────────────────────────────────
 function MapResizeHandler() {
   const map = useMap();
@@ -685,25 +741,29 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     } catch (e) { addToast({ type: 'error', title: 'تعذّر الإرفاق', msg: String((e as Error)?.message || e) }); }
   };
 
-  // ── Layer imported: run chevauchement, auto-load forest if needed ──────────
-  const handleLayerImported = (layerId: string, name: string, geojson: any) => {
+  // ── Layer imported (خواص): run chevauchement, auto-load forest if needed ───
+  // opts.silent = true : utilisé lors de la ré-analyse en lot (pas de toasts).
+  const handleLayerImported = (layerId: string, name: string, geojson: any, opts: { silent?: boolean } = {}) => {
     const runAnalysis = async (forestData: any) => {
       let chev: ChevauchementResult | null = null;
       try {
-        const srv = await analyzeOverlapServer(geojson);   // PostGIS d'abord
+        // En mode « domaine forestier personnalisé » (autre région), on saute le
+        // serveur PostGIS (qui ne connaît que TTH) et on analyse en local contre
+        // le référentiel fusionné.
+        const srv = _customForestActive ? null : await analyzeOverlapServer(geojson);
         chev = (srv && srv.total_area > 0)
           ? mapServerToChevResult(srv, geojson, name)
-          : runChevauchementAnalysis(geojson, forestData, name);  // repli local
+          : runChevauchementAnalysis(geojson, forestData, name);  // repli / mode local
         setChevauchementResults(prev => ({ ...prev, [layerId]: chev! }));
         // ── Overlap alert if > 5% ──
-        if (chev && chev.totalPercentage > 5) {
+        if (!opts.silent && chev && chev.totalPercentage > 5) {
           const isTotal = chev.globalPosition === 'داخل الملك الغابوي';
           addToast({
             type: isTotal ? 'error' : 'warning',
             title: isTotal ? '⚠ Inclusion totale détectée' : `⚠ Chevauchement ${chev.totalPercentage.toFixed(1)}%`,
             msg: `Couche «${name}» ${isTotal ? 'est entièrement dans' : 'chevauche'} le Domaine Forestier`,
           });
-        } else if (chev && chev.totalPercentage === 0) {
+        } else if (!opts.silent && chev && chev.totalPercentage === 0) {
           addToast({ type: 'success', title: '✓ Hors domaine forestier', msg: `La couche «${name}» est hors du Mlak Ghabi` });
         }
       } catch (e) { console.warn('[Chevauchement]', e); }
@@ -733,6 +793,31 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       return next;
     });
     if (lastImportedLayer?.id === id) setLastImportedLayer(null);
+  };
+
+  // ── Forest-domain layer imported (ملك غابوي) ──────────────────────────────
+  // La couche devient un référentiel « ملك غابوي » au même titre que
+  // forest_limits : on la fusionne dans _officialGeoData.forest, puis on
+  // ré-évalue les couches privées déjà importées contre ce nouveau référentiel.
+  const handleForestImported = (geojson: any, name: string) => {
+    const ok = mergeForestReference(geojson, name);
+    if (!ok) {
+      addToast({ type: 'warning', title: 'تعذّر اعتماد الحدود', msg: 'لم يُعثر على مضلّعات صالحة في الطبقة المرفوعة' });
+      return;
+    }
+    addToast({
+      type: 'success',
+      title: 'حدود ملك غابوي مُعتمَدة ✓',
+      msg: `أصبحت «${name}» مرجعاً للملك الغابوي — تُطبَّق عليها نفس تحليلات الحدود الأصلية`,
+    });
+    // Ré-analyse silencieuse des parcelles privées déjà chargées
+    setTimeout(() => {
+      (customLayersRef.current || []).forEach((l: any) => {
+        if (l && l.geojson && l.kind !== 'forest' && (l.type === 'imported' || l.type === 'drawn')) {
+          handleLayerImported(l.id, l.name, l.geojson, { silent: true });
+        }
+      });
+    }, 60);
   };
 
   // ─── RENDER ────────────────────────────────────────────────────────────────
@@ -1028,6 +1113,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
                   featureGroupRef={featureGroupRef}
                   setIsPanelCollapsed={setIsPanelCollapsed}
                   onLayerImported={handleLayerImported}
+                  onForestImported={handleForestImported}
                   onLayerDeleted={handleLayerDeleted}
                   chevauchementResults={chevauchementResults}
                   onPushHistory={pushHistory}
@@ -1108,6 +1194,68 @@ function ExcelSheetModal({ sheets, fileName, onSelect, onClose }: {
         </div>
         <div className="px-4 pb-3">
           <button onClick={onClose} className="w-full py-2 text-[10px] text-(--text-muted) hover:text-(--text-main) font-medium">Annuler</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ImportKindModal — choix de la nature de la couche importée
+//   • 'forest'  → ملك غابوي : devient un référentiel (mêmes analyses que forest_limits)
+//   • 'private' → خواص      : parcelle privée analysée vs le domaine forestier
+// ─────────────────────────────────────────────────────────────────────────────
+function ImportKindModal({ fileName, onChoose, onClose }: {
+  fileName: string;
+  onChoose: (kind: 'forest' | 'private') => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-9999 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-(--bg-surface) border border-(--border-color) rounded-2xl shadow-2xl w-[23rem] max-w-[92vw] overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-(--border-color) flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-(--text-main)" dir="rtl">طبيعة الطبقة المرفوعة</h3>
+            <p className="text-[10px] text-(--text-muted) mt-0.5">
+              Nature de la couche · <span dir="ltr" className="inline-block max-w-44 truncate align-bottom">{fileName}</span>
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 text-(--text-muted) hover:text-(--text-main) hover:bg-(--bg-main) rounded-lg transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-3 space-y-2">
+          <p className="text-[11px] text-(--text-muted) leading-relaxed px-1 mb-1" dir="rtl">
+            هل هذه الطبقة حدود <b className="text-emerald-600">ملك غابوي</b> (تُعتمَد كمرجع للتحليل)
+            أم <b className="text-sky-600">خواص</b> (تُحسب تداخلاتها مع الملك الغابوي)؟
+          </p>
+
+          {/* ملك غابوي */}
+          <button onClick={() => onChoose('forest')}
+            className="w-full flex items-start gap-3 px-3 py-3 rounded-xl bg-(--bg-main) hover:bg-emerald-500/10 border border-(--border-color) hover:border-emerald-500/50 text-right transition-all group">
+            <div className="w-9 h-9 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 flex items-center justify-center shrink-0 text-lg">🌲</div>
+            <div className="flex-1 min-w-0" dir="rtl">
+              <div className="text-[13px] font-bold text-(--text-main) group-hover:text-emerald-600">ملك غابوي <span className="text-[10px] font-medium text-(--text-muted)">· Domaine forestier</span></div>
+              <div className="text-[10px] text-(--text-muted) mt-0.5 leading-snug">تُعتمَد كحدود مرجعية ويسري عليها ما يسري على الحدود الأصلية (forest_limits)</div>
+            </div>
+            <ChevronLeft className="w-4 h-4 text-(--text-muted) opacity-0 group-hover:opacity-100 group-hover:text-emerald-600 transition-all self-center" />
+          </button>
+
+          {/* خواص */}
+          <button onClick={() => onChoose('private')}
+            className="w-full flex items-start gap-3 px-3 py-3 rounded-xl bg-(--bg-main) hover:bg-sky-500/10 border border-(--border-color) hover:border-sky-500/50 text-right transition-all group">
+            <div className="w-9 h-9 rounded-lg bg-sky-50 dark:bg-sky-900/20 border border-sky-200 dark:border-sky-800 flex items-center justify-center shrink-0 text-lg">🏠</div>
+            <div className="flex-1 min-w-0" dir="rtl">
+              <div className="text-[13px] font-bold text-(--text-main) group-hover:text-sky-600">خواص <span className="text-[10px] font-medium text-(--text-muted)">· Propriété privée</span></div>
+              <div className="text-[10px] text-(--text-muted) mt-0.5 leading-snug">تُحسب تداخلاتها مع الملك الغابوي (السلوك الحالي)</div>
+            </div>
+            <ChevronLeft className="w-4 h-4 text-(--text-muted) opacity-0 group-hover:opacity-100 group-hover:text-sky-600 transition-all self-center" />
+          </button>
+        </div>
+
+        <div className="px-4 pb-3">
+          <button onClick={onClose} className="w-full py-2 text-[10px] text-(--text-muted) hover:text-(--text-main) font-medium">إلغاء · Annuler</button>
         </div>
       </div>
     </div>
@@ -1768,17 +1916,20 @@ function extractPointFeatures(dataArray: any[]): any[] {
 // ─────────────────────────────────────────────────────────────────────────────
 function CouchesTab({
   customLayers, setCustomLayers, featureGroupRef, setIsPanelCollapsed,
-  onLayerImported, onLayerDeleted, chevauchementResults, onPushHistory,
+  onLayerImported, onForestImported, onLayerDeleted, chevauchementResults, onPushHistory,
 }: {
   customLayers: any[]; setCustomLayers: any; featureGroupRef: any;
   setIsPanelCollapsed: any;
   onLayerImported?: (layerId: string, name: string, geojson: any) => void;
+  onForestImported?: (geojson: any, name: string) => void;
   onLayerDeleted?: (id: string) => void;
   chevauchementResults: Record<string, ChevauchementResult>;
   onPushHistory?: (layers: any[]) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [excelSheetPending, setExcelSheetPending] = useState<{ wb: any; sheets: string[]; name: string } | null>(null);
+  const [excelSheetPending, setExcelSheetPending] = useState<{ wb: any; sheets: string[]; name: string; kind: 'forest' | 'private' } | null>(null);
+  // Fichier en attente du choix « ملك غابوي / خواص » avant import
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [showStats, setShowStats] = useState(false);
   const [sessionRestored, setSessionRestored] = useState(false);
   const [layerFilter, setLayerFilter] = useState('');
@@ -1795,6 +1946,8 @@ function CouchesTab({
     const restored: any[] = [];
     saved.forEach((l: any) => {
       if (!l.geojson) { restored.push(l); return; }
+      // Ré-intégration silencieuse d'un référentiel ملك غابوي importé précédemment
+      if (l.kind === 'forest') { try { mergeForestReference(l.geojson, l.name || 'Domaine forestier'); } catch {} }
       const color = l.color || '#38bdf8';
       const op = l.opacity ?? 1;
       try {
@@ -1876,11 +2029,13 @@ function CouchesTab({
   };
 
   // ── addGeoLayer: central function for adding any imported layer ────────────
-  const addGeoLayer = (rawGeojson: any, fileName: string, opts: { noPoints?: boolean } = {}) => {
+  const addGeoLayer = (rawGeojson: any, fileName: string, opts: { noPoints?: boolean; kind?: 'forest' | 'private' } = {}) => {
     const _norm = smartNormalizeToWGS84(rawGeojson);  // auto-CRS: positionne correctement la couche
     const geojson = repairGeometry(_norm.geojson);
-    const id = `imported-${Date.now()}`;
-    const color = '#38bdf8';
+    const kind: 'forest' | 'private' = opts.kind === 'forest' ? 'forest' : 'private';
+    const isForest = kind === 'forest';
+    const id = `${isForest ? 'forest' : 'imported'}-${Date.now()}`;
+    const color = isForest ? '#16a34a' : '#38bdf8';   // vert = ملك غابوي · bleu = خواص
     const layerName = fileName.replace(/\.[^/.]+$/, '');
 
     const buildPopup = (feature: any, name: string) => {
@@ -1930,40 +2085,48 @@ function CouchesTab({
     }
 
     setCustomLayers((prev: any) => [...prev, {
-      id, name: layerName, type: 'imported', visible: true, color, opacity: 0.9, geojson, leafletLayer,
+      id, name: layerName, type: isForest ? 'forest_import' : 'imported', kind,
+      visible: true, color, opacity: 0.9, geojson, leafletLayer,
     }]);
-    onLayerImported?.(id, layerName, geojson);
+    if (isForest) onForestImported?.(geojson, layerName);
+    else onLayerImported?.(id, layerName, geojson);
   };
 
   // ── processExcelData: convert rows to features/polygon ────────────────────
-  const processExcelData = (data: any[], fileName: string) => {
+  const processExcelData = (data: any[], fileName: string, kind: 'forest' | 'private' = 'private') => {
     const features = extractPointFeatures(data);
     if (features.length === 0) { alert("Coordonnées non trouvées.\nNommez les colonnes X/Y ou lat/lng."); return; }
     const allPoints = features.every((f: any) => f.geometry.type === 'Point');
     if (allPoints && features.length >= 3) {
-      addGeoLayer(ptsToPolygon(features), fileName, { noPoints: true });
+      addGeoLayer(ptsToPolygon(features), fileName, { noPoints: true, kind });
     } else {
-      addGeoLayer(turf.featureCollection(features), fileName);
+      addGeoLayer(turf.featureCollection(features), fileName, { kind });
     }
   };
 
-  // ── handleImport ──────────────────────────────────────────────────────────
-  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // ── handleImport : sélection du fichier → on demande la nature de la couche ──
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
+    setPendingFile(file);   // ouvre ImportKindModal (ملك غابوي / خواص)
+  };
+
+  // ── runImport : lecture effective du fichier avec la nature choisie ─────────
+  const runImport = async (file: File, kind: 'forest' | 'private') => {
     const ext = file.name.split('.').pop()?.toLowerCase();
     try {
       if (ext === 'json' || ext === 'geojson') {
-        addGeoLayer(JSON.parse(await file.text()), file.name);
+        addGeoLayer(JSON.parse(await file.text()), file.name, { kind });
       } else if (ext === 'kml') {
         const doc = new DOMParser().parseFromString(await file.text(), 'text/xml');
-        addGeoLayer(kml(doc), file.name);
+        addGeoLayer(kml(doc), file.name, { kind });
       } else if (ext === 'zip') {
-        addGeoLayer(await shp(await file.arrayBuffer()), file.name);
+        addGeoLayer(await shp(await file.arrayBuffer()), file.name, { kind });
       } else if (ext === 'csv') {
         Papa.parse(file, {
           header: true, skipEmptyLines: true,
-          complete: (results) => processExcelData(results.data as any[], file.name),
+          complete: (results) => processExcelData(results.data as any[], file.name, kind),
         });
       } else if (ext === 'xlsx' || ext === 'xls') {
         const reader = new FileReader();
@@ -1972,9 +2135,9 @@ function CouchesTab({
             const wb = XLSX.read(new Uint8Array(ev.target?.result as ArrayBuffer), { type: 'array' });
             const sheets = wb.SheetNames;
             if (sheets.length === 1) {
-              processExcelData(XLSX.utils.sheet_to_json(wb.Sheets[sheets[0]]) as any[], file.name);
+              processExcelData(XLSX.utils.sheet_to_json(wb.Sheets[sheets[0]]) as any[], file.name, kind);
             } else {
-              setExcelSheetPending({ wb, sheets, name: file.name });
+              setExcelSheetPending({ wb, sheets, name: file.name, kind });
             }
           } catch (err) { console.error(err); alert("Erreur de lecture du fichier Excel."); }
         };
@@ -1986,7 +2149,6 @@ function CouchesTab({
       console.error("Import error:", err);
       alert("Erreur lors de l'import du fichier.");
     }
-    e.target.value = '';
   };
 
   // ── Layer ops ─────────────────────────────────────────────────────────────
@@ -2005,14 +2167,22 @@ function CouchesTab({
   };
 
   const deleteLayer = (id: string) => {
+    let deletedForest = false;
     setCustomLayers((prev: any) => {
       onPushHistory?.(prev); // push history before deletion
       const layer = prev.find((l: any) => l.id === id);
+      if (layer?.kind === 'forest') deletedForest = true;
       if (layer?.leafletLayer) {
         if (featureGroupRef.current?.hasLayer(layer.leafletLayer)) featureGroupRef.current.removeLayer(layer.leafletLayer);
         else layer.leafletLayer.remove?.();
       }
-      return prev.filter((l: any) => l.id !== id);
+      const next = prev.filter((l: any) => l.id !== id);
+      // Si on supprime un référentiel ملك غابوي importé, on reconstruit le domaine
+      if (deletedForest) {
+        const remainingForest = next.filter((l: any) => l.kind === 'forest');
+        rebuildForestReferenceFromLayers(remainingForest);
+      }
+      return next;
     });
     onLayerDeleted?.(id);
   };
@@ -2123,10 +2293,19 @@ function CouchesTab({
           sheets={excelSheetPending.sheets}
           fileName={excelSheetPending.name}
           onSelect={(sheet) => {
-            processExcelData(XLSX.utils.sheet_to_json(excelSheetPending.wb.Sheets[sheet]) as any[], excelSheetPending.name);
+            processExcelData(XLSX.utils.sheet_to_json(excelSheetPending.wb.Sheets[sheet]) as any[], excelSheetPending.name, excelSheetPending.kind);
             setExcelSheetPending(null);
           }}
           onClose={() => setExcelSheetPending(null)}
+        />
+      )}
+
+      {/* Import kind chooser modal (ملك غابوي / خواص) */}
+      {pendingFile && (
+        <ImportKindModal
+          fileName={pendingFile.name}
+          onChoose={(kind) => { const f = pendingFile; setPendingFile(null); runImport(f, kind); }}
+          onClose={() => setPendingFile(null)}
         />
       )}
 
@@ -2247,6 +2426,7 @@ function CouchesTab({
             <button
               onClick={() => {
                 if (!confirm('Effacer toutes les couches importées et la session sauvegardée ?')) return;
+                const hadForest = customLayers.some((l: any) => l.kind === 'forest');
                 customLayers.forEach((l: any) => {
                   if (l.leafletLayer) {
                     if (featureGroupRef.current?.hasLayer(l.leafletLayer)) featureGroupRef.current?.removeLayer(l.leafletLayer);
@@ -2255,6 +2435,8 @@ function CouchesTab({
                 });
                 setCustomLayers([]);
                 clearSession();
+                // Réinitialise le référentiel ملك غابوي au domaine par défaut (TTH)
+                if (hadForest) rebuildForestReferenceFromLayers([]);
               }}
               title="Effacer la session"
               className="p-1.5 rounded-lg border border-(--border-color) text-(--text-muted) hover:text-red-500 hover:border-red-500/40 transition-all"
@@ -2298,6 +2480,7 @@ function CouchesTab({
             <Layers className="w-8 h-8 mx-auto mb-3 opacity-50" />
             <p className="text-xs font-semibold">Aucune couche importée</p>
             <p className="text-[10px] mt-1 opacity-70">GeoJSON · CSV · KML · SHP · XLSX</p>
+            <p className="text-[10px] mt-1.5 opacity-70" dir="rtl">عند الرفع يُسأل: <b className="text-emerald-600">ملك غابوي</b> أم <b className="text-sky-600">خواص</b></p>
           </div>
         )}
         {(() => {
@@ -3145,7 +3328,7 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
             </div>
           )}
           <p className="text-[9px] text-(--text-muted) uppercase tracking-wide font-medium">
-            {layer.type === 'static_polygon' ? 'référence' : layer.type === 'drawn' ? 'dessin' : 'import'}
+            {layer.type === 'static_polygon' ? 'référence' : layer.type === 'drawn' ? 'dessin' : layer.type === 'forest_import' ? 'ملك غابوي' : 'خواص · import'}
           </p>
         </div>
 
@@ -3291,7 +3474,7 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
           {/* Delete + Export */}
           <div className="flex items-center justify-between pt-1 border-t border-(--border-color)">
             <span className="text-[9px] uppercase tracking-wider bg-(--bg-main) px-2 py-0.5 rounded border border-(--border-color) text-(--text-muted) font-bold">
-              {layer.type === 'static_polygon' ? 'Référence' : layer.type === 'drawn' ? 'Dessin' : 'Import'}
+              {layer.type === 'static_polygon' ? 'Référence' : layer.type === 'drawn' ? 'Dessin' : layer.type === 'forest_import' ? 'ملك غابوي' : 'خواص'}
             </span>
             <div className="flex items-center gap-1">
               {(layer.geojson || layer.leafletLayer?.toGeoJSON) && (
