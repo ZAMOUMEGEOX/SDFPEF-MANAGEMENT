@@ -348,6 +348,38 @@ function MapControls({ splitPos, toggles, geeAfterUrl }: any) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// RÉFÉRENCES (noms / frontières / routes) — pane dédié z=255 : AU-DESSUS des
+// couches de swipe (paneWaybackLeft=215, splitPaneRight=250) pour que les noms
+// restent lisibles même en mode S2 Split, et SOUS l'analyse (paneIndices=360+).
+// Le pane est créé AVANT le montage des tuiles (pattern paneReady) -> pas de
+// course au 1er rendu (sinon la couche retombait sous le satellite).
+// ─────────────────────────────────────────────────────────────────────────────
+function RefLabelsLayer({ show }: { show: boolean }) {
+  const map = useMap();
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let p = map.getPane('paneRefLabels');
+    if (!p) {
+      p = map.createPane('paneRefLabels');
+      p.style.zIndex = '255';
+      p.style.pointerEvents = 'none';
+    }
+    setReady(true);
+  }, [map]);
+  if (!ready || !show) return null;
+  return (
+    <>
+      <TileLayer url={ARCGIS_TRANSPORT} pane="paneRefLabels"
+        keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true}
+        maxNativeZoom={18} maxZoom={19} attribution="Esri — Transportation" />
+      <TileLayer url={ARCGIS_REFERENCE} pane="paneRefLabels"
+        keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true}
+        maxNativeZoom={18} maxZoom={19} attribution="Esri — Boundaries &amp; Places" />
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Composant principal
 // ─────────────────────────────────────────────────────────────────────────────
 export function Teledetection() {
@@ -1463,22 +1495,9 @@ export function Teledetection() {
 
           <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true} maxNativeZoom={18} maxZoom={19} />
 
-          {/* RÉFÉRENCES (overlay transparent) : noms de lieux, frontières, routes.
-              IMPORTANT : on reste dans le tilePane par défaut (toujours présent dès
-              le 1er rendu) et on force un zIndex élevé -> garanti AU-DESSUS du
-              satellite, et SOUS les couches d'analyse (qui sont dans des panes
-              dédiés z>=210). Un pane custom posait une course au montage -> la
-              couche passait sous le satellite. */}
-          {showRefLabels && (
-            <>
-              <TileLayer url={ARCGIS_TRANSPORT} zIndex={300}
-                keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true}
-                maxNativeZoom={18} maxZoom={19} attribution="Esri — Transportation" />
-              <TileLayer url={ARCGIS_REFERENCE} zIndex={301}
-                keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true}
-                maxNativeZoom={18} maxZoom={19} attribution="Esri — Boundaries &amp; Places" />
-            </>
-          )}
+          {/* RÉFÉRENCES (noms / frontières / routes) — pane dédié au-dessus du
+              swipe, créé avant le montage (voir RefLabelsLayer). */}
+          <RefLabelsLayer show={showRefLabels} />
 
           {/* Le dessin est piloté par nos propres boutons via leaflet-geoman
               (map.pm.enableDraw) -> aucune barre d'outils par défaut. */}
