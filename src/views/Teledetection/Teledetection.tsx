@@ -81,6 +81,10 @@ const isJunkForest = (n: string): boolean => !n || n === 'NONE' || /^-+$/.test(n
 
 // Imagerie "actuelle" (côté droit du swipe) quand aucune image S2 "après" n'existe encore.
 const ARCGIS_IMAGERY = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+// Couche "Références" : noms de lieux, frontières et routes (overlay transparent
+// par-dessus la vue satellite -> l'utilisateur se repère). Vrai mode "hybride".
+const ARCGIS_REFERENCE = 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}';
+const ARCGIS_TRANSPORT = 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}';
 
 // Index de l'image la PLUS PROCHE d'une date cible (pour ne pas se perdre entre les dates).
 const nearestIdx = (list: { date: string }[], target: string): number => {
@@ -261,6 +265,7 @@ function LayerPanes() {
   const map = useMap();
   useEffect(() => {
     const defs: [string, number][] = [
+      ['paneRefLabels', 205],   // Références (noms/frontières/routes) — juste au-dessus du fond satellite
       ['paneS2', 210],        // images Sentinel-2 (avant) — juste au-dessus du fond
       ['paneWaybackLeft', 215], // v16 — image historique (Wayback) clippee a GAUCHE du split
       ['paneIndices', 360],   // NDVI Δ / Hansen / SAR / Phéno — sous les alertes
@@ -402,7 +407,7 @@ export function Teledetection() {
   // Limites personnalisées de l'utilisateur (fichier importé OU dessin sur carte).
   const [customRoi, setCustomRoi]   = useState<RoiFC | null>(null);
   const [customRoiName, setCustomRoiName] = useState<string>('');
-  const [drawing, setDrawing]       = useState<boolean>(false);
+  const [drawShape, setDrawShape] = useState<'rectangle' | 'polygon' | null>(null);
   const [selectedForest, setSelectedForest] = useState<string>('');
   // v16 — canton (section forestiere) optionnel pour affiner encore l'analyse
   const [selectedCanton, setSelectedCanton] = useState<string>('');
@@ -417,6 +422,9 @@ export function Teledetection() {
   const [minScenes, setMinScenes]   = useState(2);
   // Couches affichables via boutons sur la carte (gestion de couches, pas de cases)
   const [showAnefLimit, setShowAnefLimit] = useState(true);
+  // Couche "Références" (noms de lieux / frontières / routes) — ON par défaut
+  // pour que l'utilisateur se repère sur le fond satellite.
+  const [showRefLabels, setShowRefLabels] = useState(true);
   // Triple confirmation : ON par défaut (essentiel à toute analyse rigoureuse)
   // Mode d'analyse — 2 niveaux à impact RÉEL sur le graphe GEE (donc sur la vitesse) :
   //   'standard'  = optique + persistance multi-scène + Hansen/DIST + baseline saisonnière
@@ -511,6 +519,7 @@ export function Teledetection() {
         if (p.opacity) setOpacity(o => ({ ...o, ...p.opacity }));
         if (p.beforeSource) setBeforeSource(p.beforeSource);
         if (typeof p.cloudMax === 'number') setCloudMax(p.cloudMax);
+        if (typeof p.showRefLabels === 'boolean') setShowRefLabels(p.showRefLabels);
       }
     } catch { /* préférences corrompues : on ignore */ }
     prefsLoaded.current = true;
@@ -519,10 +528,10 @@ export function Teledetection() {
     if (!prefsLoaded.current) return;   // n'écrase pas avant le 1er chargement
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify({
-        selectedZone, toggles, opacity, beforeSource, cloudMax,
+        selectedZone, toggles, opacity, beforeSource, cloudMax, showRefLabels,
       }));
     } catch { /* quota plein / mode privé : silencieux */ }
-  }, [selectedZone, toggles, opacity, beforeSource, cloudMax]);
+  }, [selectedZone, toggles, opacity, beforeSource, cloudMax, showRefLabels]);
 
   // ───────────────────────────────────────────────────────────────────────────
   // Persistance des RÉSULTATS D'ANALYSE via sessionStorage.
@@ -910,7 +919,7 @@ export function Teledetection() {
   // est celle qui est visible). On coupe aussi le mode dessin.
   const applyCustomRoi = (fc: RoiFC, name: string) => {
     setCustomRoi(fc); setCustomRoiName(name);
-    setAnalysisLevel('custom'); setDrawing(false);
+    setAnalysisLevel('custom'); setDrawShape(null);
     setShowCustomRoi(true); setShowAnefLimit(false);
     try {
       const b = L.geoJSON(fc as any).getBounds();
@@ -918,7 +927,7 @@ export function Teledetection() {
     } catch { /* géométrie illisible : on n'empêche pas l'analyse */ }
   };
   const clearCustomRoi = () => {
-    setCustomRoi(null); setCustomRoiName(''); setDrawing(false);
+    setCustomRoi(null); setCustomRoiName(''); setDrawShape(null);
     try { mapRef.current?.pm?.disableDraw?.(); } catch { /* noop */ }
     setShowAnefLimit(true);                       // on ré-affiche la limite forêt
     setAnalysisLevel(l => (l === 'custom' ? 'cpf' : l));
@@ -938,7 +947,7 @@ export function Teledetection() {
         try { (map as any).pm.disableDraw(); } catch { /* noop */ }
         if (gj) applyCustomRoi({ type: 'FeatureCollection', features: [gj] }, 'Tracé manuel');
       } catch { /* noop */ }
-      setDrawing(false);
+      setDrawShape(null);
     };
     map.on('pm:create' as any, handler);
     return () => { map.off('pm:create' as any, handler); };
@@ -949,7 +958,7 @@ export function Teledetection() {
     const map = mapRef.current as any;
     if (!map || !map.pm) { setErrorMsg("Outil de dessin indisponible (leaflet-geoman)."); return; }
     try { map.pm.disableDraw(); } catch { /* noop */ }
-    setDrawing(true);
+    setDrawShape(shape);
     const pathOptions = { color: '#22d3ee', weight: 2, fillColor: '#22d3ee', fillOpacity: 0.08 };
     map.pm.enableDraw(shape === 'rectangle' ? 'Rectangle' : 'Polygon', {
       snappable: true, finishOn: 'dblclick',
@@ -959,7 +968,7 @@ export function Teledetection() {
   };
   const cancelDraw = () => {
     try { (mapRef.current as any)?.pm?.disableDraw(); } catch { /* noop */ }
-    setDrawing(false);
+    setDrawShape(null);
   };
 
   // Calcule UNE couche figée à la demande quand on l'active après l'analyse.
@@ -1444,6 +1453,19 @@ export function Teledetection() {
 
           <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true} maxNativeZoom={18} maxZoom={19} />
 
+          {/* RÉFÉRENCES (overlay transparent) : noms de lieux, frontières, routes —
+              affichées par défaut au-dessus du satellite pour le repérage. */}
+          {showRefLabels && (
+            <>
+              <TileLayer url={ARCGIS_TRANSPORT} pane="paneRefLabels"
+                keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true}
+                maxNativeZoom={18} maxZoom={19} attribution="Esri — Transportation" />
+              <TileLayer url={ARCGIS_REFERENCE} pane="paneRefLabels"
+                keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true}
+                maxNativeZoom={18} maxZoom={19} attribution="Esri — Boundaries &amp; Places" />
+            </>
+          )}
+
           {/* Le dessin est piloté par nos propres boutons via leaflet-geoman
               (map.pm.enableDraw) -> aucune barre d'outils par défaut. */}
 
@@ -1803,6 +1825,12 @@ export function Teledetection() {
               <ShieldCheck className="w-3.5 h-3.5" /> {toggles.highOnly ? 'Haute conf. ✓' : 'Haute conf.'}
             </button>
           )}
+          {/* Références (noms / frontières / routes) — afficher / masquer */}
+          <button onClick={() => setShowRefLabels(v => !v)} title="Noms de lieux, frontières et routes"
+            className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold shadow-lg backdrop-blur-md border transition-all",
+              showRefLabels ? "bg-sky-600/90 text-white border-sky-300/40" : "bg-black/65 text-white/70 border-white/10 hover:bg-black/80")}>
+            <MapPin className="w-3.5 h-3.5" /> Références
+          </button>
           {/* Limite domaine ANEF — afficher / masquer */}
           <button onClick={() => setShowAnefLimit(v => !v)} title="Limite du domaine forestier ANEF"
             className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold shadow-lg backdrop-blur-md border transition-all",
@@ -2015,7 +2043,7 @@ export function Teledetection() {
                       <RoiImport
                         roi={customRoi}
                         roiName={customRoiName}
-                        drawing={drawing}
+                        drawShape={drawShape}
                         showRoi={showCustomRoi}
                         fill={customRoiFill}
                         onRoi={applyCustomRoi}
@@ -2082,28 +2110,20 @@ export function Teledetection() {
                     </p>
                   </div>
 
-                  {/* TRIPLE CONFIRMATION — n'affiche que les détections corroborées
-                      par >= 3 preuves indépendantes (classe >= 3). Réduit fortement
-                      les fausses alertes envoyées sur le terrain. */}
-                  <div className={cn("p-2.5 rounded-xl border-2 mb-2 transition-all",
-                    tripleConfirm ? "border-emerald-600/70 bg-emerald-600/10" : "border-[var(--border-color)] bg-[var(--bg-main)]")}>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <ShieldCheck className={cn("w-4 h-4 shrink-0", tripleConfirm ? "text-emerald-500" : "text-[var(--text-muted)]")} />
-                        <div className="min-w-0">
-                          <p className="text-[11px] font-bold text-[var(--text-main)] leading-tight">التأكيد الثلاثي / Triple confirmation</p>
-                          <p className="text-[8px] text-[var(--text-muted)] font-mono truncate">n'affiche que les alertes confirmées par ≥ 3 preuves</p>
-                        </div>
-                      </div>
-                      <button onClick={() => setTripleConfirm(v => !v)}
-                        className={cn("w-11 h-6 rounded-full relative transition-colors shrink-0", tripleConfirm ? "bg-emerald-600" : "bg-black/20 dark:bg-white/20")}>
-                        <div className={cn("absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform shadow-sm", tripleConfirm ? "translate-x-5" : "translate-x-0")} />
-                      </button>
+                  {/* TRIPLE CONFIRMATION — n'affiche que les détections de classe ≥ 3
+                      (≥ 3 preuves indépendantes). Barre compacte. */}
+                  <button onClick={() => setTripleConfirm(v => !v)} title="N'afficher que les alertes confirmées par ≥ 3 preuves (classe ≥ 3)"
+                    className={cn("w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border mb-2 transition-all",
+                      tripleConfirm ? "border-emerald-600/60 bg-emerald-600/10" : "border-[var(--border-color)] bg-[var(--bg-main)] hover:border-[var(--text-muted)]")}>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <ShieldCheck className={cn("w-3.5 h-3.5 shrink-0", tripleConfirm ? "text-emerald-500" : "text-[var(--text-muted)]")} />
+                      <span className="text-[11px] font-bold text-[var(--text-main)] truncate">Triple confirmation</span>
+                      <span className="text-[8px] font-mono text-[var(--text-muted)] shrink-0">classe ≥ 3</span>
                     </div>
-                    <p className="text-[8px] text-emerald-500/90 font-mono leading-relaxed mt-1.5">
-                      🛡️ ON : seules les classes 3 et 4 (haute / très haute) sont retenues. OFF : on garde aussi les détections plus faibles (plus de bruit).
-                    </p>
-                  </div>
+                    <div className={cn("w-9 h-5 rounded-full relative transition-colors shrink-0", tripleConfirm ? "bg-emerald-600" : "bg-black/20 dark:bg-white/20")}>
+                      <div className={cn("absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform shadow-sm", tripleConfirm ? "translate-x-4" : "translate-x-0")} />
+                    </div>
+                  </button>
 
                   {/* Multi-scène (S2) — preuve indépendante, ne tourne que si activée */}
                   <div className={cn("p-2.5 rounded-xl border-2 mb-2 transition-all",

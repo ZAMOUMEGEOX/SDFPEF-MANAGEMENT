@@ -37,7 +37,7 @@ export type RoiFC = { type: 'FeatureCollection'; features: any[] };
 interface RoiImportProps {
   roi: RoiFC | null;
   roiName: string;
-  drawing: boolean;
+  drawShape: 'rectangle' | 'polygon' | null;
   showRoi: boolean;
   fill: number;
   onRoi: (fc: RoiFC, name: string) => void;
@@ -118,7 +118,7 @@ function pointsToRoi(features: any[]): RoiFC | null {
 }
 
 export default function RoiImport({
-  roi, roiName, drawing, showRoi, fill,
+  roi, roiName, drawShape, showRoi, fill,
   onRoi, onClear, onDrawRect, onDrawPoly, onCancelDraw, onToggleShow, onFill,
 }: RoiImportProps) {
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -174,25 +174,27 @@ export default function RoiImport({
         className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
       />
 
-      {/* Barre compacte : Importer · Rectangle · Polygone */}
+      {/* Barre compacte : Importer · Rectangle · Polygone (état actif INDÉPENDANT) */}
       <div className="flex items-center gap-1">
         <button onClick={() => fileRef.current?.click()} disabled={busy}
           className={btn + " border-cyan-500/50 text-cyan-500 hover:bg-cyan-500/10 disabled:opacity-50"}>
           <FileUp className="w-3.5 h-3.5" /> {busy ? '…' : 'Importer'}
         </button>
-        <button onClick={drawing ? onCancelDraw : onDrawRect}
-          className={btn + (drawing ? " border-cyan-500 bg-cyan-500/15 text-cyan-500" : " border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
+        <button onClick={() => (drawShape === 'rectangle' ? onCancelDraw() : onDrawRect())}
+          className={btn + (drawShape === 'rectangle' ? " border-cyan-500 bg-cyan-500/15 text-cyan-500" : " border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
           <Square className="w-3.5 h-3.5" /> Rect.
         </button>
-        <button onClick={drawing ? onCancelDraw : onDrawPoly}
-          className={btn + (drawing ? " border-cyan-500 bg-cyan-500/15 text-cyan-500" : " border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
+        <button onClick={() => (drawShape === 'polygon' ? onCancelDraw() : onDrawPoly())}
+          className={btn + (drawShape === 'polygon' ? " border-cyan-500 bg-cyan-500/15 text-cyan-500" : " border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
           <Hexagon className="w-3.5 h-3.5" /> Polyg.
         </button>
       </div>
 
-      {drawing && (
+      {drawShape && (
         <div className="flex items-center justify-between gap-2 px-2 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/30">
-          <span className="text-[10px] text-cyan-500 font-semibold">Tracez sur la carte · double-clic pour terminer</span>
+          <span className="text-[10px] text-cyan-500 font-semibold">
+            {drawShape === 'rectangle' ? 'Rectangle' : 'Polygone'} · tracez sur la carte{drawShape === 'polygon' ? ' · double-clic = fin' : ''}
+          </span>
           <button onClick={onCancelDraw} className="text-cyan-500 hover:opacity-70"><X className="w-3.5 h-3.5" /></button>
         </div>
       )}
