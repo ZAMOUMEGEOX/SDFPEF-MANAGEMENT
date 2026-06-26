@@ -1,17 +1,36 @@
 // src/components/teledetection/RoiImport.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// Emprise d'analyse personnalisée (remplace forest_limits à la demande) :
-//   • Import : GeoJSON / JSON (natif), KML/KMZ (@tmcw/togeojson), Shapefile .zip
-//     (shpjs), CSV lng,lat (natif). Les deux libs sont importées DYNAMIQUEMENT :
-//     le build ne casse pas si elles ne sont pas installées.
-//   • Dessin : rectangle / polygone (déclenchés par le parent, handler leaflet-draw
-//     programmatique -> pas de barre d'outils par défaut, plus propre).
-//   • Couche : visibilité + opacité de remplissage pilotables (comme la limite ANEF).
+// Emprise d'analyse personnalisée (remplace forest_limits à la demande).
+// Lecture robuste de TOUS les formats (mêmes libs que le module DomaineForestier,
+// qui sont déjà installées dans le projet) :
+//   • GeoJSON / JSON       -> natif
+//   • KML / KMZ            -> @tmcw/togeojson
+//   • Shapefile .zip       -> shpjs
+//   • CSV                  -> papaparse  (colonnes X/Y · lat/lng · Lambert)
+//   • Excel .xlsx / .xls   -> xlsx
+// Reprojection auto Lambert Maroc Nord (EPSG:26191) -> WGS84 si les coordonnées
+// sortent de la plage [-180,180] (cas fréquent des SHP/CSV marocains).
 // La géométrie produite (FeatureCollection) part telle quelle au backend via
-// `roiGeojson` (get_roi la consomme déjà -> aucune modification API/Flask).
+// `roiGeojson` — aucune modification API/Flask.
 // ─────────────────────────────────────────────────────────────────────────────
 import { useRef, useState } from 'react';
 import { Upload, Trash2, Square, Hexagon, X, Eye, EyeOff, AlertTriangle, FileUp } from 'lucide-react';
+import * as turf from '@turf/turf';
+import Papa from 'papaparse';
+import * as XLSX from 'xlsx';
+import shp from 'shpjs';
+import { kml } from '@tmcw/togeojson';
+import proj4 from 'proj4';
+
+// Lambert Maroc « Zone Nord » (EPSG:26191) — enregistré pour proj4 (fallback CRS).
+if (!(proj4 as any).defs('EPSG:26191')) {
+  (proj4 as any).defs(
+    'EPSG:26191',
+    '+proj=lcc +lat_1=33.3 +lat_0=33.3 +lon_0=-5.4 +k_0=0.999625769 ' +
+    '+x_0=500000 +y_0=300000 +a=6378249.2 +b=6356515 ' +
+    '+towgs84=31,146,47,0,0,0,0 +units=m +no_defs',
+  );
+}
 
 export type RoiFC = { type: 'FeatureCollection'; features: any[] };
 
@@ -30,35 +49,72 @@ interface RoiImportProps {
   onFill: (v: number) => void;
 }
 
-// ── Normalisation : tout ramener à une FeatureCollection ─────────────────────
-function toFeatureCollection(geo: any): RoiFC | null {
-  if (!geo) return null;
-  if (geo.type === 'FeatureCollection') return { type: 'FeatureCollection', features: (geo.features ?? []).filter(Boolean) };
-  if (geo.type === 'Feature') return { type: 'FeatureCollection', features: [geo] };
-  if (geo.type && geo.coordinates) return { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: geo }] };
-  return null;
+// ── Reprojection : si une coordonnée dépasse la plage WGS84, on suppose Lambert
+//    Maroc Nord et on convertit récursivement toutes les coordonnées. ──────────
+function looksProjected(coords: any): boolean {
+  if (typeof coords[0] === 'number') return Math.abs(coords[0]) > 180 || Math.abs(coords[1]) > 90;
+  return looksProjected(coords[0]);
+}
+function reprojCoords(coords: any): any {
+  if (typeof coords[0] === 'number') {
+    const p = proj4('EPSG:26191', 'EPSG:4326', [coords[0], coords[1]]);
+    return [p[0], p[1]];
+  }
+  return coords.map(reprojCoords);
+}
+function normalizeCrs(fc: RoiFC): RoiFC {
+  try {
+    const sample = fc.features.find((f: any) => f?.geometry?.coordinates);
+    if (!sample || !looksProjected(sample.geometry.coordinates)) return fc;
+    const features = fc.features.map((f: any) => {
+      if (!f?.geometry?.coordinates) return f;
+      return { ...f, geometry: { ...f.geometry, coordinates: reprojCoords(f.geometry.coordinates) } };
+    });
+    return { type: 'FeatureCollection', features };
+  } catch { return fc; }
 }
 
-// ── CSV (lng,lat / lon,lat / x,y) -> Polygon fermé ───────────────────────────
-function csvToFC(text: string): RoiFC | null {
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  if (lines.length < 3) return null;
-  const header = lines[0].toLowerCase().split(/[;,]/).map(s => s.trim());
-  const iLng = header.findIndex(h => ['lng', 'lon', 'long', 'longitude', 'x'].includes(h));
-  const iLat = header.findIndex(h => ['lat', 'latitude', 'y'].includes(h));
-  const start = (iLng >= 0 && iLat >= 0) ? 1 : 0;
-  const cx = start === 1 ? iLng : 0;
-  const cy = start === 1 ? iLat : 1;
-  const ring: number[][] = [];
-  for (let k = start; k < lines.length; k++) {
-    const cols = lines[k].split(/[;,]/).map(s => s.trim());
-    const lng = parseFloat(cols[cx]); const lat = parseFloat(cols[cy]);
-    if (Number.isFinite(lng) && Number.isFinite(lat)) ring.push([lng, lat]);
-  }
-  if (ring.length < 3) return null;
-  const a = ring[0]; const b = ring[ring.length - 1];
-  if (a[0] !== b[0] || a[1] !== b[1]) ring.push([a[0], a[1]]);
-  return { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [ring] } }] };
+// ── Normalisation : tout ramener à une FeatureCollection propre ──────────────
+function toFC(geo: any): RoiFC | null {
+  if (!geo) return null;
+  let fc: RoiFC | null = null;
+  if (geo.type === 'FeatureCollection') fc = { type: 'FeatureCollection', features: (geo.features ?? []).filter(Boolean) };
+  else if (geo.type === 'Feature') fc = { type: 'FeatureCollection', features: [geo] };
+  else if (geo.type && geo.coordinates) fc = { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: geo }] };
+  if (!fc || !fc.features.length) return null;
+  // ids entiers -> string (exigence GEE côté backend)
+  fc.features = fc.features.map((f: any, i: number) =>
+    (f && typeof f.id !== 'undefined' && typeof f.id !== 'string') ? { ...f, id: String(f.id ?? i) } : f);
+  return normalizeCrs(fc);
+}
+
+// ── Points (CSV / Excel) -> Polygon (au moins 3 sommets) ─────────────────────
+function extractPointFeatures(rows: any[]): any[] {
+  const latKeys = ['lat', 'latitude', 'y', 'y_lambert', 'y lambert'];
+  const lngKeys = ['lng', 'longitude', 'x', 'lon', 'x_lambert', 'x lambert'];
+  const getVal = (row: any, keys: string[]) => {
+    for (const k in row) if (keys.includes(String(k).trim().toLowerCase())) return row[k];
+    return undefined;
+  };
+  return rows.map((row: any) => {
+    const rawLat = getVal(row, latKeys), rawLng = getVal(row, lngKeys);
+    if (rawLat == null || rawLng == null) return null;
+    let lat = parseFloat(String(rawLat).replace(',', '.'));
+    let lng = parseFloat(String(rawLng).replace(',', '.'));
+    if (isNaN(lat) || isNaN(lng)) return null;
+    if (Math.abs(lng) > 180 || Math.abs(lat) > 90) {     // Lambert -> WGS84
+      try { const p = proj4('EPSG:26191', 'EPSG:4326', [lng, lat]); lng = p[0]; lat = p[1]; } catch { /* noop */ }
+    }
+    return turf.point([lng, lat]);
+  }).filter(Boolean) as any[];
+}
+function pointsToRoi(features: any[]): RoiFC | null {
+  if (features.length < 3) return null;
+  const coords = features.map((f: any) => [...f.geometry.coordinates]);
+  const a = coords[0], b = coords[coords.length - 1];
+  if (a[0] !== b[0] || a[1] !== b[1]) coords.push([...a]);
+  try { return { type: 'FeatureCollection', features: [turf.polygon([coords])] }; }
+  catch { return null; }
 }
 
 export default function RoiImport({
@@ -69,37 +125,42 @@ export default function RoiImport({
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const finish = (fc: RoiFC | null, name: string) => {
+    if (!fc || !fc.features.length) { setErr('Aucune géométrie valide (polygone ou ≥ 3 points).'); return; }
+    setErr(null);
+    onRoi(fc, name);
+  };
+
   const handleFile = async (file: File) => {
     setErr(null); setBusy(true);
     const name = file.name.replace(/\.[^.]+$/, '');
-    const lower = file.name.toLowerCase();
+    const ext = file.name.split('.').pop()?.toLowerCase();
     try {
-      let fc: RoiFC | null = null;
-      if (lower.endsWith('.geojson') || lower.endsWith('.json')) {
-        fc = toFeatureCollection(JSON.parse(await file.text()));
-      } else if (lower.endsWith('.csv') || lower.endsWith('.txt')) {
-        fc = csvToFC(await file.text());
-      } else if (lower.endsWith('.kml') || lower.endsWith('.kmz')) {
-        const mod = await import('@tmcw/togeojson').catch(() => null);
-        if (!mod) { setErr('Installer @tmcw/togeojson pour lire les KML.'); return; }
-        const dom = new DOMParser().parseFromString(await file.text(), 'text/xml');
-        fc = toFeatureCollection((mod as any).kml(dom));
-      } else if (lower.endsWith('.zip') || lower.endsWith('.shp')) {
-        const shpMod = await import('shpjs').catch(() => null);
-        if (!shpMod) { setErr('Installer shpjs pour lire les Shapefile (.zip).'); return; }
-        const shp = (shpMod as any).default ?? shpMod;
-        fc = toFeatureCollection(await shp(await file.arrayBuffer()));
+      if (ext === 'geojson' || ext === 'json') {
+        finish(toFC(JSON.parse(await file.text())), name);
+      } else if (ext === 'kml' || ext === 'kmz') {
+        const doc = new DOMParser().parseFromString(await file.text(), 'text/xml');
+        finish(toFC(kml(doc)), name);
+      } else if (ext === 'zip' || ext === 'shp') {
+        finish(toFC(await shp(await file.arrayBuffer())), name);
+      } else if (ext === 'csv' || ext === 'txt') {
+        Papa.parse(file, {
+          header: true, skipEmptyLines: true,
+          complete: (res) => { finish(pointsToRoi(extractPointFeatures(res.data as any[])), name); setBusy(false); },
+          error: () => { setErr('Lecture CSV impossible.'); setBusy(false); },
+        });
+        return;   // Papa est asynchrone : on libère busy dans son callback
+      } else if (ext === 'xlsx' || ext === 'xls') {
+        const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' });
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]) as any[];
+        finish(pointsToRoi(extractPointFeatures(rows)), name);
       } else {
-        setErr('Format non reconnu (.geojson / .kml / .zip / .csv).'); return;
+        setErr('Format non reconnu (.geojson / .kml / .zip / .csv / .xlsx).');
       }
-      if (!fc || !fc.features.length) { setErr('Aucune géométrie valide dans le fichier.'); return; }
-      fc.features = fc.features.map((f: any, i: number) =>
-        (f && typeof f.id !== 'undefined' && typeof f.id !== 'string') ? { ...f, id: String(f.id ?? i) } : f);
-      onRoi(fc, name);
     } catch (e: any) {
       setErr('Lecture impossible : ' + (e?.message ?? 'fichier invalide'));
     } finally {
-      setBusy(false);
+      if (ext !== 'csv' && ext !== 'txt') setBusy(false);
       if (fileRef.current) fileRef.current.value = '';
     }
   };
@@ -109,7 +170,7 @@ export default function RoiImport({
   return (
     <div className="space-y-2">
       <input
-        ref={fileRef} type="file" accept=".geojson,.json,.kml,.kmz,.zip,.shp,.csv,.txt"
+        ref={fileRef} type="file" accept=".geojson,.json,.kml,.kmz,.zip,.shp,.csv,.txt,.xlsx,.xls"
         className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
       />
 
@@ -131,7 +192,7 @@ export default function RoiImport({
 
       {drawing && (
         <div className="flex items-center justify-between gap-2 px-2 py-1 rounded-lg bg-cyan-500/10 border border-cyan-500/30">
-          <span className="text-[10px] text-cyan-500 font-semibold">Cliquez sur la carte pour tracer…</span>
+          <span className="text-[10px] text-cyan-500 font-semibold">Tracez sur la carte · double-clic pour terminer</span>
           <button onClick={onCancelDraw} className="text-cyan-500 hover:opacity-70"><X className="w-3.5 h-3.5" /></button>
         </div>
       )}
@@ -174,7 +235,7 @@ export default function RoiImport({
       )}
 
       <p className="text-[9px] text-[var(--text-muted)] leading-snug">
-        SHP en <code>.zip</code> (shp+shx+dbf+prj), coordonnées WGS84 (EPSG:4326). À 0 % de remplissage, seul le contour reste visible.
+        SHP en <code>.zip</code> (shp+shx+dbf+prj). CSV/Excel : colonnes X/Y, lat/lng ou Lambert (≥ 3 points). À 0 % seul le contour reste visible.
       </p>
     </div>
   );
