@@ -934,41 +934,52 @@ export function Teledetection() {
   };
 
   // ── Dessin via leaflet-geoman (déjà présent dans le projet, plus moderne que
-  //    leaflet-draw). Pas de barre d'outils : nos propres boutons pilotent le
-  //    dessin par map.pm.enableDraw(). Écoute unique de 'pm:create'.
+  //    leaflet-draw). Pas de barre d'outils : nos boutons appellent enableDraw,
+  //    mais l'ÉTAT ACTIF des boutons est piloté par les ÉVÈNEMENTS du moteur
+  //    (pm:drawstart / pm:drawend / pm:create). Impossible donc que les deux
+  //    boutons s'allument ou restent bloqués (même via la touche Échap).
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapReady || !(map as any).pm) return;
-    const handler = (e: any) => {
+    const map = mapRef.current as any;
+    if (!map || !mapReady || !map.pm) return;
+    const onStart = (e: any) => {
+      const s = String(e?.shape || '').toLowerCase();
+      setDrawShape(s === 'rectangle' ? 'rectangle' : s === 'polygon' ? 'polygon' : null);
+    };
+    const onEnd = () => setDrawShape(null);              // fin/annulation -> aucun bouton actif
+    const onCreate = (e: any) => {
       try {
         const layer = e?.layer;
         const gj = layer?.toGeoJSON?.();
-        if (layer) map.removeLayer(layer);          // on rend via notre propre couche GeoJSON
-        try { (map as any).pm.disableDraw(); } catch { /* noop */ }
+        if (layer) map.removeLayer(layer);               // on rend via notre propre couche GeoJSON
+        try { map.pm.disableDraw(); } catch { /* noop */ }
         if (gj) applyCustomRoi({ type: 'FeatureCollection', features: [gj] }, 'Tracé manuel');
       } catch { /* noop */ }
-      setDrawShape(null);
     };
-    map.on('pm:create' as any, handler);
-    return () => { map.off('pm:create' as any, handler); };
+    map.on('pm:drawstart', onStart);
+    map.on('pm:drawend', onEnd);
+    map.on('pm:create', onCreate);
+    return () => {
+      map.off('pm:drawstart', onStart);
+      map.off('pm:drawend', onEnd);
+      map.off('pm:create', onCreate);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady]);
 
   const startDraw = (shape: 'rectangle' | 'polygon') => {
     const map = mapRef.current as any;
     if (!map || !map.pm) { setErrorMsg("Outil de dessin indisponible (leaflet-geoman)."); return; }
-    try { map.pm.disableDraw(); } catch { /* noop */ }
-    setDrawShape(shape);
-    const pathOptions = { color: '#22d3ee', weight: 2, fillColor: '#22d3ee', fillOpacity: 0.08 };
+    try { map.pm.disableDraw(); } catch { /* noop */ }   // coupe toute autre forme en cours
     map.pm.enableDraw(shape === 'rectangle' ? 'Rectangle' : 'Polygon', {
       snappable: true, finishOn: 'dblclick',
       templineStyle: { color: '#22d3ee' }, hintlineStyle: { color: '#22d3ee', dashArray: '5,5' },
-      pathOptions,
+      pathOptions: { color: '#22d3ee', weight: 2, fillColor: '#22d3ee', fillOpacity: 0.08 },
     });
+    // l'état actif est appliqué par l'évènement pm:drawstart (source de vérité unique)
   };
   const cancelDraw = () => {
     try { (mapRef.current as any)?.pm?.disableDraw(); } catch { /* noop */ }
-    setDrawShape(null);
+    // pm:drawend remet drawShape à null
   };
 
   // Calcule UNE couche figée à la demande quand on l'active après l'analyse.
