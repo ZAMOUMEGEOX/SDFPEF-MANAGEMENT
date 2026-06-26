@@ -8,10 +8,10 @@ import {
   PanelRightClose, PanelRightOpen, Anchor, Waves, TrendingUp, Globe,
   Flame, LayoutDashboard, X, Target, ShieldCheck, Activity
 } from 'lucide-react';
-import { MapContainer, TileLayer, LayersControl, FeatureGroup, useMap, GeoJSON, CircleMarker, Tooltip as LeafletTooltip } from 'react-leaflet';
-import { EditControl } from 'react-leaflet-draw';
+import { MapContainer, TileLayer, LayersControl, useMap, GeoJSON, CircleMarker, Tooltip as LeafletTooltip } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import 'leaflet-draw';
 import 'leaflet-draw/dist/leaflet.draw.css';
 import RoiImport, { type RoiFC } from './RoiImport';
 import {
@@ -431,6 +431,10 @@ export function Teledetection() {
   // Opacités réglables des couches raster (gain de place, pas de cartes séparées)
   const [opacity, setOpacity] = useState({ alertes: 0.78, ndvi: 0.72, nbr: 0.78, hansen: 0.80, s1: 0.70, pheno: 0.68, multiscene: 0.80, highOnly: 0.85 });
   const setLayerOpacity = (k: keyof typeof opacity, v: number) => setOpacity(o => ({ ...o, [k]: v }));
+  // Emprise personnalisée — contrôles d'affichage (comme la limite ANEF) :
+  // visibilité + opacité du remplissage (0 = contour seul, idéal pour inspecter).
+  const [showCustomRoi, setShowCustomRoi] = useState(true);
+  const [customRoiFill, setCustomRoiFill] = useState(0.10);
 
   const zones = [
     { id: 'mdiq',          label: 'DF Mdiq-Fnideq', icon: MapIcon  },
@@ -912,19 +916,48 @@ export function Teledetection() {
   };
   const clearCustomRoi = () => {
     setCustomRoi(null); setCustomRoiName(''); setDrawing(false);
+    drawHandlerRef.current?.disable?.(); drawHandlerRef.current = null;
     // on retombe sur le centre entier si on était en mode custom
     setAnalysisLevel(l => (l === 'custom' ? 'cpf' : l));
   };
-  // Capture des formes dessinées (rectangle / polygone) via react-leaflet-draw.
-  const onDrawCreated = (e: any) => {
-    try {
-      const gj = e?.layer?.toGeoJSON?.();
-      if (!gj) return;
-      const fc: RoiFC = { type: 'FeatureCollection', features: [gj] };
-      applyCustomRoi(fc, 'رسم يدوي');
-    } catch { /* noop */ }
+
+  // ── Dessin PROGRAMMATIQUE (sans la barre d'outils leaflet-draw, jugée peu
+  //    professionnelle) : nos propres boutons déclenchent le handler GEE natif.
+  const drawHandlerRef = useRef<any>(null);
+  // Écoute unique de l'évènement de création (rectangle / polygone).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const handler = (e: any) => {
+      try {
+        const layer = e?.layer;
+        const gj = layer?.toGeoJSON?.();
+        if (layer) map.removeLayer(layer);          // on rend via notre propre couche GeoJSON
+        if (gj) applyCustomRoi({ type: 'FeatureCollection', features: [gj] }, 'Tracé manuel');
+      } catch { /* noop */ }
+      setDrawing(false);
+      drawHandlerRef.current = null;
+    };
+    map.on('draw:created' as any, handler);
+    return () => { map.off('draw:created' as any, handler); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady]);
+
+  const startDraw = (shape: 'rectangle' | 'polygon') => {
+    const map = mapRef.current;
+    const Draw = (L as any).Draw;
+    if (!map || !Draw) { setErrorMsg("Outil de dessin indisponible (leaflet-draw)."); return; }
+    drawHandlerRef.current?.disable?.();
+    setDrawing(true);
+    const style = { color: '#22d3ee', weight: 2, fillOpacity: 0.08 };
+    drawHandlerRef.current = shape === 'rectangle'
+      ? new Draw.Rectangle(map, { shapeOptions: style })
+      : new Draw.Polygon(map, { shapeOptions: style, allowIntersection: false, showArea: true });
+    drawHandlerRef.current.enable();
   };
-  const onDrawDeleted = () => { /* l'utilisateur efface : on garde la dernière ROI valide */ };
+  const cancelDraw = () => {
+    drawHandlerRef.current?.disable?.(); drawHandlerRef.current = null; setDrawing(false);
+  };
 
   // Calcule UNE couche figée à la demande quand on l'active après l'analyse.
   const onLayerEnabled = (key: keyof typeof toggles) => {
@@ -1048,6 +1081,16 @@ export function Teledetection() {
   // ── Analyse principale (v19 — asynchrone : barre de progression, sans timeout) ──
   const handleAnalyze = async (highOnlyOverride?: boolean) => {
     if (geeStatus === 'error') { setErrorMsg('GEE hors-ligne — vérifier PythonAnywhere'); return; }
+    // Garde-fou : en mode "Emprise", on REFUSE de lancer sans géométrie -> sinon
+    // le backend retomberait silencieusement sur le centre entier (mauvaise zone).
+    if (analysisLevel === 'custom' && (!customRoi || (customRoi.features?.length ?? 0) === 0)) {
+      setErrorMsg('Importez ou dessinez une emprise avant de lancer l’analyse.');
+      return;
+    }
+    if (analysisLevel === 'forest' && !selectedForest) {
+      setErrorMsg('Choisissez une forêt avant de lancer l’analyse.');
+      return;
+    }
     setIsAnalyzing(true); setErrorMsg(null);
     setAnalyzeProgress(0); setAnalyzeMessage('Initialisation…');
     const params = buildParams(highOnlyOverride);
@@ -1398,17 +1441,8 @@ export function Teledetection() {
 
           <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true} maxNativeZoom={18} maxZoom={19} />
 
-          <FeatureGroup>
-            {drawing && (
-              <EditControl
-                position="topleft"
-                onCreated={onDrawCreated}
-                onDeleted={onDrawDeleted}
-                draw={{ rectangle: true, polygon: true, circle: false, circlemarker: false, marker: false, polyline: false }}
-                edit={{ edit: false, remove: true }}
-              />
-            )}
-          </FeatureGroup>
+          {/* Le dessin est piloté par nos propres boutons (handler leaflet-draw
+              programmatique) -> pas de barre d'outils par défaut. */}
 
           {/* AVANT (gauche) — source historique (Wayback OU Sentinel-2), CLIPPE a gauche du split.
               Repli: S2 GEE avant. v18 — date de capture reelle, source commutable. */}
@@ -1463,49 +1497,50 @@ export function Teledetection() {
               visibilité via l'opacité (0 = masquée). Ainsi un toggle OFF/ON ne
               démonte pas la couche : les tuiles restent en cache → réaffichage
               instantané, sans recalcul ni rechargement. */}
-          {/* Couches analytiques = TUILES LIVE. Montées dès que leur URL existe ;
-              la bascule ne change que l'opacité (ré-affichage instantané, pas de
-              démontage). Le cache disque serveur (USE_TILE_PROXY) garde les tuiles
-              -> elles ne disparaissent plus au zoom. On ne génère que les couches
-              demandées (cases cochées) ou calculées à la demande après coup. */}
-          {ndviTileUrl && (
+          {/* Couches analytiques = TUILES LIVE GEE. CHANGEMENT PERF : on ne MONTE
+              une couche que si elle est VISIBLE (toggle ON). Auparavant toutes
+              restaient montées à opacité 0 -> chaque couche cachée téléchargeait
+              quand même ses tuiles sur tout le cadre (jusqu'à 9 couches = 9× les
+              requêtes GEE, d'où la lenteur même sur une petite emprise). Le cache
+              disque serveur (USE_TILE_PROXY) rend le ré-affichage rapide au re-toggle. */}
+          {ndviTileUrl && toggles.ndviDelta && (
             <TileLayer key={`ndvi-${ndviTileUrl}`} url={ndviTileUrl} pane="paneIndices"
-              opacity={toggles.ndviDelta ? opacity.ndvi : 0} {...TILE_PERF} attribution="GEE NDVI Δ" />
+              opacity={opacity.ndvi} {...TILE_PERF} attribution="GEE NDVI Δ" />
           )}
-          {nbrTileUrl && (
+          {nbrTileUrl && toggles.nbrDelta && (
             <TileLayer key={`nbr-${nbrTileUrl}`} url={nbrTileUrl} pane="paneIndices"
-              opacity={toggles.nbrDelta ? opacity.nbr : 0} {...TILE_PERF} attribution="GEE NBR Δ (dNBR)" />
+              opacity={opacity.nbr} {...TILE_PERF} attribution="GEE NBR Δ (dNBR)" />
           )}
-          {hansenTileUrl && (
+          {hansenTileUrl && toggles.forestWatch && (
             <TileLayer key={`hansen-${hansenTileUrl}`} url={hansenTileUrl} pane="paneIndices"
-              opacity={toggles.forestWatch ? opacity.hansen : 0} {...TILE_PERF} attribution="UMD Hansen GFC" />
+              opacity={opacity.hansen} {...TILE_PERF} attribution="UMD Hansen GFC" />
           )}
-          {distAlertTileUrl && (
+          {distAlertTileUrl && toggles.forestWatch && (
             <TileLayer key={`distalert-${distAlertTileUrl}`} url={distAlertTileUrl} pane="paneIndices"
-              opacity={toggles.forestWatch ? opacity.hansen : 0} {...TILE_PERF} attribution="GLAD DIST-ALERT" />
+              opacity={opacity.hansen} {...TILE_PERF} attribution="GLAD DIST-ALERT" />
           )}
-          {s1TileUrl && (
+          {s1TileUrl && toggles.sentinel1 && (
             <TileLayer key={`s1-${s1TileUrl}`} url={s1TileUrl} pane="paneIndices"
-              opacity={toggles.sentinel1 ? opacity.s1 : 0} {...TILE_PERF} attribution="GEE Sentinel-1 SAR" />
+              opacity={opacity.s1} {...TILE_PERF} attribution="GEE Sentinel-1 SAR" />
           )}
-          {phenologyTileUrl && (
+          {phenologyTileUrl && toggles.phenology && (
             <TileLayer key={`pheno-${phenologyTileUrl}`} url={phenologyTileUrl} pane="paneIndices"
-              opacity={toggles.phenology ? opacity.pheno : 0} {...TILE_PERF} attribution="GEE Phénologie" />
+              opacity={opacity.pheno} {...TILE_PERF} attribution="GEE Phénologie" />
           )}
 
           {/* ALERTES (raster de confiance) — couche PRIMAIRE */}
-          {distTileUrl && (
+          {distTileUrl && toggles.disturbance && (
             <TileLayer key={`dist-${distTileUrl}`} url={distTileUrl} pane="paneAlertes"
-              opacity={toggles.disturbance ? opacity.alertes : 0} {...TILE_PERF} attribution="GEE Confiance" />
+              opacity={opacity.alertes} {...TILE_PERF} attribution="GEE Confiance" />
           )}
           {/* HAUTE CONFIANCE (score ≥ 3) */}
-          {highOnlyTileUrl && (
+          {highOnlyTileUrl && toggles.highOnly && (
             <TileLayer key={`high-${highOnlyTileUrl}`} url={highOnlyTileUrl} pane="paneMultiscene"
-              opacity={toggles.highOnly ? opacity.highOnly : 0} {...TILE_PERF} attribution="GEE Haute confiance (≥3)" />
+              opacity={opacity.highOnly} {...TILE_PERF} attribution="GEE Haute confiance (≥3)" />
           )}
-          {multisceneTileUrl && (
+          {multisceneTileUrl && multiScene && (
             <TileLayer key={`ms-${multisceneTileUrl}`} url={multisceneTileUrl} pane="paneMultiscene"
-              opacity={multiScene ? opacity.multiscene : 0} {...TILE_PERF} attribution="GEE Multi-scène S2" />
+              opacity={opacity.multiscene} {...TILE_PERF} attribution="GEE Multi-scène S2" />
           )}
 
           {/* Limites — pane limits (au-dessus, cliquable) */}
@@ -1517,10 +1552,11 @@ export function Teledetection() {
             <GeoJSON key={`zone-${selectedZone}`} pane="paneLimits" data={zoneBoundary}
               style={() => ({ color: '#fbbf24', weight: 2.5, fill: false })} />
           )}
-          {/* Limites personnalisées de l'utilisateur (import/dessin) */}
-          {analysisLevel === 'custom' && customRoi && (
-            <GeoJSON key={`custom-${customRoi.features.length}-${customRoiName}`} pane="paneLimits" data={customRoi as any}
-              style={() => ({ color: '#22d3ee', weight: 3, dashArray: '6 4', fillColor: '#22d3ee', fillOpacity: 0.06 })} />
+          {/* Limites personnalisées de l'utilisateur (import/dessin) — visibilité
+              et opacité de remplissage pilotables (0 = contour seul). */}
+          {analysisLevel === 'custom' && customRoi && showCustomRoi && (
+            <GeoJSON key={`custom-${customRoi.features.length}-${customRoiName}-${customRoiFill}`} pane="paneLimits" data={customRoi as any}
+              style={() => ({ color: '#22d3ee', weight: 3, dashArray: '6 4', fillColor: '#22d3ee', fillOpacity: customRoiFill })} />
           )}
 
           {/* POLYGONES de perturbation — pane polygons, AU-DESSUS des alertes (cliquables) */}
@@ -1770,6 +1806,14 @@ export function Teledetection() {
               showAnefLimit ? "bg-emerald-600/90 text-white border-emerald-300/40" : "bg-black/65 text-white/70 border-white/10 hover:bg-black/80")}>
             <TreePine className="w-3.5 h-3.5" /> Limite ANEF
           </button>
+          {/* Emprise personnalisée — afficher / masquer (pour bien voir les changements dessous) */}
+          {analysisLevel === 'custom' && customRoi && (
+            <button onClick={() => setShowCustomRoi(v => !v)} title="Afficher / masquer l'emprise tracée"
+              className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold shadow-lg backdrop-blur-md border transition-all",
+                showCustomRoi ? "bg-cyan-500/90 text-white border-cyan-200/40" : "bg-black/65 text-white/70 border-white/10 hover:bg-black/80")}>
+              <Hexagon className="w-3.5 h-3.5" /> Emprise
+            </button>
+          )}
         </div>
 
         {/* Légende — 4 niveaux de confiance */}
@@ -1937,7 +1981,7 @@ export function Teledetection() {
                       <button onClick={() => setAnalysisLevel('custom')}
                         className={cn("flex-1 py-1.5 rounded text-[11px] font-bold border transition-all",
                           analysisLevel === 'custom' ? "bg-cyan-500/15 border-cyan-500 text-cyan-500" : "bg-transparent border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
-                        حدودي
+                        Emprise
                       </button>
                     </div>
                     {analysisLevel === 'forest' && (
@@ -1969,9 +2013,15 @@ export function Teledetection() {
                         roi={customRoi}
                         roiName={customRoiName}
                         drawing={drawing}
+                        showRoi={showCustomRoi}
+                        fill={customRoiFill}
                         onRoi={applyCustomRoi}
                         onClear={clearCustomRoi}
-                        onToggleDraw={() => setDrawing(d => !d)}
+                        onDrawRect={() => startDraw('rectangle')}
+                        onDrawPoly={() => startDraw('polygon')}
+                        onCancelDraw={cancelDraw}
+                        onToggleShow={() => setShowCustomRoi(v => !v)}
+                        onFill={setCustomRoiFill}
                       />
                     )}
                   </div>
