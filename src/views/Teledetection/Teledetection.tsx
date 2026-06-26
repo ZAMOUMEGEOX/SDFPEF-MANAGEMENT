@@ -265,7 +265,6 @@ function LayerPanes() {
   const map = useMap();
   useEffect(() => {
     const defs: [string, number][] = [
-      ['paneRefLabels', 205],   // Références (noms/frontières/routes) — juste au-dessus du fond satellite
       ['paneS2', 210],        // images Sentinel-2 (avant) — juste au-dessus du fond
       ['paneWaybackLeft', 215], // v16 — image historique (Wayback) clippee a GAUCHE du split
       ['paneIndices', 360],   // NDVI Δ / Hansen / SAR / Phéno — sous les alertes
@@ -1464,14 +1463,18 @@ export function Teledetection() {
 
           <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true} maxNativeZoom={18} maxZoom={19} />
 
-          {/* RÉFÉRENCES (overlay transparent) : noms de lieux, frontières, routes —
-              affichées par défaut au-dessus du satellite pour le repérage. */}
+          {/* RÉFÉRENCES (overlay transparent) : noms de lieux, frontières, routes.
+              IMPORTANT : on reste dans le tilePane par défaut (toujours présent dès
+              le 1er rendu) et on force un zIndex élevé -> garanti AU-DESSUS du
+              satellite, et SOUS les couches d'analyse (qui sont dans des panes
+              dédiés z>=210). Un pane custom posait une course au montage -> la
+              couche passait sous le satellite. */}
           {showRefLabels && (
             <>
-              <TileLayer url={ARCGIS_TRANSPORT} pane="paneRefLabels"
+              <TileLayer url={ARCGIS_TRANSPORT} zIndex={300}
                 keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true}
                 maxNativeZoom={18} maxZoom={19} attribution="Esri — Transportation" />
-              <TileLayer url={ARCGIS_REFERENCE} pane="paneRefLabels"
+              <TileLayer url={ARCGIS_REFERENCE} zIndex={301}
                 keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true}
                 maxNativeZoom={18} maxZoom={19} attribution="Esri — Boundaries &amp; Places" />
             </>
