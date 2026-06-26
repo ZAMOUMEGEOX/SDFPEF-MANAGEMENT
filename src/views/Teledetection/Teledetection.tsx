@@ -92,6 +92,16 @@ const nearestIdx = (list: { date: string }[], target: string): number => {
   return best;
 };
 
+// Idée 5 — libellé + couleur de la cause probable
+const CAUSE_INFO: Record<string, { label: string; emoji: string; color: string }> = {
+  incendie:        { label: 'Incendie / brûlis', emoji: '\uD83D\uDD25', color: '#dc2626' },
+  coupe:           { label: 'Coupe / défrichement', emoji: '\uD83E\uDE93', color: '#b45309' },
+  stress_hydrique: { label: 'Stress hydrique / dépérissement', emoji: '\uD83D\uDCA7', color: '#0891b2' },
+  degradation:     { label: 'Dégradation progressive', emoji: '\uD83C\uDF42', color: '#ca8a04' },
+  indetermine:     { label: 'Indéterminé', emoji: '\u2753', color: '#6b7280' },
+};
+const causeInfo = (c?: string) => CAUSE_INFO[c || 'indetermine'] || CAUSE_INFO.indetermine;
+
 // Options anti-flicker pour les tuiles GEE : garde l'ancien niveau visible
 // pendant le chargement du nouveau, et ne recharge qu'à l'arrêt du zoom/pan.
 // Tuiles GEE : garder quelques tuiles autour du cadre pour un pan fluide,
@@ -402,7 +412,8 @@ export function Teledetection() {
   // Couches affichables via boutons sur la carte (gestion de couches, pas de cases)
   const [showAnefLimit, setShowAnefLimit] = useState(true);
   // Triple confirmation : ON par défaut (essentiel à toute analyse rigoureuse)
-  const [tripleConf, setTripleConf] = useState(true);
+  // Mode d'analyse — 3 niveaux. 'standard' par défaut (vitesse/fiabilité équilibrées).
+  const [analysisMode, setAnalysisMode] = useState<'express' | 'standard' | 'rigorous'>('standard');
   // Filtre "Haute confiance" : rattaché à la couche Alertes (raster + polygones)
   // Filtre "Haute confiance" : désormais géré par la couche raster indépendante
   // (toggles.highOnly), plus par un filtrage de polygones. Voir highOnlyTileUrl.
@@ -936,9 +947,10 @@ export function Teledetection() {
     minScore: highOnly ? 3 : minConfidence,
     minArea: minSurface,
     // Triple confirmation -> rigueur max (optique + radar + persistance + Hansen + saisonnier)
-    useRadar:    tripleConf || toggles.sentinel1,
-    useTemporal: tripleConf,
-    useSeasonal: true,               // toujours: tue les alertes saisonnieres (jachere/secheresse)
+    // Preuves lourdes selon le mode : express=aucune | standard=+saisonnier | rigoureux=+radar+temporel
+    useRadar:    analysisMode === 'rigorous' || toggles.sentinel1,
+    useTemporal: analysisMode === 'rigorous',
+    useSeasonal: analysisMode !== 'express',   // baseline 3 ans : tue jachère/sécheresse
     useExternal: true, // Hansen + DIST-ALERT global peu couteux -> toujours actif
     useForest: true,   // contexte vegetal (NDVI ref u couvert arbore) -> domaine boise
     useMultiscene: true, minScenes,  // persistance multi-scenes = colonne vertebrale
@@ -1283,6 +1295,8 @@ export function Teledetection() {
       `<div style="font-size:11px;line-height:1.7;min-width:170px">
         <strong>#${p.id} — ${p.confidence}</strong> (classe ${Number(p.conf_score ?? 0).toFixed(0)}/4${p.score_w != null ? ` · pond. ${Number(p.score_w).toFixed(1)}` : ''})<br/>
         Aire: <strong>${Number(p.area_ha ?? 0).toFixed(3)} ha</strong> (${Math.round(p.area_m2 ?? 0)} m²)<br/>
+        ${(() => { const ci = causeInfo((p as any).cause); return `Cause probable: <strong style="color:${ci.color}">${ci.emoji} ${ci.label}</strong><br/>`; })()}
+        ${(p as any).parcelle_ref ? `Parcelle: <strong>${(p as any).parcelle_ref}</strong><br/>` : ''}
         ${p.preuves ? `Preuves: <strong>${p.preuves}</strong><br/>` : ''}
         NDVI Δ: ${Number(p.ndvi_change ?? 0).toFixed(3)}<br/>
         NBR Δ: ${Number(p.nbr_change ?? 0).toFixed(3)}<br/>
@@ -1913,20 +1927,29 @@ export function Teledetection() {
                   <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isAlgorithmExpanded ? 'rotate-180' : ''}`} />
                 </button>
                 <div className={`transition-all duration-300 origin-top overflow-hidden ${isAlgorithmExpanded ? 'max-h-[1400px] opacity-100' : 'max-h-0 opacity-0'}`}>
-                  {/* Barre Triple confirmation — compacte, activée par défaut */}
-                  <div className={cn("flex items-center justify-between gap-2 p-2.5 rounded-xl border-2 mt-1 mb-2 transition-all",
-                    tripleConf ? "border-green-500/70 bg-green-500/10" : "border-[var(--border-color)] bg-[var(--bg-main)]")}>
-                    <div className="flex items-center gap-2 min-w-0">
-                      <CheckCircle2 className={cn("w-4 h-4 shrink-0", tripleConf ? "text-green-500" : "text-[var(--text-muted)]")} />
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-bold text-[var(--text-main)] leading-tight">Triple confirmation</p>
-                        <p className="text-[8px] text-[var(--text-muted)] font-mono truncate">optique + radar + persistance + Hansen</p>
-                      </div>
+                  {/* Mode d'analyse — 3 niveaux (léger -> rigoureux). Défaut: Standard.
+                      C'est le levier clé de vitesse : on ne paie la rigueur maximale
+                      (radar + temporel + baseline) que quand on en a besoin. */}
+                  <div className="mt-1 mb-2">
+                    <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[var(--bg-main)] border-2 border-[var(--border-color)]">
+                      {([
+                        ['express',  'Aperçu',    'Rapide'],
+                        ['standard', 'Standard',  'Équilibré'],
+                        ['rigorous', 'Rigoureux', 'Max'],
+                      ] as const).map(([m, label, sub]) => (
+                        <button key={m} onClick={() => setAnalysisMode(m)}
+                          className={cn("flex flex-col items-center py-1.5 rounded-lg transition-all",
+                            analysisMode === m ? "bg-[var(--brand)] text-black shadow-sm" : "text-[var(--text-muted)] hover:bg-black/5 dark:hover:bg-white/5")}>
+                          <span className="text-[11px] font-bold leading-tight">{label}</span>
+                          <span className="text-[8px] font-mono opacity-80">{sub}</span>
+                        </button>
+                      ))}
                     </div>
-                    <button onClick={() => setTripleConf(v => !v)}
-                      className={cn("w-11 h-6 rounded-full relative transition-colors shrink-0", tripleConf ? "bg-green-500" : "bg-black/20 dark:bg-white/20")}>
-                      <div className={cn("absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform shadow-sm", tripleConf ? "translate-x-5" : "translate-x-0")} />
-                    </button>
+                    <p className="text-[8px] text-[var(--text-muted)] mt-1 px-1 leading-snug">
+                      {analysisMode === 'express'  && '⚡ Optique + persistance + Hansen. Idéal pour parcourir vite (peut inclure des variations saisonnières).'}
+                      {analysisMode === 'standard' && '✓ + ligne de base saisonnière (élimine jachère / sécheresse). Bon équilibre vitesse / fiabilité.'}
+                      {analysisMode === 'rigorous' && '🛡️ + radar Sentinel-1 + persistance temporelle. Rigueur maximale pour confirmer (plus lent).'}
+                    </p>
                   </div>
 
                   {/* Multi-scène (S2) — preuve indépendante, ne tourne que si activée */}
@@ -2338,6 +2361,16 @@ export function Teledetection() {
                       <div>
                         <p className="text-sm font-bold text-[var(--text-main)] capitalize">{annualData.trend}</p>
                         <p className="text-[10px] text-[var(--text-muted)] font-mono">pente NDVI : {annualData.ndvi_slope_per_year != null ? `${annualData.ndvi_slope_per_year > 0 ? '+' : ''}${annualData.ndvi_slope_per_year}/an` : '—'}</p>
+                        {annualData.phase && (
+                          <p className={cn("text-[10px] font-bold font-mono mt-0.5",
+                            annualData.phase === 'accélération' ? "text-red-500"
+                            : annualData.phase === 'récupération' ? "text-emerald-500" : "text-[var(--text-muted)]")}>
+                            {annualData.phase === 'accélération' ? '\u26A0\uFE0F dégradation qui s\u2019accélère'
+                              : annualData.phase === 'récupération' ? '\u2197\uFE0F en récupération' : '\u2192 rythme constant'}
+                            {annualData.recent_slope != null && annualData.early_slope != null
+                              ? ` (${annualData.early_slope} \u2192 ${annualData.recent_slope}/an)` : ''}
+                          </p>
+                        )}
                       </div>
                     </div>
                     <div className="text-right">

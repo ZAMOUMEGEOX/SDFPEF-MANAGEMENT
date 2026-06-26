@@ -68,6 +68,7 @@ export interface PolygonProps {
   area_m2: number; area_ha: number;
   conf_score: number; confidence: "low" | "medium" | "high" | "highest";
   ndvi_change: number; nbr_change: number; ndmi_change: number;
+  cause?: string; parcelle_ref?: string | null;   // Idée 5 / Idée 4
   hansen_year: number | null;
   lng?: number; lat?: number; n_scenes?: number | null;
   // v16 — detail des preuves par polygone (pour le terrain)
@@ -365,6 +366,8 @@ export interface AnnualStatsResult {
   success: boolean; zone: string; season_window: string;
   ref_year: number; years: number[]; series: AnnualStatRow[];
   ndvi_slope_per_year: number | null; trend: string;
+  ndvi_acceleration?: number | null; phase?: string | null;   // Idée 2
+  early_slope?: number | null; recent_slope?: number | null;
   total_high_conf_ha: number; note: string;
 }
 export async function fetchAnnualStats(
