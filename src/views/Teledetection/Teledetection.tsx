@@ -27,11 +27,13 @@ import {
   fetchSavedAlerts,
   fetchPhenology,
   fetchAnnualStats,
+  fetchLayerImage,
   type AnnualStatsResult,
   exportPolygonsGeoJson,
   exportPolygonsKml,
   exportPolygonsShp,
   exportPolygonsCsv,
+  exportAnnualCsv,
   type PolygonFeature,
   type AnalyzeParams,
   type AnomalyLabel,
@@ -77,6 +79,28 @@ const isJunkForest = (n: string): boolean => !n || n === 'NONE' || /^-+$/.test(n
 
 // Imagerie "actuelle" (côté droit du swipe) quand aucune image S2 "après" n'existe encore.
 const ARCGIS_IMAGERY = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+
+// Index de l'image la PLUS PROCHE d'une date cible (pour ne pas se perdre entre les dates).
+const nearestIdx = (list: { date: string }[], target: string): number => {
+  if (!list.length) return -1;
+  const t = new Date(target).getTime();
+  let best = 0, bestD = Infinity;
+  list.forEach((it, i) => {
+    const d = Math.abs(new Date(it.date).getTime() - t);
+    if (Number.isFinite(d) && d < bestD) { bestD = d; best = i; }
+  });
+  return best;
+};
+
+// Idée 5 — libellé + couleur de la cause probable
+const CAUSE_INFO: Record<string, { label: string; emoji: string; color: string }> = {
+  incendie:        { label: 'Incendie / brûlis', emoji: '\uD83D\uDD25', color: '#dc2626' },
+  coupe:           { label: 'Coupe / défrichement', emoji: '\uD83E\uDE93', color: '#b45309' },
+  stress_hydrique: { label: 'Stress hydrique / dépérissement', emoji: '\uD83D\uDCA7', color: '#0891b2' },
+  degradation:     { label: 'Dégradation progressive', emoji: '\uD83C\uDF42', color: '#ca8a04' },
+  indetermine:     { label: 'Indéterminé', emoji: '\u2753', color: '#6b7280' },
+};
+const causeInfo = (c?: string) => CAUSE_INFO[c || 'indetermine'] || CAUSE_INFO.indetermine;
 
 // Options anti-flicker pour les tuiles GEE : garde l'ancien niveau visible
 // pendant le chargement du nouveau, et ne recharge qu'à l'arrêt du zoom/pan.
@@ -388,7 +412,8 @@ export function Teledetection() {
   // Couches affichables via boutons sur la carte (gestion de couches, pas de cases)
   const [showAnefLimit, setShowAnefLimit] = useState(true);
   // Triple confirmation : ON par défaut (essentiel à toute analyse rigoureuse)
-  const [tripleConf, setTripleConf] = useState(true);
+  // Mode d'analyse — 3 niveaux. 'standard' par défaut (vitesse/fiabilité équilibrées).
+  const [analysisMode, setAnalysisMode] = useState<'express' | 'standard' | 'rigorous'>('standard');
   // Filtre "Haute confiance" : rattaché à la couche Alertes (raster + polygones)
   // Filtre "Haute confiance" : désormais géré par la couche raster indépendante
   // (toggles.highOnly), plus par un filtrage de polygones. Voir highOnlyTileUrl.
@@ -414,6 +439,9 @@ export function Teledetection() {
   const [s1TileUrl, setS1TileUrl]           = useState<string|null>(null);
   const [phenologyTileUrl, setPhenologyTileUrl] = useState<string|null>(null);
   const [multisceneTileUrl, setMultisceneTileUrl] = useState<string|null>(null);
+  // Couches FIGÉES (PNG statique) : { dist, high, ndvi, nbr, ms, hansen, distalert, s1, pheno }
+  const [frozen, setFrozen] = useState<Record<string, string | null>>({});
+  const [roiBounds, setRoiBounds] = useState<[[number, number], [number, number]] | null>(null);
   // Esri Wayback — imagerie historique datee pour le "avant" du swipe (legere)
   const [waybackUrl, setWaybackUrl]         = useState<string|null>(null);
   const [waybackDate, setWaybackDate]       = useState<string>('');
@@ -508,6 +536,8 @@ export function Teledetection() {
         if (r.s1TileUrl) setS1TileUrl(r.s1TileUrl);
         if (r.phenologyTileUrl) setPhenologyTileUrl(r.phenologyTileUrl);
         if (r.multisceneTileUrl) setMultisceneTileUrl(r.multisceneTileUrl);
+        if (r.frozen) setFrozen(r.frozen);
+        if (r.roiBounds) setRoiBounds(r.roiBounds);
         if (Array.isArray(r.polygons)) setPolygons(r.polygons);
         if (Array.isArray(r.topPolys)) setTopPolys(r.topPolys);
         if (r.realStats) setRealStats(r.realStats);
@@ -539,7 +569,7 @@ export function Teledetection() {
         highOnlyTileUrl, hansenTileUrl, distAlertTileUrl, s1TileUrl,
         phenologyTileUrl, multisceneTileUrl, polygons, topPolys, realStats,
         s1Data, fwData, phenologyData, beforeLabel, afterLabel,
-        selectedForest, selectedCanton, analysisLevel,
+        selectedForest, selectedCanton, analysisLevel, frozen, roiBounds,
       }));
     } catch { /* quota plein : silencieux (les gros résultats peuvent dépasser) */ }
   }, [
@@ -547,7 +577,7 @@ export function Teledetection() {
     highOnlyTileUrl, hansenTileUrl, distAlertTileUrl, s1TileUrl,
     phenologyTileUrl, multisceneTileUrl, polygons, topPolys, realStats,
     s1Data, fwData, phenologyData, beforeLabel, afterLabel,
-    selectedForest, selectedCanton, analysisLevel,
+    selectedForest, selectedCanton, analysisLevel, frozen, roiBounds,
   ]);
 
   useEffect(() => {
@@ -582,13 +612,12 @@ export function Teledetection() {
         items.sort((a, b) => a.date.localeCompare(b.date));
         waybackAllRef.current = items;
         setWaybackList(items);
-        let idx = items.findIndex(i => i.date > refEnd);
-        idx = idx === -1 ? items.length - 1 : Math.max(0, idx - 1);
-        setWaybackIdx(idx);
+        // défaut : image Wayback la plus proche de la date d'analyse (actEnd)
+        setWaybackIdx(nearestIdx(items, actEnd));
       } catch { /* repli S2 conservé, jamais de crash */ }
     })();
     return () => { cancelled = true; };
-  }, [refEnd]);
+  }, [refEnd, actEnd]);
 
   // Conversion lat/lng -> tuile XYZ (pour interroger les services Wayback par lieu)
   const lonLatToTile = (lng: number, lat: number, z: number) => {
@@ -644,9 +673,10 @@ export function Teledetection() {
       // déduplique par date de capture réelle (zéro mosaïque répétée)
       refined.sort((a, b) => a.capture.localeCompare(b.capture));
       const deduped = refined.filter(r => (seen.has(r.capture) ? false : (seen.add(r.capture), true)));
-      const list = deduped.map(r => ({ url: r.url, date: r.capture }));
-      setWaybackList(list);
-      setWaybackIdx(list.length - 1);
+      // honnêteté : on garde la VRAIE date de capture ; on marque les dates de publication.
+      const list = deduped.map(r => ({ url: r.url, date: r.capture, real: r.capture !== r.date }));
+      setWaybackList(list as any);
+      setWaybackIdx(nearestIdx(list, actEnd));   // défaut = plus proche de l'analyse
     } catch { /* repli : on garde la liste complète déjà affichée */ }
   };
 
@@ -725,7 +755,7 @@ export function Teledetection() {
         if (cancelled || !list?.length) { setS2List([]); setS2Idx(-1); return; }
         list.sort((a, b) => a.date.localeCompare(b.date));
         setS2List(list);
-        setS2Idx(list.length - 1);  // la plus récente par défaut
+        setS2Idx(nearestIdx(list, actEnd));  // défaut : scène la plus proche de la date d'analyse
       } catch { if (!cancelled) { setS2List([]); setS2Idx(-1); } }
       finally { if (!cancelled) setS2Loading(false); }
     })();
@@ -782,7 +812,7 @@ export function Teledetection() {
     setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null); setNbrTileUrl(null); setHighOnlyTileUrl(null);
     setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null); setMultisceneTileUrl(null);
     setPolygons([]); setTopPolys([]); setSelectedPolyId(null); setPolyError(null);
-    setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
+    setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null); setFrozen({}); setRoiBounds(null);
     setSelectedForest('');   // v15 — la liste des forêts dépend du centre
     setSelectedCanton('');   // v16 — reset canton
   }, [selectedZone]);
@@ -858,13 +888,55 @@ export function Teledetection() {
     } catch { /* noop */ }
   }, [analysisLevel, selectedForest, selectedCanton]);
 
-  const handleToggle = (key: keyof typeof toggles) => setToggles(prev => ({ ...prev, [key]: !prev[key] }));
+  // Calcule UNE couche figée à la demande quand on l'active après l'analyse.
+  const onLayerEnabled = (key: keyof typeof toggles) => {
+    const p = buildParams(false);
+    if (key === 'forestWatch' && !hansenTileUrl) {
+      fetchForestWatchLayer(p).then(fw => { if (fw) { setFwData(fw); setHansenTileUrl(fw.hansenTileUrl); setDistAlertTileUrl(fw.distAlertTileUrl); } else setLayerWarn('Couche Forest Watch indisponible.'); }).catch(() => setLayerWarn('Échec Forest Watch.'));
+      return;
+    }
+    if (key === 'sentinel1' && !s1TileUrl) {
+      fetchSentinel1Change(p).then(s1 => { if (s1?.tileUrl) { setS1Data(s1); setS1TileUrl(s1.tileUrl); } else setLayerWarn('Couche Sentinel-1 indisponible.'); }).catch(() => setLayerWarn('Échec Sentinel-1.'));
+      return;
+    }
+    if (key === 'phenology' && !phenologyTileUrl) {
+      fetchPhenology(selectedZone, actStart, actEnd, cloudMax).then(ph => { if (ph?.tileUrl) { setPhenologyData(ph); setPhenologyTileUrl(ph.tileUrl); } else setLayerWarn('Couche Phénologie indisponible.'); }).catch(() => setLayerWarn('Échec Phénologie.'));
+      return;
+    }
+    // Couches issues de l'analyse (dist/ndvi/nbr/high) : si absente et analyse faite -> on la calcule seule.
+    const setters: Record<string, (u: string) => void> = { dist: setDistTileUrl, ndvi: setNdviTileUrl, nbr: setNbrTileUrl, high: setHighOnlyTileUrl };
+    const have: Record<string, string | null> = { dist: distTileUrl, ndvi: ndviTileUrl, nbr: nbrTileUrl, high: highOnlyTileUrl };
+    const map: Record<string, string> = { disturbance: 'dist', ndviDelta: 'ndvi', nbrDelta: 'nbr', highOnly: 'high' };
+    const ln = map[key as string];
+    if (ln && !have[ln] && roiBounds) {
+      fetchLayerImage(p, ln).then(r => { if (r?.url) setters[ln](r.url); }).catch(() => {});
+    }
+  };
+  const handleToggle = (key: keyof typeof toggles) => {
+    const turningOn = !toggles[key];
+    setToggles(prev => ({ ...prev, [key]: !prev[key] }));
+    if (turningOn) onLayerEnabled(key);
+  };
+  // Multi-scène activée après coup -> génère sa couche figée à la demande.
+  useEffect(() => {
+    if (multiScene && !multisceneTileUrl && roiBounds) {
+      fetchLayerImage(buildParams(), 'ms').then(r => { if (r?.url) setMultisceneTileUrl(r.url); }).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [multiScene]);
 
   const buildParams = (highOnly?: boolean): AnalyzeParams => {
     // v15 — mode forêt : on envoie la géométrie de la forêt comme roi_geojson.
     // `zone` devient le nom de la forêt (pas une clé de centre) -> le backend utilise le roi.
     const forestMode = analysisLevel === 'forest' && !!selectedForest;
     const roiGeojson = forestMode ? buildForestRoi(selectedForest, selectedCanton || undefined) : undefined;
+    // On ne génère QUE les couches cochées (+ S2 avant/après pour le swipe).
+    const layers: string[] = ['before', 'after'];
+    if (toggles.disturbance) layers.push('dist');
+    if (toggles.ndviDelta)   layers.push('ndvi');
+    if (toggles.nbrDelta)    layers.push('nbr');
+    if (highOnly || toggles.highOnly) layers.push('high');
+    if (multiScene)          layers.push('ms');
     return {
     zone: forestMode ? (selectedCanton ? `${selectedForest}/${selectedCanton}` : selectedForest) : selectedZone,
     roiGeojson: roiGeojson ?? undefined,
@@ -875,12 +947,14 @@ export function Teledetection() {
     minScore: highOnly ? 3 : minConfidence,
     minArea: minSurface,
     // Triple confirmation -> rigueur max (optique + radar + persistance + Hansen + saisonnier)
-    useRadar:    tripleConf || toggles.sentinel1,
-    useTemporal: tripleConf,
-    useSeasonal: true,               // toujours: tue les alertes saisonnieres (jachere/secheresse)
+    // Preuves lourdes selon le mode : express=aucune | standard=+saisonnier | rigoureux=+radar+temporel
+    useRadar:    analysisMode === 'rigorous' || toggles.sentinel1,
+    useTemporal: analysisMode === 'rigorous',
+    useSeasonal: analysisMode !== 'express',   // baseline 3 ans : tue jachère/sécheresse
     useExternal: true, // Hansen + DIST-ALERT global peu couteux -> toujours actif
     useForest: true,   // contexte vegetal (NDVI ref u couvert arbore) -> domaine boise
     useMultiscene: true, minScenes,  // persistance multi-scenes = colonne vertebrale
+    layers,
     };
   };
 
@@ -890,7 +964,7 @@ export function Teledetection() {
     setBeforeTileUrl(null); setAfterTileUrl(null); setDistTileUrl(null); setNdviTileUrl(null); setNbrTileUrl(null); setHighOnlyTileUrl(null);
     setHansenTileUrl(null); setDistAlertTileUrl(null); setS1TileUrl(null); setPhenologyTileUrl(null); setMultisceneTileUrl(null);
     setPolygons([]); setTopPolys([]); setSelectedPolyId(null); setPolyError(null);
-    setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null);
+    setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null); setFrozen({}); setRoiBounds(null);
   };
 
   const resetMap = () => {
@@ -934,8 +1008,10 @@ export function Teledetection() {
         (u) => { setAnalyzeProgress(u.progress); setAnalyzeMessage(u.message); },
         (h) => { cancelRef.current = h.cancel; },
       );
-      setBeforeTileUrl(result.beforeTileUrl);   // ← FIX swipe : couche S2 AVANT
+      setBeforeTileUrl(result.beforeTileUrl);   // ← swipe : S2 AVANT (tuiles)
       setAfterTileUrl(result.afterTileUrl);
+      // Couches analytiques = TUILES LIVE (cache disque côté serveur -> rapides, ne disparaissent pas)
+      setRoiBounds(result.roiBounds ?? null);   // signal "analyse faite" (pour le calcul à la demande)
       setDistTileUrl(result.distTileUrl);
       setNdviTileUrl(result.ndviTileUrl);
       setNbrTileUrl(result.nbrTileUrl ?? null);
@@ -976,16 +1052,14 @@ export function Teledetection() {
       // Sentinel-1
       if (toggles.sentinel1) {
         fetchSentinel1Change(params).then(s1 => {
-          if (s1?.tileUrl) setS1TileUrl(s1.tileUrl);
-          if (s1) setS1Data(s1);
+          if (s1?.tileUrl) { setS1Data(s1); setS1TileUrl(s1.tileUrl); }
           else setLayerWarn('Couche Sentinel-1 indisponible.');
         }).catch(e => { console.warn('[S1]', e); setLayerWarn('Échec du chargement Sentinel-1.'); });
       }
       // Phénologie
       if (toggles.phenology) {
         fetchPhenology(selectedZone, actStart, actEnd, cloudMax).then(ph => {
-          if (ph?.tileUrl) setPhenologyTileUrl(ph.tileUrl);
-          if (ph) setPhenologyData(ph);
+          if (ph?.tileUrl) { setPhenologyData(ph); setPhenologyTileUrl(ph.tileUrl); }
           else setLayerWarn('Couche Phénologie indisponible.');
         }).catch(e => { console.warn('[Phenology]', e); setLayerWarn('Échec du chargement Phénologie.'); });
       }
@@ -1054,6 +1128,8 @@ export function Teledetection() {
 
   // v21 — détection d'incendies (dNBR + thermique FIRMS) sur la zone/période
   const runFireDetection = async () => {
+    // Déjà calculé -> simple bascule de visibilité (zéro recalcul GEE).
+    if (fireData) { setShowFire(true); setFireVisible(v => !v); return; }
     if (geeStatus === 'error') { setErrorMsg('GEE hors-ligne'); return; }
     setFireLoading(true); setErrorMsg(null);
     try {
@@ -1219,6 +1295,8 @@ export function Teledetection() {
       `<div style="font-size:11px;line-height:1.7;min-width:170px">
         <strong>#${p.id} — ${p.confidence}</strong> (classe ${Number(p.conf_score ?? 0).toFixed(0)}/4${p.score_w != null ? ` · pond. ${Number(p.score_w).toFixed(1)}` : ''})<br/>
         Aire: <strong>${Number(p.area_ha ?? 0).toFixed(3)} ha</strong> (${Math.round(p.area_m2 ?? 0)} m²)<br/>
+        ${(() => { const ci = causeInfo((p as any).cause); return `Cause probable: <strong style="color:${ci.color}">${ci.emoji} ${ci.label}</strong><br/>`; })()}
+        ${(p as any).parcelle_ref ? `Parcelle: <strong>${(p as any).parcelle_ref}</strong><br/>` : ''}
         ${p.preuves ? `Preuves: <strong>${p.preuves}</strong><br/>` : ''}
         NDVI Δ: ${Number(p.ndvi_change ?? 0).toFixed(3)}<br/>
         NBR Δ: ${Number(p.nbr_change ?? 0).toFixed(3)}<br/>
@@ -1327,6 +1405,11 @@ export function Teledetection() {
               visibilité via l'opacité (0 = masquée). Ainsi un toggle OFF/ON ne
               démonte pas la couche : les tuiles restent en cache → réaffichage
               instantané, sans recalcul ni rechargement. */}
+          {/* Couches analytiques = TUILES LIVE. Montées dès que leur URL existe ;
+              la bascule ne change que l'opacité (ré-affichage instantané, pas de
+              démontage). Le cache disque serveur (USE_TILE_PROXY) garde les tuiles
+              -> elles ne disparaissent plus au zoom. On ne génère que les couches
+              demandées (cases cochées) ou calculées à la demande après coup. */}
           {ndviTileUrl && (
             <TileLayer key={`ndvi-${ndviTileUrl}`} url={ndviTileUrl} pane="paneIndices"
               opacity={toggles.ndviDelta ? opacity.ndvi : 0} {...TILE_PERF} attribution="GEE NDVI Δ" />
@@ -1341,7 +1424,7 @@ export function Teledetection() {
           )}
           {distAlertTileUrl && (
             <TileLayer key={`distalert-${distAlertTileUrl}`} url={distAlertTileUrl} pane="paneIndices"
-              opacity={toggles.forestWatch ? opacity.hansen : 0} {...TILE_PERF} attribution="OPERA DIST-ALERT" />
+              opacity={toggles.forestWatch ? opacity.hansen : 0} {...TILE_PERF} attribution="GLAD DIST-ALERT" />
           )}
           {s1TileUrl && (
             <TileLayer key={`s1-${s1TileUrl}`} url={s1TileUrl} pane="paneIndices"
@@ -1352,15 +1435,12 @@ export function Teledetection() {
               opacity={toggles.phenology ? opacity.pheno : 0} {...TILE_PERF} attribution="GEE Phénologie" />
           )}
 
-          {/* ALERTES (raster de confiance, toutes classes) — pane alertes.
-              Reste montée tant que distTileUrl existe ; le toggle ne fait que
-              changer l'opacité (zéro recalcul, zéro latence au retour). */}
+          {/* ALERTES (raster de confiance) — couche PRIMAIRE */}
           {distTileUrl && (
             <TileLayer key={`dist-${distTileUrl}`} url={distTileUrl} pane="paneAlertes"
               opacity={toggles.disturbance ? opacity.alertes : 0} {...TILE_PERF} attribution="GEE Confiance" />
           )}
-          {/* HAUTE CONFIANCE — couche INDÉPENDANTE (score ≥ 3), palette magenta,
-              propre toggle + opacité. N'altère jamais la couche Alertes. */}
+          {/* HAUTE CONFIANCE (score ≥ 3) */}
           {highOnlyTileUrl && (
             <TileLayer key={`high-${highOnlyTileUrl}`} url={highOnlyTileUrl} pane="paneMultiscene"
               opacity={toggles.highOnly ? opacity.highOnly : 0} {...TILE_PERF} attribution="GEE Haute confiance (≥3)" />
@@ -1509,43 +1589,61 @@ export function Teledetection() {
               </div>
             </div>
 
-            {beforeSource === 'wayback' ? (
-              <>
-                <input type="range" min={0} max={Math.max(0, waybackList.length - 1)} step={1} value={Math.max(0, waybackIdx)}
-                  onChange={e => setWaybackIdx(Number(e.target.value))}
-                  className="w-full accent-[var(--brand)] cursor-pointer" />
-                <div className="flex justify-between items-center text-[8px] text-white/40 font-mono gap-1">
-                  <span>{waybackList[0]?.date}</span>
-                  <span className="text-amber-300/90 truncate">
-                    {captureInfo ? `📷 ${captureInfo}` : 'date de publication'}
-                  </span>
-                  <span>{waybackList[waybackList.length - 1]?.date}</span>
-                </div>
-              </>
-            ) : (
-              <>
-                {s2Loading ? (
-                  <div className="text-[10px] text-white/60 py-1 text-center animate-pulse">Chargement des scènes Sentinel-2…</div>
-                ) : s2List.length > 0 ? (
-                  <>
-                    <input type="range" min={0} max={s2List.length - 1} step={1} value={Math.max(0, s2Idx)}
-                      onChange={e => setS2Idx(Number(e.target.value))}
-                      className="w-full accent-[var(--brand)] cursor-pointer" />
-                    <div className="flex justify-between items-center text-[8px] text-white/40 font-mono">
-                      <span>{s2List[0]?.date}</span>
-                      <span className="text-emerald-300/90">
-                        {s2List[s2Idx]?.url === null
-                          ? <span className="animate-pulse">⏳ {s2List[s2Idx]?.date} · chargement…</span>
-                          : <>{s2List.length} scènes · ☁ {s2List[s2Idx]?.cloud ?? 0}%</>}
-                      </span>
-                      <span>{s2List[s2List.length - 1]?.date}</span>
+            {/* Frise temporelle type Google Earth Pro : ◀ ▶ + repères de scènes,
+                pour naviguer sans se perdre entre les dates. Défaut = plus proche de l'analyse. */}
+            {(() => {
+              const isS2 = beforeSource === 's2';
+              if (isS2 && s2Loading) {
+                return <div className="text-[10px] text-white/60 py-1 text-center animate-pulse">Chargement des scènes Sentinel-2 (&lt; 20% nuages)…</div>;
+              }
+              const list: any[] = isS2 ? s2List : waybackList;
+              const idx = isS2 ? s2Idx : waybackIdx;
+              const setIdx = isS2 ? setS2Idx : setWaybackIdx;
+              const n = list.length;
+              if (!n) {
+                return isS2
+                  ? <div className="text-[10px] text-white/50 py-1 text-center">Aucune scène S2 (&lt; 20% nuages) sur la période.</div>
+                  : <div className="text-[10px] text-white/50 py-1 text-center">Chargement de l'imagerie historique…</div>;
+              }
+              const i0 = Math.max(0, Math.min(n - 1, idx));
+              const cur: any = list[i0];
+              const go = (d: number) => setIdx(Math.max(0, Math.min(n - 1, i0 + d)));
+              return (
+                <>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => go(-1)} disabled={i0 <= 0}
+                      className="w-7 h-7 shrink-0 rounded-md bg-white/10 hover:bg-[var(--brand)] hover:text-black disabled:opacity-30 text-white flex items-center justify-center font-bold text-lg leading-none">‹</button>
+                    <div className="relative flex-1 h-7 flex items-center">
+                      <div className="absolute inset-x-0 h-[3px] bg-white/15 rounded-full" />
+                      <div className="absolute h-[3px] bg-[var(--brand)] rounded-full"
+                           style={{ left: 0, width: `${n <= 1 ? 100 : (i0 / (n - 1)) * 100}%` }} />
+                      {list.map((s: any, i: number) => (
+                        <button key={i} onClick={() => setIdx(i)} title={s.date}
+                          className="absolute -translate-x-1/2 inset-y-0 flex items-center group"
+                          style={{ left: `${n <= 1 ? 50 : (i / (n - 1)) * 100}%` }}>
+                          <span className={`block w-[2px] rounded-full transition-all ${i === i0 ? 'bg-[var(--brand)] h-4' : (s.real === false ? 'bg-amber-400/70 h-3' : 'bg-white/40 h-3')} group-hover:bg-white group-hover:h-4`} />
+                        </button>
+                      ))}
+                      <input type="range" min={0} max={n - 1} step={1} value={i0}
+                        onChange={e => setIdx(Number(e.target.value))}
+                        className="absolute inset-0 w-full opacity-0 cursor-pointer" />
                     </div>
-                  </>
-                ) : (
-                  <div className="text-[10px] text-white/50 py-1 text-center">Aucune scène S2 nette sur la période.</div>
-                )}
-              </>
-            )}
+                    <button onClick={() => go(1)} disabled={i0 >= n - 1}
+                      className="w-7 h-7 shrink-0 rounded-md bg-white/10 hover:bg-[var(--brand)] hover:text-black disabled:opacity-30 text-white flex items-center justify-center font-bold text-lg leading-none">›</button>
+                  </div>
+                  <div className="flex justify-between items-center text-[8px] text-white/40 font-mono mt-1 gap-1">
+                    <span>{list[0]?.date}</span>
+                    <span className="text-[var(--brand)] font-bold truncate">
+                      {i0 + 1}/{n}
+                      {isS2
+                        ? (cur?.url === null ? ' · ⏳ chargement…' : ` · ☁ ${cur?.cloud ?? 0}%`)
+                        : (cur?.real === false ? ' · 🕒 publié' : (captureInfo ? ` · 📷 ${captureInfo}` : ' · 📷 capture'))}
+                    </span>
+                    <span>{list[n - 1]?.date}</span>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         )}
 
@@ -1829,20 +1927,29 @@ export function Teledetection() {
                   <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isAlgorithmExpanded ? 'rotate-180' : ''}`} />
                 </button>
                 <div className={`transition-all duration-300 origin-top overflow-hidden ${isAlgorithmExpanded ? 'max-h-[1400px] opacity-100' : 'max-h-0 opacity-0'}`}>
-                  {/* Barre Triple confirmation — compacte, activée par défaut */}
-                  <div className={cn("flex items-center justify-between gap-2 p-2.5 rounded-xl border-2 mt-1 mb-2 transition-all",
-                    tripleConf ? "border-green-500/70 bg-green-500/10" : "border-[var(--border-color)] bg-[var(--bg-main)]")}>
-                    <div className="flex items-center gap-2 min-w-0">
-                      <CheckCircle2 className={cn("w-4 h-4 shrink-0", tripleConf ? "text-green-500" : "text-[var(--text-muted)]")} />
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-bold text-[var(--text-main)] leading-tight">Triple confirmation</p>
-                        <p className="text-[8px] text-[var(--text-muted)] font-mono truncate">optique + radar + persistance + Hansen</p>
-                      </div>
+                  {/* Mode d'analyse — 3 niveaux (léger -> rigoureux). Défaut: Standard.
+                      C'est le levier clé de vitesse : on ne paie la rigueur maximale
+                      (radar + temporel + baseline) que quand on en a besoin. */}
+                  <div className="mt-1 mb-2">
+                    <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[var(--bg-main)] border-2 border-[var(--border-color)]">
+                      {([
+                        ['express',  'Aperçu',    'Rapide'],
+                        ['standard', 'Standard',  'Équilibré'],
+                        ['rigorous', 'Rigoureux', 'Max'],
+                      ] as const).map(([m, label, sub]) => (
+                        <button key={m} onClick={() => setAnalysisMode(m)}
+                          className={cn("flex flex-col items-center py-1.5 rounded-lg transition-all",
+                            analysisMode === m ? "bg-[var(--brand)] text-black shadow-sm" : "text-[var(--text-muted)] hover:bg-black/5 dark:hover:bg-white/5")}>
+                          <span className="text-[11px] font-bold leading-tight">{label}</span>
+                          <span className="text-[8px] font-mono opacity-80">{sub}</span>
+                        </button>
+                      ))}
                     </div>
-                    <button onClick={() => setTripleConf(v => !v)}
-                      className={cn("w-11 h-6 rounded-full relative transition-colors shrink-0", tripleConf ? "bg-green-500" : "bg-black/20 dark:bg-white/20")}>
-                      <div className={cn("absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform shadow-sm", tripleConf ? "translate-x-5" : "translate-x-0")} />
-                    </button>
+                    <p className="text-[8px] text-[var(--text-muted)] mt-1 px-1 leading-snug">
+                      {analysisMode === 'express'  && '⚡ Optique + persistance + Hansen. Idéal pour parcourir vite (peut inclure des variations saisonnières).'}
+                      {analysisMode === 'standard' && '✓ + ligne de base saisonnière (élimine jachère / sécheresse). Bon équilibre vitesse / fiabilité.'}
+                      {analysisMode === 'rigorous' && '🛡️ + radar Sentinel-1 + persistance temporelle. Rigueur maximale pour confirmer (plus lent).'}
+                    </p>
                   </div>
 
                   {/* Multi-scène (S2) — preuve indépendante, ne tourne que si activée */}
@@ -1887,6 +1994,7 @@ export function Teledetection() {
                     <ToggleCard label="Forest Watch" icon={Globe}                 checked={toggles.forestWatch} onChange={() => handleToggle('forestWatch')} activeColor="#d946ef" />
                     <ToggleCard label="Sentinel-1"   icon={Waves}                 checked={toggles.sentinel1}   onChange={() => handleToggle('sentinel1')}   activeColor="#8b5cf6" />
                     <ToggleCard label="Phénologie"   icon={TrendingUp}            checked={toggles.phenology}   onChange={() => handleToggle('phenology')}   activeColor="#f59e0b" />
+                    <ToggleCard label="Incendies (FIRMS)" icon={Flame}            checked={showFire && fireVisible} onChange={() => { if (!fireData) runFireDetection(); else setFireVisible(v => !v); }} activeColor="#ea580c" />
                   </div>
 
                   {/* Opacités fines des couches actives (pas de cartes séparées) */}
@@ -2253,6 +2361,16 @@ export function Teledetection() {
                       <div>
                         <p className="text-sm font-bold text-[var(--text-main)] capitalize">{annualData.trend}</p>
                         <p className="text-[10px] text-[var(--text-muted)] font-mono">pente NDVI : {annualData.ndvi_slope_per_year != null ? `${annualData.ndvi_slope_per_year > 0 ? '+' : ''}${annualData.ndvi_slope_per_year}/an` : '—'}</p>
+                        {annualData.phase && (
+                          <p className={cn("text-[10px] font-bold font-mono mt-0.5",
+                            annualData.phase === 'accélération' ? "text-red-500"
+                            : annualData.phase === 'récupération' ? "text-emerald-500" : "text-[var(--text-muted)]")}>
+                            {annualData.phase === 'accélération' ? '\u26A0\uFE0F dégradation qui s\u2019accélère'
+                              : annualData.phase === 'récupération' ? '\u2197\uFE0F en récupération' : '\u2192 rythme constant'}
+                            {annualData.recent_slope != null && annualData.early_slope != null
+                              ? ` (${annualData.early_slope} \u2192 ${annualData.recent_slope}/an)` : ''}
+                          </p>
+                        )}
                       </div>
                     </div>
                     <div className="text-right">
@@ -2296,9 +2414,15 @@ export function Teledetection() {
                     </table>
                   </div>
 
-                  <p className="text-[10px] text-[var(--text-muted)] leading-relaxed bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)]">
-                    🛡️ {annualData.note}
-                  </p>
+                  <div className="flex items-stretch gap-2">
+                    <button onClick={() => annualData && exportAnnualCsv(annualData)}
+                      className="flex items-center gap-1.5 px-3 rounded-lg text-xs font-bold bg-[var(--brand)] text-[var(--bg-main)] hover:brightness-110 transition-all shrink-0">
+                      <Download className="w-3.5 h-3.5" /> Rapport CSV
+                    </button>
+                    <p className="flex-1 text-[10px] text-[var(--text-muted)] leading-relaxed bg-[var(--bg-main)] p-2.5 rounded-lg border border-[var(--border-color)]">
+                      🛡️ {annualData.note}
+                    </p>
+                  </div>
                 </>
               )}
             </div>

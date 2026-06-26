@@ -55,6 +55,7 @@ export interface AnalyzeParams {
   useMultiscene?: boolean; minScenes?: number;
   // v15 — analyse foret-par-foret : geometrie GeoJSON de la foret selectionnee
   roiGeojson?: unknown;
+  layers?: string[];   // couches à générer (cases cochées) : dist/ndvi/nbr/high/ms
 }
 
 export interface AnalyzeStats {
@@ -67,6 +68,7 @@ export interface PolygonProps {
   area_m2: number; area_ha: number;
   conf_score: number; confidence: "low" | "medium" | "high" | "highest";
   ndvi_change: number; nbr_change: number; ndmi_change: number;
+  cause?: string; parcelle_ref?: string | null;   // Idée 5 / Idée 4
   hansen_year: number | null;
   lng?: number; lat?: number; n_scenes?: number | null;
   // v16 — detail des preuves par polygone (pour le terrain)
@@ -92,12 +94,16 @@ export interface AnalyzeResult {
   period1: string; period2: string;
   polygons: PolygonFC; count: number; stats: AnalyzeStats;
   algorithm: string; evidence_used?: string[]; poly_error?: string | null; error?: string;
+  // Couches figées (PNG statique) + emprise pour ImageOverlay
+  frozen?: Record<string, string | null>;
+  roiBounds?: [[number, number], [number, number]] | null;
 }
 
 export interface Sentinel1Result {
   success: boolean; tileUrl: string | null; zone: string;
   loss_ha: number; period1: string; period2: string;
   dVV_stats: { mean: number; stdDev: number; min: number; max: number };
+  frozen?: string | null; roiBounds?: [[number, number], [number, number]] | null;
 }
 
 export type AnomalyLabel =
@@ -109,11 +115,14 @@ export interface PhenologyResult {
   baseline_ndvi: number | null; current_ndvi: number;
   ndvi_anomaly: number | null; anomaly_label: AnomalyLabel;
   tileUrl: string | null; zone: string;
+  frozen?: string | null; roiBounds?: [[number, number], [number, number]] | null;
 }
 
 export interface ForestWatchResult {
   success: boolean; zone: string;
   hansenTileUrl: string | null; distAlertTileUrl: string | null;
+  hansenFrozen?: string | null; distAlertFrozen?: string | null;
+  roiBounds?: [[number, number], [number, number]] | null;
   hansen_ha: number; note: string;
 }
 
@@ -136,6 +145,7 @@ function buildBody(p: AnalyzeParams): Record<string, unknown> {
   // v15 — si une foret est selectionnee, on envoie sa geometrie : le backend (get_roi)
   // l'utilise des lors que `zone` n'est pas une cle de centre connue.
   if (p.roiGeojson) body.roi_geojson = p.roiGeojson;
+  if (p.layers && p.layers.length) body.layers = p.layers;
   return body;
 }
 
@@ -258,12 +268,12 @@ export async function fetchSentinel1Change(p: AnalyzeParams): Promise<Sentinel1R
 
 // v18 — Scenes Sentinel-2 historiques avec dates de capture REELLES (frise "avant")
 export interface S2Scene { date: string; url: string | null; cloud: number; id?: string }
-export async function fetchS2Scenes(p: AnalyzeParams, start: string, end: string): Promise<S2Scene[]> {
+export async function fetchS2Scenes(p: AnalyzeParams, start: string, end: string, cloudMax = 20): Promise<S2Scene[]> {
   try {
-    // limit élevé : on veut le maximum de dates de capture réelles sur toute la période.
-    const body = { ...buildBody(p), start, end, cloud: 45, limit: 300 };
+    // nuages <= 20 % (frise nette) + limit élevé pour un max de dates de capture réelles.
+    const body = { ...buildBody(p), start, end, cloud: cloudMax, limit: 300 };
     const r = await geePost<{ scenes: S2Scene[] }>("/gee/s2-scenes", body);
-    return r.scenes ?? [];
+    return (r.scenes ?? []).slice().sort((x, y) => x.date.localeCompare(y.date)); // ascendant
   } catch (e) { console.warn("[S2-scenes]", e); return []; }
 }
 
@@ -356,6 +366,8 @@ export interface AnnualStatsResult {
   success: boolean; zone: string; season_window: string;
   ref_year: number; years: number[]; series: AnnualStatRow[];
   ndvi_slope_per_year: number | null; trend: string;
+  ndvi_acceleration?: number | null; phase?: string | null;   // Idée 2
+  early_slope?: number | null; recent_slope?: number | null;
   total_high_conf_ha: number; note: string;
 }
 export async function fetchAnnualStats(
@@ -425,3 +437,26 @@ export function exportPolygonsCsv(features: PolygonFeature[], zone: string): voi
 // Disponible côté API ; à brancher sur un bouton si besoin d'un raster pour SIG.
 export const exportGeoTiff = (p: AnalyzeParams) =>
   geePost<{ message: string }>("/gee/export-geotiff", buildBody(p));
+
+
+// Rapport annuel (CSV) — pour les rapports de la DRANEF (courbe de dégradation)
+export function exportAnnualCsv(d: AnnualStatsResult): void {
+  const BOM = "\uFEFF";
+  const head = "Annee,Periode,NDVI_moyen,Haute_confiance_ha,Detecte_total_ha\n";
+  const rows = d.series.map(r =>
+    [r.year, r.period, r.ndvi_mean ?? "", r.high_conf_ha ?? "", r.degraded_ha ?? ""].join(","));
+  const foot = `\nPente_NDVI_par_an,${d.ndvi_slope_per_year ?? ""}\nTendance,${d.trend}\nCumul_haute_conf_ha,${d.total_high_conf_ha}\n`;
+  const blob = new Blob([BOM + head + rows.join("\n") + foot], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), { href: url, download: `rapport_annuel_${d.zone}.csv` });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+
+// Génère UNE couche analytique figée (PNG) à la demande (couche cochée après l'analyse)
+export interface LayerImageResult { layer: string; url: string | null; roiBounds?: [[number, number], [number, number]] | null; }
+export async function fetchLayerImage(p: AnalyzeParams, layer: string): Promise<LayerImageResult | null> {
+  try { return await geePost<LayerImageResult>("/gee/layer-image", { ...buildBody(p), layer }); }
+  catch (e) { console.warn("[layer-image]", e); return null; }
+}
