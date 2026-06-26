@@ -13,6 +13,7 @@ import { EditControl } from 'react-leaflet-draw';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
+import RoiImport, { type RoiFC } from './RoiImport';
 import {
   checkGeeHealth,
   runAnalyzeAsync,
@@ -396,7 +397,11 @@ export function Teledetection() {
   const [isTopExpanded, setIsTopExpanded]                   = useState(false);
   const [selectedZone, setSelectedZone]   = useState('mdiq');
   // v15 — niveau d'analyse : 'cpf' (centre entier, comportement actuel) ou 'forest' (forêt seule)
-  const [analysisLevel, setAnalysisLevel] = useState<'cpf'|'forest'>('cpf');
+  const [analysisLevel, setAnalysisLevel] = useState<'cpf'|'forest'|'custom'>('cpf');
+  // Limites personnalisées de l'utilisateur (fichier importé OU dessin sur carte).
+  const [customRoi, setCustomRoi]   = useState<RoiFC | null>(null);
+  const [customRoiName, setCustomRoiName] = useState<string>('');
+  const [drawing, setDrawing]       = useState<boolean>(false);
   const [selectedForest, setSelectedForest] = useState<string>('');
   // v16 — canton (section forestiere) optionnel pour affiner encore l'analyse
   const [selectedCanton, setSelectedCanton] = useState<string>('');
@@ -412,8 +417,14 @@ export function Teledetection() {
   // Couches affichables via boutons sur la carte (gestion de couches, pas de cases)
   const [showAnefLimit, setShowAnefLimit] = useState(true);
   // Triple confirmation : ON par défaut (essentiel à toute analyse rigoureuse)
-  // Mode d'analyse — 3 niveaux. 'standard' par défaut (vitesse/fiabilité équilibrées).
-  const [analysisMode, setAnalysisMode] = useState<'express' | 'standard' | 'rigorous'>('standard');
+  // Mode d'analyse — 2 niveaux à impact RÉEL sur le graphe GEE (donc sur la vitesse) :
+  //   'standard'  = optique + persistance multi-scène + Hansen/DIST + baseline saisonnière
+  //   'rigoureux' = standard + radar Sentinel-1 (VV+VH) + persistance temporelle (mi-période)
+  // 'standard' par défaut (bon équilibre vitesse/fiabilité).
+  const [analysisMode, setAnalysisMode] = useState<'standard' | 'rigorous'>('standard');
+  // Triple confirmation : n'affiche que les détections corroborées par ≥ 3 preuves
+  // indépendantes (classe ≥ 3). Bouton dédié, ON par défaut (rigueur terrain).
+  const [tripleConfirm, setTripleConfirm] = useState<boolean>(true);
   // Filtre "Haute confiance" : rattaché à la couche Alertes (raster + polygones)
   // Filtre "Haute confiance" : désormais géré par la couche raster indépendante
   // (toggles.highOnly), plus par un filtrage de polygones. Voir highOnlyTileUrl.
@@ -548,7 +559,7 @@ export function Teledetection() {
         if (r.afterLabel) setAfterLabel(r.afterLabel);
         if (r.selectedForest) setSelectedForest(r.selectedForest);
         if (r.selectedCanton) setSelectedCanton(r.selectedCanton);
-        if (r.analysisLevel) setAnalysisLevel(r.analysisLevel);
+        if (r.analysisLevel) setAnalysisLevel(r.analysisLevel === 'custom' ? 'cpf' : r.analysisLevel);
       }
     } catch { /* snapshot corrompu : on ignore */ }
     resultsLoaded.current = true;
@@ -888,6 +899,33 @@ export function Teledetection() {
     } catch { /* noop */ }
   }, [analysisLevel, selectedForest, selectedCanton]);
 
+  // ── Limites personnalisées (fichier importé OU dessin) ──────────────────────
+  // Applique une ROI importée : on bascule en mode 'custom', on recadre la carte
+  // et on coupe le mode dessin.
+  const applyCustomRoi = (fc: RoiFC, name: string) => {
+    setCustomRoi(fc); setCustomRoiName(name);
+    setAnalysisLevel('custom'); setDrawing(false);
+    try {
+      const b = L.geoJSON(fc as any).getBounds();
+      if (b.isValid()) mapRef.current?.fitBounds(b, { padding: [25, 25], maxZoom: 16 });
+    } catch { /* géométrie illisible : on n'empêche pas l'analyse */ }
+  };
+  const clearCustomRoi = () => {
+    setCustomRoi(null); setCustomRoiName(''); setDrawing(false);
+    // on retombe sur le centre entier si on était en mode custom
+    setAnalysisLevel(l => (l === 'custom' ? 'cpf' : l));
+  };
+  // Capture des formes dessinées (rectangle / polygone) via react-leaflet-draw.
+  const onDrawCreated = (e: any) => {
+    try {
+      const gj = e?.layer?.toGeoJSON?.();
+      if (!gj) return;
+      const fc: RoiFC = { type: 'FeatureCollection', features: [gj] };
+      applyCustomRoi(fc, 'رسم يدوي');
+    } catch { /* noop */ }
+  };
+  const onDrawDeleted = () => { /* l'utilisateur efface : on garde la dernière ROI valide */ };
+
   // Calcule UNE couche figée à la demande quand on l'active après l'analyse.
   const onLayerEnabled = (key: keyof typeof toggles) => {
     const p = buildParams(false);
@@ -926,31 +964,43 @@ export function Teledetection() {
   }, [multiScene]);
 
   const buildParams = (highOnly?: boolean): AnalyzeParams => {
-    // v15 — mode forêt : on envoie la géométrie de la forêt comme roi_geojson.
-    // `zone` devient le nom de la forêt (pas une clé de centre) -> le backend utilise le roi.
+    // Niveau d'analyse -> géométrie envoyée comme roi_geojson :
+    //   'forest' : forêt/canton dérivé de forest_limits
+    //   'custom' : limites importées/dessinées par l'utilisateur
+    //   'cpf'    : centre entier (pas de roi_geojson, le backend prend l'asset zone)
     const forestMode = analysisLevel === 'forest' && !!selectedForest;
-    const roiGeojson = forestMode ? buildForestRoi(selectedForest, selectedCanton || undefined) : undefined;
+    const customMode = analysisLevel === 'custom' && !!customRoi && (customRoi.features?.length ?? 0) > 0;
+    const roiGeojson = customMode
+      ? (customRoi as any)
+      : (forestMode ? buildForestRoi(selectedForest, selectedCanton || undefined) : undefined);
     // On ne génère QUE les couches cochées (+ S2 avant/après pour le swipe).
     const layers: string[] = ['before', 'after'];
     if (toggles.disturbance) layers.push('dist');
     if (toggles.ndviDelta)   layers.push('ndvi');
     if (toggles.nbrDelta)    layers.push('nbr');
-    if (highOnly || toggles.highOnly) layers.push('high');
+    if (highOnly || toggles.highOnly || tripleConfirm) layers.push('high');
     if (multiScene)          layers.push('ms');
+    // Nom de zone affiché/archivé selon le niveau.
+    const zoneName = customMode
+      ? (customRoiName ? `limite_${customRoiName}` : 'limite_personnalisee')
+      : (forestMode ? (selectedCanton ? `${selectedForest}/${selectedCanton}` : selectedForest) : selectedZone);
     return {
-    zone: forestMode ? (selectedCanton ? `${selectedForest}/${selectedCanton}` : selectedForest) : selectedZone,
+    zone: zoneName,
     roiGeojson: roiGeojson ?? undefined,
     date1Start: refStart, date1End: refEnd,
     date2Start: actStart, date2End: actEnd,
     cloud: cloudMax, sensitivity: ndviThreshold, nbr: nbrThreshold, ndmi: ndmiThreshold,
-    // Haute confiance -> on ne garde que score >= 3 (exports HC). Sinon minConfidence.
-    minScore: highOnly ? 3 : minConfidence,
+    // Triple confirmation -> on ne garde que les détections de classe >= 3
+    // (au moins 3 preuves indépendantes). Sinon : seuil utilisateur. "Haute conf."
+    // (highOnly) reste prioritaire et impose >= 3 également.
+    minScore: (highOnly || tripleConfirm) ? 3 : minConfidence,
     minArea: minSurface,
-    // Triple confirmation -> rigueur max (optique + radar + persistance + Hansen + saisonnier)
-    // Preuves lourdes selon le mode : express=aucune | standard=+saisonnier | rigoureux=+radar+temporel
+    // Preuves lourdes selon le mode : standard=+saisonnier | rigoureux=+radar+temporel.
+    // La baseline saisonnière (3 ans) est TOUJOURS active : c'est le principal
+    // tueur de faux positifs (jachère / sécheresse / labour).
     useRadar:    analysisMode === 'rigorous' || toggles.sentinel1,
     useTemporal: analysisMode === 'rigorous',
-    useSeasonal: analysisMode !== 'express',   // baseline 3 ans : tue jachère/sécheresse
+    useSeasonal: true,
     useExternal: true, // Hansen + DIST-ALERT global peu couteux -> toujours actif
     useForest: true,   // contexte vegetal (NDVI ref u couvert arbore) -> domaine boise
     useMultiscene: true, minScenes,  // persistance multi-scenes = colonne vertebrale
@@ -1330,7 +1380,7 @@ export function Teledetection() {
       <div className="relative h-[35vh] md:h-full md:flex-1 bg-[#121214] border-b md:border-b-0 md:border-r border-[var(--border-color)] shrink-0 z-10 md:shrink overflow-hidden">
 
         <MapContainer center={[35.5785, -5.3684]} zoom={11} maxZoom={19}
-          zoomControl={false} zoomAnimation={true}
+          zoomControl={false} zoomAnimation={true} fadeAnimation={false}
           style={{ height: '100%', width: '100%' }}>
 
           <MapRefSetter onReady={(m) => { mapRef.current = m; setMapReady(true); }} />
@@ -1349,7 +1399,15 @@ export function Teledetection() {
           <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true} maxNativeZoom={18} maxZoom={19} />
 
           <FeatureGroup>
-            <EditControl position="topleft" draw={{ rectangle: true, polygon: true, circle: false, circlemarker: false, marker: false, polyline: false }} />
+            {drawing && (
+              <EditControl
+                position="topleft"
+                onCreated={onDrawCreated}
+                onDeleted={onDrawDeleted}
+                draw={{ rectangle: true, polygon: true, circle: false, circlemarker: false, marker: false, polyline: false }}
+                edit={{ edit: false, remove: true }}
+              />
+            )}
           </FeatureGroup>
 
           {/* AVANT (gauche) — source historique (Wayback OU Sentinel-2), CLIPPE a gauche du split.
@@ -1458,6 +1516,11 @@ export function Teledetection() {
           {zoneBoundary && (
             <GeoJSON key={`zone-${selectedZone}`} pane="paneLimits" data={zoneBoundary}
               style={() => ({ color: '#fbbf24', weight: 2.5, fill: false })} />
+          )}
+          {/* Limites personnalisées de l'utilisateur (import/dessin) */}
+          {analysisLevel === 'custom' && customRoi && (
+            <GeoJSON key={`custom-${customRoi.features.length}-${customRoiName}`} pane="paneLimits" data={customRoi as any}
+              style={() => ({ color: '#22d3ee', weight: 3, dashArray: '6 4', fillColor: '#22d3ee', fillOpacity: 0.06 })} />
           )}
 
           {/* POLYGONES de perturbation — pane polygons, AU-DESSUS des alertes (cliquables) */}
@@ -1858,7 +1921,7 @@ export function Teledetection() {
                     ))}
                   </div>
 
-                  {/* v15 — Niveau d'analyse : centre entier (CPF) ou forêt seule */}
+                  {/* v15 — Niveau d'analyse : centre entier (CPF), forêt seule, ou limites perso */}
                   <div className="mt-3 pt-3 border-t border-stone-200/40 dark:border-stone-800/40">
                     <div className="flex gap-1 mb-2">
                       <button onClick={() => setAnalysisLevel('cpf')}
@@ -1870,6 +1933,11 @@ export function Teledetection() {
                         className={cn("flex-1 py-1.5 rounded text-[11px] font-bold border transition-all",
                           analysisLevel === 'forest' ? "bg-[var(--brand-light)] border-[var(--brand)] text-[var(--brand)]" : "bg-transparent border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
                         Forêt
+                      </button>
+                      <button onClick={() => setAnalysisLevel('custom')}
+                        className={cn("flex-1 py-1.5 rounded text-[11px] font-bold border transition-all",
+                          analysisLevel === 'custom' ? "bg-cyan-500/15 border-cyan-500 text-cyan-500" : "bg-transparent border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
+                        حدودي
                       </button>
                     </div>
                     {analysisLevel === 'forest' && (
@@ -1895,6 +1963,16 @@ export function Teledetection() {
                           </p>
                         )}
                       </>
+                    )}
+                    {analysisLevel === 'custom' && (
+                      <RoiImport
+                        roi={customRoi}
+                        roiName={customRoiName}
+                        drawing={drawing}
+                        onRoi={applyCustomRoi}
+                        onClear={clearCustomRoi}
+                        onToggleDraw={() => setDrawing(d => !d)}
+                      />
                     )}
                   </div>
                 </div>
@@ -1927,15 +2005,15 @@ export function Teledetection() {
                   <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isAlgorithmExpanded ? 'rotate-180' : ''}`} />
                 </button>
                 <div className={`transition-all duration-300 origin-top overflow-hidden ${isAlgorithmExpanded ? 'max-h-[1400px] opacity-100' : 'max-h-0 opacity-0'}`}>
-                  {/* Mode d'analyse — 3 niveaux (léger -> rigoureux). Défaut: Standard.
-                      C'est le levier clé de vitesse : on ne paie la rigueur maximale
-                      (radar + temporel + baseline) que quand on en a besoin. */}
+                  {/* Mode d'analyse — 2 niveaux à IMPACT RÉEL sur la vitesse.
+                      'Rigoureux' ajoute le radar Sentinel-1 + la persistance temporelle
+                      (mi-période) = davantage de calcul GEE -> sensiblement plus lent,
+                      mais confirme les coupes même sous couvert nuageux. */}
                   <div className="mt-1 mb-2">
-                    <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[var(--bg-main)] border-2 border-[var(--border-color)]">
+                    <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[var(--bg-main)] border-2 border-[var(--border-color)]">
                       {([
-                        ['express',  'Aperçu',    'Rapide'],
-                        ['standard', 'Standard',  'Équilibré'],
-                        ['rigorous', 'Rigoureux', 'Max'],
+                        ['standard', 'Équilibré', 'Rapide'],
+                        ['rigorous', 'Rigoureux', '+ Radar'],
                       ] as const).map(([m, label, sub]) => (
                         <button key={m} onClick={() => setAnalysisMode(m)}
                           className={cn("flex flex-col items-center py-1.5 rounded-lg transition-all",
@@ -1946,9 +2024,31 @@ export function Teledetection() {
                       ))}
                     </div>
                     <p className="text-[8px] text-[var(--text-muted)] mt-1 px-1 leading-snug">
-                      {analysisMode === 'express'  && '⚡ Optique + persistance + Hansen. Idéal pour parcourir vite (peut inclure des variations saisonnières).'}
-                      {analysisMode === 'standard' && '✓ + ligne de base saisonnière (élimine jachère / sécheresse). Bon équilibre vitesse / fiabilité.'}
-                      {analysisMode === 'rigorous' && '🛡️ + radar Sentinel-1 + persistance temporelle. Rigueur maximale pour confirmer (plus lent).'}
+                      {analysisMode === 'standard' && '✓ Optique + persistance multi-scène + Hansen/DIST + ligne de base saisonnière (élimine jachère/sécheresse). Bon équilibre vitesse/fiabilité.'}
+                      {analysisMode === 'rigorous' && '🛡️ Tout le mode Équilibré + radar Sentinel-1 (VV+VH) + persistance temporelle. Rigueur maximale pour confirmer (plus lent).'}
+                    </p>
+                  </div>
+
+                  {/* TRIPLE CONFIRMATION — n'affiche que les détections corroborées
+                      par >= 3 preuves indépendantes (classe >= 3). Réduit fortement
+                      les fausses alertes envoyées sur le terrain. */}
+                  <div className={cn("p-2.5 rounded-xl border-2 mb-2 transition-all",
+                    tripleConfirm ? "border-emerald-600/70 bg-emerald-600/10" : "border-[var(--border-color)] bg-[var(--bg-main)]")}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <ShieldCheck className={cn("w-4 h-4 shrink-0", tripleConfirm ? "text-emerald-500" : "text-[var(--text-muted)]")} />
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-bold text-[var(--text-main)] leading-tight">التأكيد الثلاثي / Triple confirmation</p>
+                          <p className="text-[8px] text-[var(--text-muted)] font-mono truncate">n'affiche que les alertes confirmées par ≥ 3 preuves</p>
+                        </div>
+                      </div>
+                      <button onClick={() => setTripleConfirm(v => !v)}
+                        className={cn("w-11 h-6 rounded-full relative transition-colors shrink-0", tripleConfirm ? "bg-emerald-600" : "bg-black/20 dark:bg-white/20")}>
+                        <div className={cn("absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform shadow-sm", tripleConfirm ? "translate-x-5" : "translate-x-0")} />
+                      </button>
+                    </div>
+                    <p className="text-[8px] text-emerald-500/90 font-mono leading-relaxed mt-1.5">
+                      🛡️ ON : seules les classes 3 et 4 (haute / très haute) sont retenues. OFF : on garde aussi les détections plus faibles (plus de bruit).
                     </p>
                   </div>
 
@@ -2335,7 +2435,7 @@ export function Teledetection() {
                   {annualLoading ? <><Hexagon className="w-4 h-4 animate-spin" /> Calcul en cours…</> : <><Play className="w-4 h-4 fill-current" /> Calculer la tendance</>}
                 </button>
                 <p className="text-[10px] text-[var(--text-muted)] mt-1.5">
-                  Le calcul porte sur la sélection actuelle ({analysisLevel === 'forest' && selectedForest ? `forêt ${selectedForest}` : 'centre entier'}).
+                  Le calcul porte sur la sélection actuelle ({analysisLevel === 'forest' && selectedForest ? `forêt ${selectedForest}` : analysisLevel === 'custom' && customRoi ? `limites importées (${customRoiName || 'perso'})` : 'centre entier'}).
                 </p>
               </div>
 
