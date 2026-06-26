@@ -8,12 +8,11 @@ import {
   PanelRightClose, PanelRightOpen, Anchor, Waves, TrendingUp, Globe,
   Flame, LayoutDashboard, X, Target, ShieldCheck, Activity
 } from 'lucide-react';
-import { MapContainer, TileLayer, LayersControl, useMap, GeoJSON, CircleMarker, Tooltip as LeafletTooltip } from 'react-leaflet';
+import { MapContainer, TileLayer, LayersControl, FeatureGroup, useMap, GeoJSON, CircleMarker, Tooltip as LeafletTooltip } from 'react-leaflet';
+import { EditControl } from 'react-leaflet-draw';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import 'leaflet-draw';
 import 'leaflet-draw/dist/leaflet.draw.css';
-import RoiImport, { type RoiFC } from './RoiImport';
 import {
   checkGeeHealth,
   runAnalyzeAsync,
@@ -40,6 +39,7 @@ import {
   type AnomalyLabel,
   toFlaskZone,
 } from '../../lib/gee-api';
+import { parseVectorFile } from '../../lib/import-vector';
 
 const ANOMALY_CONFIG: Record<AnomalyLabel, { color: string; label: string; emoji: string }> = {
   severe_deficit:   { color: '#ef4444', label: 'Déficit sévère',  emoji: '🔴' },
@@ -397,11 +397,7 @@ export function Teledetection() {
   const [isTopExpanded, setIsTopExpanded]                   = useState(false);
   const [selectedZone, setSelectedZone]   = useState('mdiq');
   // v15 — niveau d'analyse : 'cpf' (centre entier, comportement actuel) ou 'forest' (forêt seule)
-  const [analysisLevel, setAnalysisLevel] = useState<'cpf'|'forest'|'custom'>('cpf');
-  // Limites personnalisées de l'utilisateur (fichier importé OU dessin sur carte).
-  const [customRoi, setCustomRoi]   = useState<RoiFC | null>(null);
-  const [customRoiName, setCustomRoiName] = useState<string>('');
-  const [drawing, setDrawing]       = useState<boolean>(false);
+  const [analysisLevel, setAnalysisLevel] = useState<'cpf'|'forest'>('cpf');
   const [selectedForest, setSelectedForest] = useState<string>('');
   // v16 — canton (section forestiere) optionnel pour affiner encore l'analyse
   const [selectedCanton, setSelectedCanton] = useState<string>('');
@@ -417,24 +413,14 @@ export function Teledetection() {
   // Couches affichables via boutons sur la carte (gestion de couches, pas de cases)
   const [showAnefLimit, setShowAnefLimit] = useState(true);
   // Triple confirmation : ON par défaut (essentiel à toute analyse rigoureuse)
-  // Mode d'analyse — 2 niveaux à impact RÉEL sur le graphe GEE (donc sur la vitesse) :
-  //   'standard'  = optique + persistance multi-scène + Hansen/DIST + baseline saisonnière
-  //   'rigoureux' = standard + radar Sentinel-1 (VV+VH) + persistance temporelle (mi-période)
-  // 'standard' par défaut (bon équilibre vitesse/fiabilité).
-  const [analysisMode, setAnalysisMode] = useState<'standard' | 'rigorous'>('standard');
-  // Triple confirmation : n'affiche que les détections corroborées par ≥ 3 preuves
-  // indépendantes (classe ≥ 3). Bouton dédié, ON par défaut (rigueur terrain).
-  const [tripleConfirm, setTripleConfirm] = useState<boolean>(true);
+  // Mode d'analyse — 3 niveaux. 'standard' par défaut (vitesse/fiabilité équilibrées).
+  const [analysisMode, setAnalysisMode] = useState<'express' | 'standard' | 'rigorous'>('standard');
   // Filtre "Haute confiance" : rattaché à la couche Alertes (raster + polygones)
   // Filtre "Haute confiance" : désormais géré par la couche raster indépendante
   // (toggles.highOnly), plus par un filtrage de polygones. Voir highOnlyTileUrl.
   // Opacités réglables des couches raster (gain de place, pas de cartes séparées)
   const [opacity, setOpacity] = useState({ alertes: 0.78, ndvi: 0.72, nbr: 0.78, hansen: 0.80, s1: 0.70, pheno: 0.68, multiscene: 0.80, highOnly: 0.85 });
   const setLayerOpacity = (k: keyof typeof opacity, v: number) => setOpacity(o => ({ ...o, [k]: v }));
-  // Emprise personnalisée — contrôles d'affichage (comme la limite ANEF) :
-  // visibilité + opacité du remplissage (0 = contour seul, idéal pour inspecter).
-  const [showCustomRoi, setShowCustomRoi] = useState(true);
-  const [customRoiFill, setCustomRoiFill] = useState(0.10);
 
   const zones = [
     { id: 'mdiq',          label: 'DF Mdiq-Fnideq', icon: MapIcon  },
@@ -492,6 +478,16 @@ export function Teledetection() {
   const [isPhenologyExpanded, setIsPhenologyExpanded] = useState(false);
 
   const mapRef = useRef<L.Map|null>(null);
+  // ── Couche vectorielle importée par l'utilisateur (GeoJSON/KML/KMZ/CSV) ──
+  // Quand une couche est importée et VISIBLE, elle devient la zone d'analyse
+  // (roi_geojson) et la limite forêt ANEF est masquée. On peut la masquer pour
+  // revenir à la couche forêt, ou la retirer complètement.
+  const [importedFC, setImportedFC]       = useState<any>(null);
+  const [importedName, setImportedName]   = useState<string>('');
+  const [showImported, setShowImported]   = useState(true);
+  const [importing, setImporting]         = useState(false);
+  const [importError, setImportError]     = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Liste complète des releases Wayback (clé API) pour la détection par localisation
   const waybackAllRef = useRef<{ url: string; date: string; release: number }[]>([]);
 
@@ -563,7 +559,7 @@ export function Teledetection() {
         if (r.afterLabel) setAfterLabel(r.afterLabel);
         if (r.selectedForest) setSelectedForest(r.selectedForest);
         if (r.selectedCanton) setSelectedCanton(r.selectedCanton);
-        if (r.analysisLevel) setAnalysisLevel(r.analysisLevel === 'custom' ? 'cpf' : r.analysisLevel);
+        if (r.analysisLevel) setAnalysisLevel(r.analysisLevel);
       }
     } catch { /* snapshot corrompu : on ignore */ }
     resultsLoaded.current = true;
@@ -903,61 +899,51 @@ export function Teledetection() {
     } catch { /* noop */ }
   }, [analysisLevel, selectedForest, selectedCanton]);
 
-  // ── Limites personnalisées (fichier importé OU dessin) ──────────────────────
-  // Applique une ROI importée : on bascule en mode 'custom', on recadre la carte
-  // et on coupe le mode dessin.
-  const applyCustomRoi = (fc: RoiFC, name: string) => {
-    setCustomRoi(fc); setCustomRoiName(name);
-    setAnalysisLevel('custom'); setDrawing(false);
+  // ── Couche importée : lecture fichier → zoom → masquer la forêt ───────────
+  const fitToImported = (fc: any) => {
     try {
       const b = L.geoJSON(fc as any).getBounds();
       if (b.isValid()) mapRef.current?.fitBounds(b, { padding: [25, 25], maxZoom: 16 });
-    } catch { /* géométrie illisible : on n'empêche pas l'analyse */ }
-  };
-  const clearCustomRoi = () => {
-    setCustomRoi(null); setCustomRoiName(''); setDrawing(false);
-    drawHandlerRef.current?.disable?.(); drawHandlerRef.current = null;
-    // on retombe sur le centre entier si on était en mode custom
-    setAnalysisLevel(l => (l === 'custom' ? 'cpf' : l));
+    } catch { /* noop */ }
   };
 
-  // ── Dessin PROGRAMMATIQUE (sans la barre d'outils leaflet-draw, jugée peu
-  //    professionnelle) : nos propres boutons déclenchent le handler GEE natif.
-  const drawHandlerRef = useRef<any>(null);
-  // Écoute unique de l'évènement de création (rectangle / polygone).
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapReady) return;
-    const handler = (e: any) => {
-      try {
-        const layer = e?.layer;
-        const gj = layer?.toGeoJSON?.();
-        if (layer) map.removeLayer(layer);          // on rend via notre propre couche GeoJSON
-        if (gj) applyCustomRoi({ type: 'FeatureCollection', features: [gj] }, 'Tracé manuel');
-      } catch { /* noop */ }
-      setDrawing(false);
-      drawHandlerRef.current = null;
-    };
-    map.on('draw:created' as any, handler);
-    return () => { map.off('draw:created' as any, handler); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapReady]);
+  const handleImportFile = async (file: File | null | undefined) => {
+    if (!file) return;
+    setImporting(true); setImportError(null);
+    try {
+      const fc = await parseVectorFile(file);
+      setImportedFC(fc);
+      setImportedName(file.name.replace(/\.[^.]+$/, ''));
+      setShowImported(true);
+      setShowAnefLimit(false);     // la couche importée remplace la limite forêt
+      fitToImported(fc);
+    } catch (e: any) {
+      setImportError(e?.message || 'Échec de lecture du fichier.');
+      setTimeout(() => setImportError(null), 6000);
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';  // réautorise le même fichier
+    }
+  };
 
-  const startDraw = (shape: 'rectangle' | 'polygon') => {
-    const map = mapRef.current;
-    const Draw = (L as any).Draw;
-    if (!map || !Draw) { setErrorMsg("Outil de dessin indisponible (leaflet-draw)."); return; }
-    drawHandlerRef.current?.disable?.();
-    setDrawing(true);
-    const style = { color: '#22d3ee', weight: 2, fillOpacity: 0.08 };
-    drawHandlerRef.current = shape === 'rectangle'
-      ? new Draw.Rectangle(map, { shapeOptions: style })
-      : new Draw.Polygon(map, { shapeOptions: style, allowIntersection: false, showArea: true });
-    drawHandlerRef.current.enable();
+  // Bascule visibilité couche importée ↔ couche forêt ANEF
+  const toggleImported = () => {
+    setShowImported(prev => {
+      const next = !prev;
+      if (next) { setShowAnefLimit(false); fitToImported(importedFC); }
+      else { setShowAnefLimit(true); }
+      return next;
+    });
   };
-  const cancelDraw = () => {
-    drawHandlerRef.current?.disable?.(); drawHandlerRef.current = null; setDrawing(false);
+
+  // Retire complètement la couche importée et rétablit la limite forêt
+  const removeImported = () => {
+    setImportedFC(null); setImportedName(''); setShowImported(true);
+    setShowAnefLimit(true); setImportError(null);
   };
+
+  // Couche importée active = visible ET non vide → sert de zone d'analyse
+  const importedActive = !!(showImported && importedFC && importedFC.features?.length);
 
   // Calcule UNE couche figée à la demande quand on l'active après l'analyse.
   const onLayerEnabled = (key: keyof typeof toggles) => {
@@ -997,43 +983,36 @@ export function Teledetection() {
   }, [multiScene]);
 
   const buildParams = (highOnly?: boolean): AnalyzeParams => {
-    // Niveau d'analyse -> géométrie envoyée comme roi_geojson :
-    //   'forest' : forêt/canton dérivé de forest_limits
-    //   'custom' : limites importées/dessinées par l'utilisateur
-    //   'cpf'    : centre entier (pas de roi_geojson, le backend prend l'asset zone)
-    const forestMode = analysisLevel === 'forest' && !!selectedForest;
-    const customMode = analysisLevel === 'custom' && !!customRoi && (customRoi.features?.length ?? 0) > 0;
-    const roiGeojson = customMode
-      ? (customRoi as any)
+    // Priorité 1 — couche importée visible : c'est elle la zone d'analyse.
+    // Priorité 2 — mode forêt (v15) : géométrie de la forêt sélectionnée.
+    // `zone` devient un nom libre (pas une clé de centre) -> le backend utilise le roi.
+    const forestMode = !importedActive && analysisLevel === 'forest' && !!selectedForest;
+    const roiGeojson = importedActive
+      ? importedFC
       : (forestMode ? buildForestRoi(selectedForest, selectedCanton || undefined) : undefined);
     // On ne génère QUE les couches cochées (+ S2 avant/après pour le swipe).
     const layers: string[] = ['before', 'after'];
     if (toggles.disturbance) layers.push('dist');
     if (toggles.ndviDelta)   layers.push('ndvi');
     if (toggles.nbrDelta)    layers.push('nbr');
-    if (highOnly || toggles.highOnly || tripleConfirm) layers.push('high');
+    if (highOnly || toggles.highOnly) layers.push('high');
     if (multiScene)          layers.push('ms');
-    // Nom de zone affiché/archivé selon le niveau.
-    const zoneName = customMode
-      ? (customRoiName ? `limite_${customRoiName}` : 'limite_personnalisee')
-      : (forestMode ? (selectedCanton ? `${selectedForest}/${selectedCanton}` : selectedForest) : selectedZone);
     return {
-    zone: zoneName,
+    zone: importedActive
+      ? `import_${(importedName || 'couche').replace(/[^a-zA-Z0-9_-]+/g, '_')}`
+      : (forestMode ? (selectedCanton ? `${selectedForest}/${selectedCanton}` : selectedForest) : selectedZone),
     roiGeojson: roiGeojson ?? undefined,
     date1Start: refStart, date1End: refEnd,
     date2Start: actStart, date2End: actEnd,
     cloud: cloudMax, sensitivity: ndviThreshold, nbr: nbrThreshold, ndmi: ndmiThreshold,
-    // Triple confirmation -> on ne garde que les détections de classe >= 3
-    // (au moins 3 preuves indépendantes). Sinon : seuil utilisateur. "Haute conf."
-    // (highOnly) reste prioritaire et impose >= 3 également.
-    minScore: (highOnly || tripleConfirm) ? 3 : minConfidence,
+    // Haute confiance -> on ne garde que score >= 3 (exports HC). Sinon minConfidence.
+    minScore: highOnly ? 3 : minConfidence,
     minArea: minSurface,
-    // Preuves lourdes selon le mode : standard=+saisonnier | rigoureux=+radar+temporel.
-    // La baseline saisonnière (3 ans) est TOUJOURS active : c'est le principal
-    // tueur de faux positifs (jachère / sécheresse / labour).
+    // Triple confirmation -> rigueur max (optique + radar + persistance + Hansen + saisonnier)
+    // Preuves lourdes selon le mode : express=aucune | standard=+saisonnier | rigoureux=+radar+temporel
     useRadar:    analysisMode === 'rigorous' || toggles.sentinel1,
     useTemporal: analysisMode === 'rigorous',
-    useSeasonal: true,
+    useSeasonal: analysisMode !== 'express',   // baseline 3 ans : tue jachère/sécheresse
     useExternal: true, // Hansen + DIST-ALERT global peu couteux -> toujours actif
     useForest: true,   // contexte vegetal (NDVI ref u couvert arbore) -> domaine boise
     useMultiscene: true, minScenes,  // persistance multi-scenes = colonne vertebrale
@@ -1081,16 +1060,6 @@ export function Teledetection() {
   // ── Analyse principale (v19 — asynchrone : barre de progression, sans timeout) ──
   const handleAnalyze = async (highOnlyOverride?: boolean) => {
     if (geeStatus === 'error') { setErrorMsg('GEE hors-ligne — vérifier PythonAnywhere'); return; }
-    // Garde-fou : en mode "Emprise", on REFUSE de lancer sans géométrie -> sinon
-    // le backend retomberait silencieusement sur le centre entier (mauvaise zone).
-    if (analysisLevel === 'custom' && (!customRoi || (customRoi.features?.length ?? 0) === 0)) {
-      setErrorMsg('Importez ou dessinez une emprise avant de lancer l’analyse.');
-      return;
-    }
-    if (analysisLevel === 'forest' && !selectedForest) {
-      setErrorMsg('Choisissez une forêt avant de lancer l’analyse.');
-      return;
-    }
     setIsAnalyzing(true); setErrorMsg(null);
     setAnalyzeProgress(0); setAnalyzeMessage('Initialisation…');
     const params = buildParams(highOnlyOverride);
@@ -1423,7 +1392,7 @@ export function Teledetection() {
       <div className="relative h-[35vh] md:h-full md:flex-1 bg-[#121214] border-b md:border-b-0 md:border-r border-[var(--border-color)] shrink-0 z-10 md:shrink overflow-hidden">
 
         <MapContainer center={[35.5785, -5.3684]} zoom={11} maxZoom={19}
-          zoomControl={false} zoomAnimation={true} fadeAnimation={false}
+          zoomControl={false} zoomAnimation={true}
           style={{ height: '100%', width: '100%' }}>
 
           <MapRefSetter onReady={(m) => { mapRef.current = m; setMapReady(true); }} />
@@ -1441,8 +1410,9 @@ export function Teledetection() {
 
           <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true} maxNativeZoom={18} maxZoom={19} />
 
-          {/* Le dessin est piloté par nos propres boutons (handler leaflet-draw
-              programmatique) -> pas de barre d'outils par défaut. */}
+          <FeatureGroup>
+            <EditControl position="topleft" draw={{ rectangle: true, polygon: true, circle: false, circlemarker: false, marker: false, polyline: false }} />
+          </FeatureGroup>
 
           {/* AVANT (gauche) — source historique (Wayback OU Sentinel-2), CLIPPE a gauche du split.
               Repli: S2 GEE avant. v18 — date de capture reelle, source commutable. */}
@@ -1497,50 +1467,49 @@ export function Teledetection() {
               visibilité via l'opacité (0 = masquée). Ainsi un toggle OFF/ON ne
               démonte pas la couche : les tuiles restent en cache → réaffichage
               instantané, sans recalcul ni rechargement. */}
-          {/* Couches analytiques = TUILES LIVE GEE. CHANGEMENT PERF : on ne MONTE
-              une couche que si elle est VISIBLE (toggle ON). Auparavant toutes
-              restaient montées à opacité 0 -> chaque couche cachée téléchargeait
-              quand même ses tuiles sur tout le cadre (jusqu'à 9 couches = 9× les
-              requêtes GEE, d'où la lenteur même sur une petite emprise). Le cache
-              disque serveur (USE_TILE_PROXY) rend le ré-affichage rapide au re-toggle. */}
-          {ndviTileUrl && toggles.ndviDelta && (
+          {/* Couches analytiques = TUILES LIVE. Montées dès que leur URL existe ;
+              la bascule ne change que l'opacité (ré-affichage instantané, pas de
+              démontage). Le cache disque serveur (USE_TILE_PROXY) garde les tuiles
+              -> elles ne disparaissent plus au zoom. On ne génère que les couches
+              demandées (cases cochées) ou calculées à la demande après coup. */}
+          {ndviTileUrl && (
             <TileLayer key={`ndvi-${ndviTileUrl}`} url={ndviTileUrl} pane="paneIndices"
-              opacity={opacity.ndvi} {...TILE_PERF} attribution="GEE NDVI Δ" />
+              opacity={toggles.ndviDelta ? opacity.ndvi : 0} {...TILE_PERF} attribution="GEE NDVI Δ" />
           )}
-          {nbrTileUrl && toggles.nbrDelta && (
+          {nbrTileUrl && (
             <TileLayer key={`nbr-${nbrTileUrl}`} url={nbrTileUrl} pane="paneIndices"
-              opacity={opacity.nbr} {...TILE_PERF} attribution="GEE NBR Δ (dNBR)" />
+              opacity={toggles.nbrDelta ? opacity.nbr : 0} {...TILE_PERF} attribution="GEE NBR Δ (dNBR)" />
           )}
-          {hansenTileUrl && toggles.forestWatch && (
+          {hansenTileUrl && (
             <TileLayer key={`hansen-${hansenTileUrl}`} url={hansenTileUrl} pane="paneIndices"
-              opacity={opacity.hansen} {...TILE_PERF} attribution="UMD Hansen GFC" />
+              opacity={toggles.forestWatch ? opacity.hansen : 0} {...TILE_PERF} attribution="UMD Hansen GFC" />
           )}
-          {distAlertTileUrl && toggles.forestWatch && (
+          {distAlertTileUrl && (
             <TileLayer key={`distalert-${distAlertTileUrl}`} url={distAlertTileUrl} pane="paneIndices"
-              opacity={opacity.hansen} {...TILE_PERF} attribution="GLAD DIST-ALERT" />
+              opacity={toggles.forestWatch ? opacity.hansen : 0} {...TILE_PERF} attribution="GLAD DIST-ALERT" />
           )}
-          {s1TileUrl && toggles.sentinel1 && (
+          {s1TileUrl && (
             <TileLayer key={`s1-${s1TileUrl}`} url={s1TileUrl} pane="paneIndices"
-              opacity={opacity.s1} {...TILE_PERF} attribution="GEE Sentinel-1 SAR" />
+              opacity={toggles.sentinel1 ? opacity.s1 : 0} {...TILE_PERF} attribution="GEE Sentinel-1 SAR" />
           )}
-          {phenologyTileUrl && toggles.phenology && (
+          {phenologyTileUrl && (
             <TileLayer key={`pheno-${phenologyTileUrl}`} url={phenologyTileUrl} pane="paneIndices"
-              opacity={opacity.pheno} {...TILE_PERF} attribution="GEE Phénologie" />
+              opacity={toggles.phenology ? opacity.pheno : 0} {...TILE_PERF} attribution="GEE Phénologie" />
           )}
 
           {/* ALERTES (raster de confiance) — couche PRIMAIRE */}
-          {distTileUrl && toggles.disturbance && (
+          {distTileUrl && (
             <TileLayer key={`dist-${distTileUrl}`} url={distTileUrl} pane="paneAlertes"
-              opacity={opacity.alertes} {...TILE_PERF} attribution="GEE Confiance" />
+              opacity={toggles.disturbance ? opacity.alertes : 0} {...TILE_PERF} attribution="GEE Confiance" />
           )}
           {/* HAUTE CONFIANCE (score ≥ 3) */}
-          {highOnlyTileUrl && toggles.highOnly && (
+          {highOnlyTileUrl && (
             <TileLayer key={`high-${highOnlyTileUrl}`} url={highOnlyTileUrl} pane="paneMultiscene"
-              opacity={opacity.highOnly} {...TILE_PERF} attribution="GEE Haute confiance (≥3)" />
+              opacity={toggles.highOnly ? opacity.highOnly : 0} {...TILE_PERF} attribution="GEE Haute confiance (≥3)" />
           )}
-          {multisceneTileUrl && multiScene && (
+          {multisceneTileUrl && (
             <TileLayer key={`ms-${multisceneTileUrl}`} url={multisceneTileUrl} pane="paneMultiscene"
-              opacity={opacity.multiscene} {...TILE_PERF} attribution="GEE Multi-scène S2" />
+              opacity={multiScene ? opacity.multiscene : 0} {...TILE_PERF} attribution="GEE Multi-scène S2" />
           )}
 
           {/* Limites — pane limits (au-dessus, cliquable) */}
@@ -1552,11 +1521,29 @@ export function Teledetection() {
             <GeoJSON key={`zone-${selectedZone}`} pane="paneLimits" data={zoneBoundary}
               style={() => ({ color: '#fbbf24', weight: 2.5, fill: false })} />
           )}
-          {/* Limites personnalisées de l'utilisateur (import/dessin) — visibilité
-              et opacité de remplissage pilotables (0 = contour seul). */}
-          {analysisLevel === 'custom' && customRoi && showCustomRoi && (
-            <GeoJSON key={`custom-${customRoi.features.length}-${customRoiName}-${customRoiFill}`} pane="paneLimits" data={customRoi as any}
-              style={() => ({ color: '#22d3ee', weight: 3, dashArray: '6 4', fillColor: '#22d3ee', fillOpacity: customRoiFill })} />
+
+          {/* Couche vectorielle importée (GeoJSON/KML/KMZ/CSV) — bleu cyan.
+              Visible tant que showImported ; devient la zone d'analyse. */}
+          {importedFC && showImported && (
+            <GeoJSON
+              key={`imported-${importedName}-${importedFC.features.length}`}
+              pane="paneLimits"
+              data={importedFC}
+              style={() => ({ color: '#38bdf8', weight: 2.5, fillColor: '#38bdf8', fillOpacity: 0.08 })}
+              pointToLayer={(_f: any, latlng: any) =>
+                L.circleMarker(latlng, { radius: 5, color: '#38bdf8', weight: 2, fillColor: '#38bdf8', fillOpacity: 0.7 })}
+              onEachFeature={(f: any, layer: any) => {
+                const p = f?.properties || {};
+                const keys = Object.keys(p).slice(0, 8);
+                if (keys.length) {
+                  layer.bindPopup(
+                    `<div style="font:12px/1.4 system-ui;max-width:240px">` +
+                    keys.map(k => `<b>${k}</b> : ${String(p[k]).slice(0, 80)}`).join('<br/>') +
+                    `</div>`
+                  );
+                }
+              }}
+            />
           )}
 
           {/* POLYGONES de perturbation — pane polygons, AU-DESSUS des alertes (cliquables) */}
@@ -1806,13 +1793,38 @@ export function Teledetection() {
               showAnefLimit ? "bg-emerald-600/90 text-white border-emerald-300/40" : "bg-black/65 text-white/70 border-white/10 hover:bg-black/80")}>
             <TreePine className="w-3.5 h-3.5" /> Limite ANEF
           </button>
-          {/* Emprise personnalisée — afficher / masquer (pour bien voir les changements dessous) */}
-          {analysisLevel === 'custom' && customRoi && (
-            <button onClick={() => setShowCustomRoi(v => !v)} title="Afficher / masquer l'emprise tracée"
-              className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold shadow-lg backdrop-blur-md border transition-all",
-                showCustomRoi ? "bg-cyan-500/90 text-white border-cyan-200/40" : "bg-black/65 text-white/70 border-white/10 hover:bg-black/80")}>
-              <Hexagon className="w-3.5 h-3.5" /> Emprise
-            </button>
+
+          {/* Couche importée : bascule visibilité ↔ forêt + retrait */}
+          {importedFC && (
+            <div className="flex items-center gap-1.5">
+              <button onClick={removeImported} title="Retirer la couche importée"
+                className="flex items-center justify-center w-7 h-7 rounded-lg text-[10px] font-bold shadow-lg backdrop-blur-md border bg-black/65 text-white/80 border-white/10 hover:bg-red-600/80 transition-all">
+                <X className="w-3.5 h-3.5" />
+              </button>
+              <button onClick={toggleImported} title="Afficher la couche importée (et masquer la forêt) / revenir à la forêt"
+                className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold shadow-lg backdrop-blur-md border transition-all max-w-[150px]",
+                  showImported ? "bg-sky-500/90 text-white border-sky-300/40" : "bg-black/65 text-white/70 border-white/10 hover:bg-black/80")}>
+                <Layers className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">{importedName || 'Couche importée'}</span>
+              </button>
+            </div>
+          )}
+
+          {/* Importer une couche (GeoJSON / KML / KMZ / CSV) */}
+          <button onClick={() => fileInputRef.current?.click()} disabled={importing}
+            title="Importer une couche GeoJSON, KML, KMZ ou CSV"
+            className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold shadow-lg backdrop-blur-md border transition-all",
+              "bg-black/65 text-white/90 border-white/10 hover:bg-black/80", importing && "opacity-60 cursor-wait")}>
+            <DownloadCloud className="w-3.5 h-3.5" /> {importing ? 'Lecture…' : 'Importer couche'}
+          </button>
+          <input ref={fileInputRef} type="file" accept=".geojson,.json,.kml,.kmz,.csv,.tsv" className="hidden"
+            onChange={e => handleImportFile(e.target.files?.[0])} />
+
+          {/* Erreur d'import — message court non bloquant */}
+          {importError && (
+            <div className="max-w-[220px] px-2.5 py-1.5 rounded-lg text-[10px] font-semibold shadow-lg backdrop-blur-md border bg-red-600/90 text-white border-red-300/40">
+              {importError}
+            </div>
           )}
         </div>
 
@@ -1965,7 +1977,7 @@ export function Teledetection() {
                     ))}
                   </div>
 
-                  {/* v15 — Niveau d'analyse : centre entier (CPF), forêt seule, ou limites perso */}
+                  {/* v15 — Niveau d'analyse : centre entier (CPF) ou forêt seule */}
                   <div className="mt-3 pt-3 border-t border-stone-200/40 dark:border-stone-800/40">
                     <div className="flex gap-1 mb-2">
                       <button onClick={() => setAnalysisLevel('cpf')}
@@ -1977,11 +1989,6 @@ export function Teledetection() {
                         className={cn("flex-1 py-1.5 rounded text-[11px] font-bold border transition-all",
                           analysisLevel === 'forest' ? "bg-[var(--brand-light)] border-[var(--brand)] text-[var(--brand)]" : "bg-transparent border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
                         Forêt
-                      </button>
-                      <button onClick={() => setAnalysisLevel('custom')}
-                        className={cn("flex-1 py-1.5 rounded text-[11px] font-bold border transition-all",
-                          analysisLevel === 'custom' ? "bg-cyan-500/15 border-cyan-500 text-cyan-500" : "bg-transparent border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
-                        Emprise
                       </button>
                     </div>
                     {analysisLevel === 'forest' && (
@@ -2007,22 +2014,6 @@ export function Teledetection() {
                           </p>
                         )}
                       </>
-                    )}
-                    {analysisLevel === 'custom' && (
-                      <RoiImport
-                        roi={customRoi}
-                        roiName={customRoiName}
-                        drawing={drawing}
-                        showRoi={showCustomRoi}
-                        fill={customRoiFill}
-                        onRoi={applyCustomRoi}
-                        onClear={clearCustomRoi}
-                        onDrawRect={() => startDraw('rectangle')}
-                        onDrawPoly={() => startDraw('polygon')}
-                        onCancelDraw={cancelDraw}
-                        onToggleShow={() => setShowCustomRoi(v => !v)}
-                        onFill={setCustomRoiFill}
-                      />
                     )}
                   </div>
                 </div>
@@ -2055,15 +2046,15 @@ export function Teledetection() {
                   <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isAlgorithmExpanded ? 'rotate-180' : ''}`} />
                 </button>
                 <div className={`transition-all duration-300 origin-top overflow-hidden ${isAlgorithmExpanded ? 'max-h-[1400px] opacity-100' : 'max-h-0 opacity-0'}`}>
-                  {/* Mode d'analyse — 2 niveaux à IMPACT RÉEL sur la vitesse.
-                      'Rigoureux' ajoute le radar Sentinel-1 + la persistance temporelle
-                      (mi-période) = davantage de calcul GEE -> sensiblement plus lent,
-                      mais confirme les coupes même sous couvert nuageux. */}
+                  {/* Mode d'analyse — 3 niveaux (léger -> rigoureux). Défaut: Standard.
+                      C'est le levier clé de vitesse : on ne paie la rigueur maximale
+                      (radar + temporel + baseline) que quand on en a besoin. */}
                   <div className="mt-1 mb-2">
-                    <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[var(--bg-main)] border-2 border-[var(--border-color)]">
+                    <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[var(--bg-main)] border-2 border-[var(--border-color)]">
                       {([
-                        ['standard', 'Équilibré', 'Rapide'],
-                        ['rigorous', 'Rigoureux', '+ Radar'],
+                        ['express',  'Aperçu',    'Rapide'],
+                        ['standard', 'Standard',  'Équilibré'],
+                        ['rigorous', 'Rigoureux', 'Max'],
                       ] as const).map(([m, label, sub]) => (
                         <button key={m} onClick={() => setAnalysisMode(m)}
                           className={cn("flex flex-col items-center py-1.5 rounded-lg transition-all",
@@ -2074,31 +2065,9 @@ export function Teledetection() {
                       ))}
                     </div>
                     <p className="text-[8px] text-[var(--text-muted)] mt-1 px-1 leading-snug">
-                      {analysisMode === 'standard' && '✓ Optique + persistance multi-scène + Hansen/DIST + ligne de base saisonnière (élimine jachère/sécheresse). Bon équilibre vitesse/fiabilité.'}
-                      {analysisMode === 'rigorous' && '🛡️ Tout le mode Équilibré + radar Sentinel-1 (VV+VH) + persistance temporelle. Rigueur maximale pour confirmer (plus lent).'}
-                    </p>
-                  </div>
-
-                  {/* TRIPLE CONFIRMATION — n'affiche que les détections corroborées
-                      par >= 3 preuves indépendantes (classe >= 3). Réduit fortement
-                      les fausses alertes envoyées sur le terrain. */}
-                  <div className={cn("p-2.5 rounded-xl border-2 mb-2 transition-all",
-                    tripleConfirm ? "border-emerald-600/70 bg-emerald-600/10" : "border-[var(--border-color)] bg-[var(--bg-main)]")}>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <ShieldCheck className={cn("w-4 h-4 shrink-0", tripleConfirm ? "text-emerald-500" : "text-[var(--text-muted)]")} />
-                        <div className="min-w-0">
-                          <p className="text-[11px] font-bold text-[var(--text-main)] leading-tight">التأكيد الثلاثي / Triple confirmation</p>
-                          <p className="text-[8px] text-[var(--text-muted)] font-mono truncate">n'affiche que les alertes confirmées par ≥ 3 preuves</p>
-                        </div>
-                      </div>
-                      <button onClick={() => setTripleConfirm(v => !v)}
-                        className={cn("w-11 h-6 rounded-full relative transition-colors shrink-0", tripleConfirm ? "bg-emerald-600" : "bg-black/20 dark:bg-white/20")}>
-                        <div className={cn("absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform shadow-sm", tripleConfirm ? "translate-x-5" : "translate-x-0")} />
-                      </button>
-                    </div>
-                    <p className="text-[8px] text-emerald-500/90 font-mono leading-relaxed mt-1.5">
-                      🛡️ ON : seules les classes 3 et 4 (haute / très haute) sont retenues. OFF : on garde aussi les détections plus faibles (plus de bruit).
+                      {analysisMode === 'express'  && '⚡ Optique + persistance + Hansen. Idéal pour parcourir vite (peut inclure des variations saisonnières).'}
+                      {analysisMode === 'standard' && '✓ + ligne de base saisonnière (élimine jachère / sécheresse). Bon équilibre vitesse / fiabilité.'}
+                      {analysisMode === 'rigorous' && '🛡️ + radar Sentinel-1 + persistance temporelle. Rigueur maximale pour confirmer (plus lent).'}
                     </p>
                   </div>
 
@@ -2485,7 +2454,7 @@ export function Teledetection() {
                   {annualLoading ? <><Hexagon className="w-4 h-4 animate-spin" /> Calcul en cours…</> : <><Play className="w-4 h-4 fill-current" /> Calculer la tendance</>}
                 </button>
                 <p className="text-[10px] text-[var(--text-muted)] mt-1.5">
-                  Le calcul porte sur la sélection actuelle ({analysisLevel === 'forest' && selectedForest ? `forêt ${selectedForest}` : analysisLevel === 'custom' && customRoi ? `limites importées (${customRoiName || 'perso'})` : 'centre entier'}).
+                  Le calcul porte sur la sélection actuelle ({analysisLevel === 'forest' && selectedForest ? `forêt ${selectedForest}` : 'centre entier'}).
                 </p>
               </div>
 
