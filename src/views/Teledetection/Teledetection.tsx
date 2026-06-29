@@ -809,6 +809,15 @@ export function Teledetection() {
     const seen = new Set<string>();
     const list = ok.filter(r => (seen.has(r.date) ? false : (seen.add(r.date), true)))
                    .map(r => ({ url: r.url, date: r.date, real: r.real }));
+
+    // IMAGE LA PLUS RÉCENTE POSSIBLE : on ajoute l'imagerie World Imagery EN DIRECT
+    // (le basemap actuel, souvent plus frais que la dernière release Wayback) avec
+    // sa vraie date de prise de vue. Dédupliquée par date.
+    try {
+      const liveDate = await fetchCaptureDate('https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer', lat, lng);
+      if (liveDate && !seen.has(liveDate)) { seen.add(liveDate); list.push({ url: ARCGIS_IMAGERY, date: liveDate, real: true }); }
+    } catch { /* l'actuelle reste optionnelle */ }
+
     list.sort((a, b) => a.date.localeCompare(b.date));
     waybackTileCache.current.set(cacheKey, list);
     setWaybackList(list);
