@@ -782,6 +782,20 @@ export function Teledetection() {
     if (!Array.isArray(changes) || changes.length < 1) return;
 
     const tpl = (u: string) => u.replace(/\{level\}/gi, '{z}').replace(/\{row\}/gi, '{y}').replace(/\{col\}/gi, '{x}');
+
+    // AFFICHAGE IMMÉDIAT : dès que les scènes à changement local sont connues, on
+    // affiche la frise (dates de version) SANS attendre la lecture des dates de
+    // prise de vue -> les images apparaissent tout de suite. Les dates sont ensuite
+    // affinées en arrière-plan (capture réelle). Réduit nettement l'attente perçue.
+    {
+      const sp = new Set<string>();
+      const prelim = changes
+        .map((it: any) => ({ url: tpl(String(it.itemURL || '')), date: String(it.releaseDateLabel || '').slice(0, 10), real: false }))
+        .filter((e: any) => /^\d{4}-\d{2}-\d{2}/.test(e.date) && (sp.has(e.date) ? false : (sp.add(e.date), true)))
+        .sort((a: any, b: any) => a.date.localeCompare(b.date));
+      if (prelim.length) { setWaybackList(prelim); setWaybackIdx(nearestIdx(prelim, beforePinnedDate.current ?? beforeTargetDate)); }
+    }
+
     // Date de PRISE DE VUE par release (téléchargements throttlés), repli = date de version.
     const CONC = 8;
     const out: ({ url: string; date: string; real: boolean; release: number } | null)[] = new Array(changes.length);
