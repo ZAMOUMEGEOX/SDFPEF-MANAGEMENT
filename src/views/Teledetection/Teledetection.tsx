@@ -530,6 +530,7 @@ export function Teledetection() {
   const [waybackDate, setWaybackDate]       = useState<string>('');
   // v15 — frise temporelle : toutes les versions disponibles + index sélectionné
   const [waybackList, setWaybackList]       = useState<{ date: string; url: string; real?: boolean }[]>([]);
+  const [waybackReady, setWaybackReady]     = useState(false);   // archive chargée (pour afficher le panneau)
   const [waybackIdx, setWaybackIdx]         = useState<number>(-1);
   // v18 — date de PRISE DE VUE reelle (vs date de publication Wayback) + source active
   const [captureInfo, setCaptureInfo]       = useState<string>('');   // ex: "Maxar · 2022-08-14"
@@ -718,15 +719,10 @@ export function Teledetection() {
       items.sort((a, b) => a.date.localeCompare(b.date));
       waybackAllRef.current = items;
       beforePinnedDate.current = null;   // nouvelle période de référence -> on repart sur le défaut
-      // Frise affichée immédiatement (dates de version, real=false) ; remplacée
-      // ensuite, pour la zone visible, par les releases à CHANGEMENT LOCAL réel
-      // avec leur DATE DE PRISE DE VUE (real=true). Jamais vide.
-      const seen = new Set<string>();
-      const seeded = items
-        .filter(it => (seen.has(it.date) ? false : (seen.add(it.date), true)))
-        .map(it => ({ url: it.url, date: it.date, real: false }));
-      setWaybackList(seeded);
-      setWaybackIdx(nearestIdx(seeded, beforePinnedDate.current ?? beforeTargetDate));
+      // On N'AFFICHE PAS la liste des ~194 dates de PUBLICATION (frise jaune
+      // surchargée). La frise n'affiche QUE les prises de vue à changement local
+      // réel, remplies par refineWaybackForLocation pour l'endroit visé.
+      setWaybackReady(true);
     })();
     return () => { cancelled = true; };
   }, [refStart, refEnd]);
@@ -1884,7 +1880,7 @@ export function Teledetection() {
 
         {/* v18 — Frise historique "avant" : source commutable (Wayback / Sentinel-2),
             date de PRISE DE VUE reelle, nombre de scenes disponibles. */}
-        {toggles.s2Split && (waybackList.length > 0 || beforeSource === 's2') && (
+        {toggles.s2Split && (waybackReady || waybackList.length > 0 || beforeSource === 's2') && (
           <div className="absolute top-12 md:top-16 left-2 md:left-4 z-[500] pointer-events-auto bg-black/85 backdrop-blur-xl border border-white/10 rounded-xl px-3 py-2 shadow-2xl flex flex-col gap-1.5 w-[344px] max-w-[92vw]">
             <div className="flex items-center justify-between">
               <div className="flex bg-white/10 rounded-md p-0.5 text-[9px] font-bold">
@@ -1906,8 +1902,8 @@ export function Teledetection() {
             {/* Ouvrir la zone dans Google Earth Pro (curseur temporel = historique Google) */}
             <button onClick={openInGoogleEarth}
               title="Exporter la zone en KML et l'ouvrir dans Google Earth Pro (imagerie historique Google via son curseur temporel)"
-              className="flex items-center justify-center gap-1.5 w-full py-1 rounded-md bg-white/10 hover:bg-emerald-600 text-white text-[10px] font-bold transition-colors">
-              <Globe className="w-3.5 h-3.5" /> Comparer dans Google Earth Pro (KML)
+              className="group flex items-center justify-center gap-1.5 w-full py-[5px] rounded-md border border-white/12 hover:border-emerald-500/50 bg-white/[0.03] hover:bg-emerald-500/10 text-white/75 hover:text-white text-[9px] font-bold uppercase tracking-[0.12em] transition-colors">
+              <Globe className="w-3 h-3 opacity-70 group-hover:opacity-100" /> Google Earth Pro · KML
             </button>
 
             {/* Frise temporelle type Google Earth Pro : ◀ ▶ + repères de scènes,
@@ -1981,7 +1977,7 @@ export function Teledetection() {
                     {list.map((s: any, i: number) => (
                       <button key={i} onClick={() => pick(i)} title={`${s.date}${s.real === false ? ' (publié)' : ''}`}
                         className="absolute -translate-x-1/2 top-0 h-6 flex items-start group" style={{ left: `${posPct(s.date)}%` }}>
-                        <span className={`block w-[3px] rounded-full transition-all ${i === i0 ? 'bg-[var(--brand)] h-5 mt-[2px]' : (s.real === false ? 'bg-amber-400/80 h-3.5 mt-[5px]' : 'bg-white/45 h-3.5 mt-[5px]')} group-hover:bg-white group-hover:h-5`} />
+                        <span className={`block w-[3px] rounded-full transition-all ${i === i0 ? 'bg-[var(--brand)] h-5 mt-[2px]' : 'bg-white/45 h-3.5 mt-[5px]'} group-hover:bg-white group-hover:h-5`} />
                       </button>
                     ))}
                     {/* Pastille de la scène sélectionnée */}
