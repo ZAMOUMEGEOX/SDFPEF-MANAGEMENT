@@ -24,6 +24,7 @@ import {
   fetchS2SceneTile,
   saveAlerts,
   sendAlertVerdict,
+  saveManualReport,
   fetchAccuracy,
   fetchFireDetection,
   fetchSavedAlerts,
@@ -81,10 +82,12 @@ const isJunkForest = (n: string): boolean => !n || n === 'NONE' || /^-+$/.test(n
 
 // Imagerie "actuelle" (côté droit du swipe) quand aucune image S2 "après" n'existe encore.
 const ARCGIS_IMAGERY = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
-// Couche "Références" : noms de lieux, frontières et routes (overlay transparent
-// par-dessus la vue satellite -> l'utilisateur se repère). Vrai mode "hybride".
+// Couche "Références" ALLÉGÉE : un SEUL overlay transparent = noms de lieux +
+// limites administratives, avec halo lisible sur le satellite. On a retiré la
+// couche "World_Transportation" : c'est elle qui dessinait les grosses lignes de
+// routes/autoroutes jugées trop chargées. La trame fine des rues reste visible
+// directement sur l'image satellite, sans surcharge de lignes ni d'étiquettes.
 const ARCGIS_REFERENCE = 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}';
-const ARCGIS_TRANSPORT = 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}';
 
 // Index de l'image la PLUS PROCHE d'une date cible (pour ne pas se perdre entre les dates).
 const nearestIdx = (list: { date: string }[], target: string): number => {
@@ -368,14 +371,10 @@ function RefLabelsLayer({ show }: { show: boolean }) {
   }, [map]);
   if (!ready || !show) return null;
   return (
-    <>
-      <TileLayer url={ARCGIS_TRANSPORT} pane="paneRefLabels"
-        keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true}
-        maxNativeZoom={18} maxZoom={19} attribution="Esri — Transportation" />
-      <TileLayer url={ARCGIS_REFERENCE} pane="paneRefLabels"
-        keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true}
-        maxNativeZoom={18} maxZoom={19} attribution="Esri — Boundaries &amp; Places" />
-    </>
+    <TileLayer url={ARCGIS_REFERENCE} pane="paneRefLabels"
+      keepBuffer={8} updateWhenZooming={false} updateWhenIdle={true}
+      opacity={0.9} maxNativeZoom={18} maxZoom={19}
+      attribution="Esri — Boundaries &amp; Places" />
   );
 }
 
@@ -423,6 +422,14 @@ export function Teledetection() {
   const [refEnd, setRefEnd]               = useState('2024-06-02');
   const [actStart, setActStart]           = useState('2026-04-03');
   const [actEnd, setActEnd]               = useState('2026-06-02');
+  // Cible "avant" du swipe : milieu de la PÉRIODE DE RÉFÉRENCE. L'image historique
+  // (Esri Wayback / Sentinel-2) choisie par défaut est la plus proche de CETTE date,
+  // pour que la comparaison avant/après porte bien sur la période de référence.
+  const beforeTargetDate = useMemo(() => {
+    const a = new Date(refStart).getTime(), b = new Date(refEnd).getTime();
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return refEnd;
+    return new Date((a + b) / 2).toISOString().slice(0, 10);
+  }, [refStart, refEnd]);
   const [isLegendMinimized, setIsLegendMinimized]           = useState(false);
   const [isSensibilityExpanded, setIsSensibilityExpanded]   = useState(false);
   const [isPeriodsExpanded, setIsPeriodsExpanded]           = useState(false);
@@ -438,7 +445,7 @@ export function Teledetection() {
   // Limites personnalisées de l'utilisateur (fichier importé OU dessin sur carte).
   const [customRoi, setCustomRoi]   = useState<RoiFC | null>(null);
   const [customRoiName, setCustomRoiName] = useState<string>('');
-  const [drawShape, setDrawShape] = useState<'rectangle' | 'polygon' | null>(null);
+  const [drawShape, setDrawShape] = useState<'rectangle' | 'polygon' | 'point' | null>(null);
   const [selectedForest, setSelectedForest] = useState<string>('');
   // v16 — canton (section forestiere) optionnel pour affiner encore l'analyse
   const [selectedCanton, setSelectedCanton] = useState<string>('');
@@ -475,6 +482,9 @@ export function Teledetection() {
   // visibilité + opacité du remplissage (0 = contour seul, idéal pour inspecter).
   const [showCustomRoi, setShowCustomRoi] = useState(true);
   const [customRoiFill, setCustomRoiFill] = useState(0.10);
+  // Édition geoman de la forme tracée + référence vers sa couche Leaflet.
+  const [editingRoi, setEditingRoi] = useState(false);
+  const customRoiLayerRef = useRef<any>(null);
 
   const zones = [
     { id: 'mdiq',          label: 'DF Mdiq-Fnideq', icon: MapIcon  },
@@ -666,14 +676,18 @@ export function Teledetection() {
         }
         if (cancelled || !items.length) return;
         items.sort((a, b) => a.date.localeCompare(b.date));
+        // On garde TOUTES les releases en référence interne (url + release) pour
+        // l'étape d'affinage par localisation, MAIS on n'affiche PAS encore leurs
+        // dates : celles du waybackconfig sont des dates de PUBLICATION (souvent
+        // fausses vs la prise de vue). La frise n'affichera que des dates de
+        // capture VÉRIFIÉES (voir refineWaybackForLocation).
         waybackAllRef.current = items;
-        setWaybackList(items);
-        // défaut : image Wayback la plus proche de la date d'analyse (actEnd)
-        setWaybackIdx(nearestIdx(items, actEnd));
+        setWaybackList([]);
+        setWaybackIdx(-1);
       } catch { /* repli S2 conservé, jamais de crash */ }
     })();
     return () => { cancelled = true; };
-  }, [refEnd, actEnd]);
+  }, [refStart, refEnd]);
 
   // Conversion lat/lng -> tuile XYZ (pour interroger les services Wayback par lieu)
   const lonLatToTile = (lng: number, lat: number, z: number) => {
@@ -702,38 +716,36 @@ export function Teledetection() {
       const releases: number[] = await cd.json();
       if (!Array.isArray(releases) || !releases.length) return;
       const byRelease = new Map(all.map(i => [i.release, i]));
-      // 2) Date de capture réelle par release (métadonnées), dédupliquée par date
-      const seen = new Set<string>();
-      const refined: { url: string; date: string; release: number; capture: string }[] = [];
+      // 2) Date de capture réelle par release (métadonnées). On NE GARDE QUE les
+      //    releases pour lesquelles le service renvoie une vraie SRC_DATE : aucune
+      //    date de publication ("fausse") n'est ajoutée à la frise.
+      const refined: { url: string; date: string; release: number }[] = [];
       await Promise.all(releases.map(async (rel) => {
         const base = byRelease.get(rel);
         if (!base) return;
-        let capture = base.date;
         try {
           const mdUrl = `https://wayback.maptiles.arcgis.com/arcgis/rest/services/world_imagery/wmts/1.0.0/default028mm/MapServer/tile/${rel}/${z}/${y}/${x}/metadata?f=json`;
           const md = await fetch(mdUrl);
-          if (md.ok) {
-            const j = await md.json();
-            const d = j?.SRC_DATE || j?.features?.[0]?.attributes?.SRC_DATE;
-            if (d) {
-              let ds = String(d);
-              if (/^\d{10,}$/.test(ds)) ds = new Date(Number(ds)).toISOString().slice(0, 10);
-              else if (/^\d{4}$/.test(ds)) ds = `${ds}-01-01`;
-              capture = ds;
-            }
-          }
-        } catch { /* garde la date de publication en repli */ }
-        refined.push({ ...base, capture });
+          if (!md.ok) return;
+          const j = await md.json();
+          const d = j?.SRC_DATE || j?.features?.[0]?.attributes?.SRC_DATE;
+          if (!d) return;                      // pas de date vérifiée -> on écarte
+          let ds = String(d);
+          if (/^\d{10,}$/.test(ds)) ds = new Date(Number(ds)).toISOString().slice(0, 10);
+          else if (/^\d{4}$/.test(ds)) ds = `${ds}-01-01`;
+          else if (!/^\d{4}-\d{2}-\d{2}/.test(ds)) return;  // format douteux -> écarté
+          refined.push({ url: base.url, date: ds.slice(0, 10), release: rel });
+        } catch { /* release écartée si métadonnées indisponibles */ }
       }));
-      if (!refined.length) return;
+      if (!refined.length) { setWaybackList([]); setWaybackIdx(-1); return; }
       // déduplique par date de capture réelle (zéro mosaïque répétée)
-      refined.sort((a, b) => a.capture.localeCompare(b.capture));
-      const deduped = refined.filter(r => (seen.has(r.capture) ? false : (seen.add(r.capture), true)));
-      // honnêteté : on garde la VRAIE date de capture ; on marque les dates de publication.
-      const list = deduped.map(r => ({ url: r.url, date: r.capture, real: r.capture !== r.date }));
+      refined.sort((a, b) => a.date.localeCompare(b.date));
+      const seen = new Set<string>();
+      const list = refined.filter(r => (seen.has(r.date) ? false : (seen.add(r.date), true)))
+                          .map(r => ({ url: r.url, date: r.date }));
       setWaybackList(list as any);
-      setWaybackIdx(nearestIdx(list, actEnd));   // défaut = plus proche de l'analyse
-    } catch { /* repli : on garde la liste complète déjà affichée */ }
+      setWaybackIdx(nearestIdx(list, beforeTargetDate));   // défaut = plus proche de la RÉFÉRENCE
+    } catch { /* repli : on garde la liste déjà affichée */ }
   };
 
   // Applique l'image Wayback correspondant à l'index choisi (frise temporelle)
@@ -811,7 +823,7 @@ export function Teledetection() {
         if (cancelled || !list?.length) { setS2List([]); setS2Idx(-1); return; }
         list.sort((a, b) => a.date.localeCompare(b.date));
         setS2List(list);
-        setS2Idx(nearestIdx(list, actEnd));  // défaut : scène la plus proche de la date d'analyse
+        setS2Idx(nearestIdx(list, beforeTargetDate));  // défaut : scène la plus proche de la RÉFÉRENCE
       } catch { if (!cancelled) { setS2List([]); setS2Idx(-1); } }
       finally { if (!cancelled) setS2Loading(false); }
     })();
@@ -871,6 +883,7 @@ export function Teledetection() {
     setRealStats(null); setS1Data(null); setFwData(null); setPhenologyData(null); setErrorMsg(null); setFrozen({}); setRoiBounds(null);
     setSelectedForest('');   // v15 — la liste des forêts dépend du centre
     setSelectedCanton('');   // v16 — reset canton
+    setAnalysisLevel(l => (l === 'forest' ? 'cpf' : l));  // forêt invalide pour le nouveau centre
   }, [selectedZone]);
 
   useEffect(() => { if (phenologyData) setIsPhenologyExpanded(true); }, [phenologyData]);
@@ -950,7 +963,7 @@ export function Teledetection() {
   // est celle qui est visible). On coupe aussi le mode dessin.
   const applyCustomRoi = (fc: RoiFC, name: string) => {
     setCustomRoi(fc); setCustomRoiName(name);
-    setAnalysisLevel('custom'); setDrawShape(null);
+    setAnalysisLevel('custom'); setDrawShape(null); setEditingRoi(false);
     setShowCustomRoi(true); setShowAnefLimit(false);
     try {
       const b = L.geoJSON(fc as any).getBounds();
@@ -958,10 +971,42 @@ export function Teledetection() {
     } catch { /* géométrie illisible : on n'empêche pas l'analyse */ }
   };
   const clearCustomRoi = () => {
-    setCustomRoi(null); setCustomRoiName(''); setDrawShape(null);
+    setCustomRoi(null); setCustomRoiName(''); setDrawShape(null); setEditingRoi(false);
     try { mapRef.current?.pm?.disableDraw?.(); } catch { /* noop */ }
     setShowAnefLimit(true);                       // on ré-affiche la limite forêt
     setAnalysisLevel(l => (l === 'custom' ? 'cpf' : l));
+  };
+
+  // Édition des sommets de la forme tracée via leaflet-geoman, UNIQUEMENT sur la
+  // couche de l'emprise (les limites ANEF/zone ne deviennent pas éditables). Au 2e
+  // clic on relit la géométrie modifiée et on met à jour l'emprise.
+  const toggleEditRoi = () => {
+    const grp = customRoiLayerRef.current;
+    if (!grp || !grp.eachLayer) return;
+    if (!editingRoi) {
+      grp.eachLayer((lyr: any) => { try { lyr.pm?.enable({ allowSelfIntersection: false }); } catch { /* noop */ } });
+      setEditingRoi(true);
+    } else {
+      const feats: any[] = [];
+      grp.eachLayer((lyr: any) => {
+        try { lyr.pm?.disable(); const gj = lyr.toGeoJSON?.(); if (gj) feats.push(gj); } catch { /* noop */ }
+      });
+      if (feats.length) setCustomRoi({ type: 'FeatureCollection', features: feats });
+      setEditingRoi(false);
+    }
+  };
+
+  // Signalement terrain manuel : centre de l'emprise -> archive Supabase.
+  const handleReport = async (type: 'changement' | 'incendie', note: string): Promise<boolean> => {
+    if (!customRoi) return false;
+    try {
+      const c = L.geoJSON(customRoi as any).getBounds().getCenter();
+      const zoneName = (analysisLevel === 'forest' && selectedForest)
+        ? (selectedCanton ? `${selectedForest}/${selectedCanton}` : selectedForest)
+        : toFlaskZone(selectedZone);
+      // L'aire reste optionnelle pour un signalement manuel (le backend met 0 par défaut).
+      return await saveManualReport(c.lat, c.lng, zoneName, type, note);
+    } catch { return false; }
   };
 
   // ── Dessin via leaflet-geoman (déjà présent dans le projet, plus moderne que
@@ -974,7 +1019,7 @@ export function Teledetection() {
     if (!map || !mapReady || !map.pm) return;
     const onStart = (e: any) => {
       const s = String(e?.shape || '').toLowerCase();
-      setDrawShape(s === 'rectangle' ? 'rectangle' : s === 'polygon' ? 'polygon' : null);
+      setDrawShape(s === 'rectangle' ? 'rectangle' : s === 'polygon' ? 'polygon' : s === 'marker' ? 'point' : null);
     };
     const onEnd = () => setDrawShape(null);              // fin/annulation -> aucun bouton actif
     const onCreate = (e: any) => {
@@ -983,7 +1028,10 @@ export function Teledetection() {
         const gj = layer?.toGeoJSON?.();
         if (layer) map.removeLayer(layer);               // on rend via notre propre couche GeoJSON
         try { map.pm.disableDraw(); } catch { /* noop */ }
-        if (gj) applyCustomRoi({ type: 'FeatureCollection', features: [gj] }, 'Tracé manuel');
+        if (gj) {
+          const isPoint = gj?.geometry?.type === 'Point';
+          applyCustomRoi({ type: 'FeatureCollection', features: [gj] }, isPoint ? 'Point manuel' : 'Tracé manuel');
+        }
       } catch { /* noop */ }
     };
     map.on('pm:drawstart', onStart);
@@ -997,11 +1045,12 @@ export function Teledetection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady]);
 
-  const startDraw = (shape: 'rectangle' | 'polygon') => {
+  const startDraw = (shape: 'rectangle' | 'polygon' | 'point') => {
     const map = mapRef.current as any;
     if (!map || !map.pm) { setErrorMsg("Outil de dessin indisponible (leaflet-geoman)."); return; }
     try { map.pm.disableDraw(); } catch { /* noop */ }   // coupe toute autre forme en cours
-    map.pm.enableDraw(shape === 'rectangle' ? 'Rectangle' : 'Polygon', {
+    const tool = shape === 'rectangle' ? 'Rectangle' : shape === 'polygon' ? 'Polygon' : 'Marker';
+    map.pm.enableDraw(tool, {
       snappable: true, finishOn: 'dblclick',
       templineStyle: { color: '#22d3ee' }, hintlineStyle: { color: '#22d3ee', dashArray: '5,5' },
       pathOptions: { color: '#22d3ee', weight: 2, fillColor: '#22d3ee', fillOpacity: 0.08 },
@@ -1139,6 +1188,13 @@ export function Teledetection() {
     // le backend retomberait silencieusement sur le centre entier (mauvaise zone).
     if (analysisLevel === 'custom' && (!customRoi || (customRoi.features?.length ?? 0) === 0)) {
       setErrorMsg('Importez ou dessinez une emprise avant de lancer l’analyse.');
+      return;
+    }
+    // Un point/marqueur seul ne définit pas de surface : on bloque proprement
+    // (sinon GEE renvoie une erreur de géométrie). Il reste exportable en KML.
+    if (analysisLevel === 'custom' && customRoi &&
+        !customRoi.features.some((f: any) => ['Polygon', 'MultiPolygon'].includes(f?.geometry?.type))) {
+      setErrorMsg('L’emprise ne contient aucun polygone. Dessinez un polygone/rectangle (un point seul ne peut pas être analysé).');
       return;
     }
     if (analysisLevel === 'forest' && !selectedForest) {
@@ -1614,6 +1670,8 @@ export function Teledetection() {
               et opacité de remplissage pilotables (0 = contour seul). */}
           {analysisLevel === 'custom' && customRoi && showCustomRoi && (
             <GeoJSON key={`custom-${customRoi.features.length}-${customRoiName}-${customRoiFill}`} pane="paneLimits" data={customRoi as any}
+              ref={(r: any) => { customRoiLayerRef.current = r; }}
+              pointToLayer={(_f: any, latlng: any) => L.circleMarker(latlng, { radius: 7, color: '#22d3ee', weight: 2, fillColor: '#22d3ee', fillOpacity: 0.6 })}
               style={() => ({ color: '#22d3ee', weight: 3, dashArray: '6 4', fillColor: '#22d3ee', fillOpacity: customRoiFill })} />
           )}
 
@@ -2015,7 +2073,7 @@ export function Teledetection() {
               {/* Zone */}
               <section className="border-b border-stone-200/50 dark:border-stone-800/50 pb-3 mb-3">
                 <button onClick={() => setIsZoneExpanded(!isZoneExpanded)} className="w-full text-xs font-bold text-[var(--brand)] uppercase tracking-wider mb-2 flex items-center justify-between group hover:text-[var(--brand-hover)] transition-colors">
-                  <div className="flex items-center gap-2"><MapPin className="w-4 h-4 text-[var(--brand)] group-hover:scale-110 transition-transform" /> Zone d'analyse</div>
+                  <div className="flex items-center gap-2"><MapPin className="w-4 h-4 text-[var(--brand)] group-hover:scale-110 transition-transform" /> Zone d'étude</div>
                   <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isZoneExpanded ? 'rotate-180' : ''}`} />
                 </button>
                 <div className={`transition-all duration-300 origin-top overflow-hidden ${isZoneExpanded ? 'max-h-[500px] opacity-100' : 'max-h-0 opacity-0'}`}>
@@ -2029,34 +2087,38 @@ export function Teledetection() {
                     ))}
                   </div>
 
-                  {/* v15 — Niveau d'analyse : centre entier (CPF), forêt seule, ou limites perso */}
+                  {/* Périmètre d'étude : (1) Centre/Forêt issus des assets, OU
+                      (2) zone importée/dessinée. Le centre est choisi ci-dessus ;
+                      ici on affine en forêt/canton, ou on bascule en import/dessin. */}
                   <div className="mt-3 pt-3 border-t border-stone-200/40 dark:border-stone-800/40">
                     <div className="flex gap-1 mb-2">
-                      <button onClick={() => setAnalysisLevel('cpf')}
+                      <button onClick={() => setAnalysisLevel(selectedForest ? 'forest' : 'cpf')}
                         className={cn("flex-1 py-1.5 rounded text-[11px] font-bold border transition-all",
-                          analysisLevel === 'cpf' ? "bg-[var(--brand-light)] border-[var(--brand)] text-[var(--brand)]" : "bg-transparent border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
-                        Centre (CPF)
-                      </button>
-                      <button onClick={() => setAnalysisLevel('forest')}
-                        className={cn("flex-1 py-1.5 rounded text-[11px] font-bold border transition-all",
-                          analysisLevel === 'forest' ? "bg-[var(--brand-light)] border-[var(--brand)] text-[var(--brand)]" : "bg-transparent border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
-                        Forêt
+                          analysisLevel !== 'custom' ? "bg-[var(--brand-light)] border-[var(--brand)] text-[var(--brand)]" : "bg-transparent border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
+                        Centre / Forêt
                       </button>
                       <button onClick={() => setAnalysisLevel('custom')}
                         className={cn("flex-1 py-1.5 rounded text-[11px] font-bold border transition-all",
                           analysisLevel === 'custom' ? "bg-cyan-500/15 border-cyan-500 text-cyan-500" : "bg-transparent border-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text-main)]")}>
-                        Emprise
+                        Importer / Dessiner
                       </button>
                     </div>
-                    {analysisLevel === 'forest' && (
+
+                    {analysisLevel !== 'custom' && (
                       <>
-                        <select value={selectedForest} onChange={e => { setSelectedForest(e.target.value); setSelectedCanton(''); }}
+                        {/* Forêt du centre sélectionné (vide = centre entier) */}
+                        <select value={selectedForest}
+                          onChange={e => {
+                            const v = e.target.value;
+                            setSelectedForest(v); setSelectedCanton('');
+                            setAnalysisLevel(v ? 'forest' : 'cpf');
+                          }}
                           className="w-full p-2 rounded border border-[var(--border-color)] bg-[var(--bg-main)] text-[var(--text-main)] text-sm">
-                          <option value="">— Choisir une forêt —</option>
+                          <option value="">— Centre entier ({forestsForZone.length} forêts) —</option>
                           {forestsForZone.map(f => <option key={f} value={f}>{f}</option>)}
                         </select>
                         {!forestsForZone.length && (
-                          <p className="text-[10px] text-[var(--text-muted)] mt-1">Aucune forêt pour ce centre (vérifier le champ CPF du GeoJSON).</p>
+                          <p className="text-[10px] text-[var(--text-muted)] mt-1">Aucune forêt listée pour ce centre (vérifier le champ CPF du GeoJSON).</p>
                         )}
                         {selectedForest && cantonsForForest.length > 0 && (
                           <select value={selectedCanton} onChange={e => setSelectedCanton(e.target.value)}
@@ -2065,28 +2127,38 @@ export function Teledetection() {
                             {cantonsForForest.map(c => <option key={c} value={c}>{c}</option>)}
                           </select>
                         )}
-                        {selectedForest && (
-                          <p className="text-[10px] text-[var(--brand)] mt-1 font-semibold">
-                            Analyse limitée à : {selectedForest}{selectedCanton ? ` / ${selectedCanton}` : ''}
-                          </p>
-                        )}
+                        <p className="text-[10px] text-[var(--brand)] mt-1 font-semibold">
+                          {selectedForest
+                            ? `Analyse limitée à : ${selectedForest}${selectedCanton ? ` / ${selectedCanton}` : ''}`
+                            : 'Analyse sur le centre entier.'}
+                        </p>
                       </>
                     )}
+
                     {analysisLevel === 'custom' && (
-                      <RoiImport
-                        roi={customRoi}
-                        roiName={customRoiName}
-                        drawShape={drawShape}
-                        showRoi={showCustomRoi}
-                        fill={customRoiFill}
-                        onRoi={applyCustomRoi}
-                        onClear={clearCustomRoi}
-                        onDrawRect={() => startDraw('rectangle')}
-                        onDrawPoly={() => startDraw('polygon')}
-                        onCancelDraw={cancelDraw}
-                        onToggleShow={() => setShowCustomRoi(v => !v)}
-                        onFill={setCustomRoiFill}
-                      />
+                      <>
+                        <p className="text-[10px] text-[var(--text-muted)] mb-1.5 leading-snug">
+                          Importez un fichier (KML, GeoJSON, SHP, Excel…) ou dessinez la zone à analyser directement sur la carte.
+                        </p>
+                        <RoiImport
+                          roi={customRoi}
+                          roiName={customRoiName}
+                          drawShape={drawShape}
+                          showRoi={showCustomRoi}
+                          fill={customRoiFill}
+                          editing={editingRoi}
+                          onRoi={applyCustomRoi}
+                          onClear={clearCustomRoi}
+                          onDrawRect={() => startDraw('rectangle')}
+                          onDrawPoly={() => startDraw('polygon')}
+                          onDrawPoint={() => startDraw('point')}
+                          onCancelDraw={cancelDraw}
+                          onToggleShow={() => setShowCustomRoi(v => !v)}
+                          onFill={setCustomRoiFill}
+                          onToggleEdit={toggleEditRoi}
+                          onReport={handleReport}
+                        />
+                      </>
                     )}
                   </div>
                 </div>

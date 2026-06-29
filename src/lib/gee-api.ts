@@ -323,6 +323,19 @@ export async function sendAlertVerdict(lat: number, lng: number, verdict: Verdic
   } catch (e) { console.warn("[alerts/feedback]", e); return false; }
 }
 
+// Signalement TERRAIN MANUEL : un changement non détecté, marqué à la main
+// (point/polygone) avec une note. Archivé dans la même base que les alertes.
+export async function saveManualReport(
+  lat: number, lng: number, zone: string,
+  type: "changement" | "incendie" = "changement",
+  note?: string, areaHa?: number,
+): Promise<boolean> {
+  try {
+    await geePost("/gee/alerts/manual", { lat, lng, zone, type, note, area_ha: areaHa });
+    return true;
+  } catch (e) { console.warn("[alerts/manual]", e); return false; }
+}
+
 // Taux de fiabilité réel par classe (validation scientifique)
 export async function fetchAccuracy(): Promise<AccuracyRow[]> {
   try {
