@@ -543,7 +543,7 @@ export function Teledetection() {
 
   const mapRef = useRef<L.Map|null>(null);
   // Liste complète des releases Wayback (clé API) pour la détection par localisation
-  const waybackAllRef = useRef<{ url: string; date: string; release: number }[]>([]);
+  const waybackAllRef = useRef<{ url: string; date: string; release: number; metaUrl?: string }[]>([]);
   // Cache des frises affinées par tuile (évite de re-télécharger les métadonnées)
   const waybackTileCache = useRef<Map<string, { date: string; url: string; real?: boolean }[]>>(new Map());
 
@@ -656,40 +656,53 @@ export function Teledetection() {
     fetch('/assets/data/forest_limits.json').then(r => r.json()).then(setForestBoundary).catch(() => {});
   }, []);
 
-  // Esri Wayback : charge TOUTES les versions publiées (repli si la détection
-  // par localisation échoue). On garde aussi le numéro de release (clé API).
+  // Esri Wayback : on charge l'archive via la librairie OFFICIELLE @esri/wayback-core
+  // (même moteur que l'app Wayback d'Esri). Repli sur le waybackconfig brut si le
+  // paquet n'est pas installé, afin de ne jamais casser le build.
   useEffect(() => {
     let cancelled = false;
+    const tpl = (u: string) => u.replace(/\{level\}/gi, '{z}').replace(/\{row\}/gi, '{y}').replace(/\{col\}/gi, '{x}');
     (async () => {
+      let items: { url: string; date: string; release: number; metaUrl?: string }[] = [];
       try {
-        const r = await fetch('https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json');
-        if (!r.ok) return;
-        const cfg = await r.json();
-        if (cancelled || !cfg || typeof cfg !== 'object') return;
-        const items: { url: string; date: string; release: number }[] = [];
-        for (const k in cfg) {
-          const v = (cfg as any)[k];
-          const raw = v && typeof v.itemURL === 'string' ? v.itemURL : '';
-          const m = String(v?.itemTitle || '').match(/\d{4}-\d{2}-\d{2}/);
-          if (!raw || !m) continue;
-          const tpl = raw.replace(/\{level\}/gi, '{z}').replace(/\{row\}/gi, '{y}').replace(/\{col\}/gi, '{x}');
-          if (/\{[^}]+\}/.test(tpl.replace(/\{[zxysr]\}/gi, ''))) continue;
-          items.push({ url: tpl, date: m[0], release: Number(k) });
-        }
-        if (cancelled || !items.length) return;
-        items.sort((a, b) => a.date.localeCompare(b.date));
-        waybackAllRef.current = items;
-        // On AFFICHE la frise immédiatement à partir des dates de version Wayback
-        // (réelles, publiées par Esri ; marquées real=false). Elles seront ensuite
-        // remplacées, pour la zone visible, par les vraies DATES DE PRISE DE VUE
-        // (real=true) via refineWaybackForLocation. La frise n'est jamais vide.
-        const seen = new Set<string>();
-        const seeded = items
-          .filter(it => (seen.has(it.date) ? false : (seen.add(it.date), true)))
-          .map(it => ({ url: it.url, date: it.date, real: false }));
-        setWaybackList(seeded);
-        setWaybackIdx(nearestIdx(seeded, beforeTargetDate));  // défaut = plus proche de la RÉFÉRENCE
-      } catch { /* repli S2 conservé, jamais de crash */ }
+        const mod: any = await import('@esri/wayback-core');
+        const raw = await mod.getWaybackItems();          // trié récent -> ancien
+        items = (raw || []).map((it: any) => ({
+          url: tpl(String(it.itemURL || '')),
+          date: String(it.releaseDateLabel || '').slice(0, 10),
+          release: Number(it.releaseNum),
+          metaUrl: it.metadataLayerUrl || undefined,
+        })).filter((i: any) => i.url && /^\d{4}-\d{2}-\d{2}/.test(i.date));
+      } catch {
+        // Repli : configuration brute (dates de PUBLICATION uniquement)
+        try {
+          const r = await fetch('https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json');
+          if (r.ok) {
+            const cfg = await r.json();
+            for (const k in (cfg || {})) {
+              const v = (cfg as any)[k];
+              const u = v && typeof v.itemURL === 'string' ? v.itemURL : '';
+              const m = String(v?.itemTitle || '').match(/\d{4}-\d{2}-\d{2}/);
+              if (!u || !m) continue;
+              const t = tpl(u);
+              if (/\{[^}]+\}/.test(t.replace(/\{[zxysr]\}/gi, ''))) continue;
+              items.push({ url: t, date: m[0], release: Number(k), metaUrl: v?.metadataLayerUrl });
+            }
+          }
+        } catch { /* noop */ }
+      }
+      if (cancelled || !items.length) return;
+      items.sort((a, b) => a.date.localeCompare(b.date));
+      waybackAllRef.current = items;
+      // Frise affichée immédiatement (dates de version, real=false) ; remplacée
+      // ensuite, pour la zone visible, par les releases à CHANGEMENT LOCAL réel
+      // avec leur DATE DE PRISE DE VUE (real=true). Jamais vide.
+      const seen = new Set<string>();
+      const seeded = items
+        .filter(it => (seen.has(it.date) ? false : (seen.add(it.date), true)))
+        .map(it => ({ url: it.url, date: it.date, real: false }));
+      setWaybackList(seeded);
+      setWaybackIdx(nearestIdx(seeded, beforeTargetDate));
     })();
     return () => { cancelled = true; };
   }, [refStart, refEnd]);
@@ -703,60 +716,75 @@ export function Teledetection() {
     return { x, y };
   };
 
-  // HAUTE DÉFINITION + DATES DE PRISE DE VUE RÉELLES + ZÉRO DOUBLON.
-  // Pour le centre de carte, on lit la VRAIE date de capture de chaque release via
-  // l'extension de métadonnées Wayback (WaybackMetadataExtension), puis on
-  // déduplique par date : on obtient la frise des prises de vue réellement
-  // distinctes à cet endroit. En cas d'échec réseau, on CONSERVE la frise seedée
-  // (jamais de frise vide). Résultat mis en cache par tuile.
+  // VRAIES PRISES DE VUE DISTINCTES (zéro doublon) : on demande à Esri (librairie
+  // officielle) UNIQUEMENT les releases qui présentent un CHANGEMENT LOCAL réel à
+  // cet endroit -> plus aucune version identique répétée entre 2020 et 2026. Puis,
+  // pour chacune, on lit la DATE DE PRISE DE VUE réelle dans la couche de
+  // métadonnées propre à la release (SRC_DATE). Repli : frise seedée conservée.
+  const fetchCaptureDate = async (metaUrl: string | undefined, lat: number, lng: number): Promise<string | null> => {
+    if (!metaUrl) return null;
+    try {
+      const d = 0.002;
+      const url = `${metaUrl}/identify?geometry=${lng},${lat}&geometryType=esriGeometryPoint&sr=4326`
+        + `&layers=all&tolerance=2&mapExtent=${lng - d},${lat - d},${lng + d},${lat + d}`
+        + `&imageDisplay=96,96,96&returnGeometry=false&f=json`;
+      const r = await fetch(url); if (!r.ok) return null;
+      const j = await r.json();
+      const at = j?.results?.find((x: any) => x?.attributes && (x.attributes.SRC_DATE2 || x.attributes.SRC_DATE || x.attributes.DATE))?.attributes;
+      let raw = at?.SRC_DATE2 ?? at?.SRC_DATE ?? at?.DATE;
+      if (raw == null) return null;
+      let ds = String(raw).trim();
+      if (/^\d{12,}$/.test(ds)) ds = new Date(Number(ds)).toISOString().slice(0, 10);
+      else if (/^\d{4}\/\d{2}\/\d{2}$/.test(ds)) ds = ds.replace(/\//g, '-');
+      else if (!/^\d{4}-\d{2}-\d{2}/.test(ds)) return null;
+      return ds.slice(0, 10);
+    } catch { return null; }
+  };
+
   const refineWaybackForLocation = async (lat: number, lng: number) => {
     const all = waybackAllRef.current;
     if (!all.length) return;
-    const z = 15;
+    const z = Math.min(18, Math.max(12, Math.round(mapRef.current?.getZoom?.() ?? 15)));
     const { x, y } = lonLatToTile(lng, lat, z);
     const cacheKey = `${z}/${x}/${y}`;
     const cached = waybackTileCache.current.get(cacheKey);
     if (cached) { setWaybackList(cached); setWaybackIdx(nearestIdx(cached, beforeTargetDate)); return; }
 
-    // Téléchargement throttlé (concurrence limitée) des métadonnées par release.
-    const metaUrl = (rel: number) =>
-      `https://metadata.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/exts/WaybackMetadataExtension/maptiles/${rel}/${z}/${y}/${x}`;
-    const parseDate = (d: any): string | null => {
-      if (d == null) return null;
-      let ds = String(d).trim();
-      if (/^\d{12,}$/.test(ds)) ds = new Date(Number(ds)).toISOString().slice(0, 10);
-      else if (/^\d{4}\/\d{2}\/\d{2}$/.test(ds)) ds = ds.replace(/\//g, '-');
-      else if (!/^\d{4}-\d{2}-\d{2}/.test(ds)) return null;
-      return ds.slice(0, 10);
-    };
-    const fetchOne = async (it: { url: string; release: number }) => {
-      try {
-        const r = await fetch(metaUrl(it.release));
-        if (!r.ok) return null;
-        const j = await r.json();
-        const ds = parseDate(j?.data?.date ?? j?.date ?? j?.results?.date ?? j?.SRC_DATE);
-        return ds ? { url: it.url, date: ds, release: it.release } : null;
-      } catch { return null; }
-    };
-
+    let changes: any[] = [];
     try {
-      const CONC = 10;
-      const out: ({ url: string; date: string; release: number } | null)[] = new Array(all.length);
-      let cursor = 0;
-      await Promise.all(Array.from({ length: Math.min(CONC, all.length) }, async () => {
-        while (cursor < all.length) { const i = cursor++; out[i] = await fetchOne(all[i]); }
-      }));
-      const ok = out.filter(Boolean) as { url: string; date: string; release: number }[];
-      if (ok.length < 2) return;                 // pas assez de vraies dates -> on garde la frise seedée
-      ok.sort((a, b) => b.release - a.release);   // récent -> ancien : on garde la release la plus récente par date
-      const seen = new Set<string>();
-      const list = ok.filter(r => (seen.has(r.date) ? false : (seen.add(r.date), true)))
-                     .map(r => ({ url: r.url, date: r.date, real: true }));
-      list.sort((a, b) => a.date.localeCompare(b.date));
-      waybackTileCache.current.set(cacheKey, list);
-      setWaybackList(list);
-      setWaybackIdx(nearestIdx(list, beforeTargetDate));   // défaut = plus proche de la RÉFÉRENCE
-    } catch { /* on conserve la frise seedée déjà affichée */ }
+      const mod: any = await import('@esri/wayback-core');
+      changes = await mod.getWaybackItemsWithLocalChanges({ longitude: lng, latitude: lat }, z);
+    } catch { return; }   // paquet absent / réseau -> on garde la frise seedée
+    if (!Array.isArray(changes) || changes.length < 1) return;
+
+    const tpl = (u: string) => u.replace(/\{level\}/gi, '{z}').replace(/\{row\}/gi, '{y}').replace(/\{col\}/gi, '{x}');
+    // Date de PRISE DE VUE par release (téléchargements throttlés), repli = date de version.
+    const CONC = 8;
+    const out: ({ url: string; date: string; real: boolean; release: number } | null)[] = new Array(changes.length);
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(CONC, changes.length) }, async () => {
+      while (cursor < changes.length) {
+        const i = cursor++; const it = changes[i];
+        const cap = await fetchCaptureDate(it.metadataLayerUrl, lat, lng);
+        out[i] = {
+          url: tpl(String(it.itemURL || '')),
+          date: (cap || String(it.releaseDateLabel || '')).slice(0, 10),
+          real: !!cap,
+          release: Number(it.releaseNum),
+        };
+      }
+    }));
+    const ok = out.filter(Boolean) as { url: string; date: string; real: boolean; release: number }[];
+    if (!ok.length) return;
+    // déduplication par date de capture (zéro doublon / zéro conflit)
+    ok.sort((a, b) => b.release - a.release);
+    const seen = new Set<string>();
+    const list = ok.filter(r => (seen.has(r.date) ? false : (seen.add(r.date), true)))
+                   .map(r => ({ url: r.url, date: r.date, real: r.real }));
+    list.sort((a, b) => a.date.localeCompare(b.date));
+    waybackTileCache.current.set(cacheKey, list);
+    setWaybackList(list);
+    setWaybackIdx(nearestIdx(list, beforeTargetDate));
   };
 
   // Applique l'image Wayback correspondant à l'index choisi (frise temporelle)
@@ -863,6 +891,26 @@ export function Teledetection() {
   const activeBeforeDate = beforeSource === 's2'
     ? (s2Idx >= 0 ? s2List[s2Idx]?.date ?? '' : '')
     : waybackDate;
+
+  // Google Earth Pro : son imagerie n'est PAS diffusable en tuiles (conditions
+  // Google). La voie légitime pour comparer l'historique Google = exporter la zone
+  // en KML et l'ouvrir dans Google Earth Pro, puis utiliser son curseur temporel.
+  const openInGoogleEarth = () => {
+    const map = mapRef.current;
+    if (customRoi && customRoi.features.length) {
+      downloadText(fcToKml(customRoi, customRoiName || 'zone'), `${customRoiName || 'zone'}_google_earth.kml`,
+        'application/vnd.google-earth.kml+xml');
+      return;
+    }
+    if (!map) return;
+    const c = map.getCenter();
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Zone d'étude</name>
+<Placemark><name>Centre de la vue</name>
+<LookAt><longitude>${c.lng}</longitude><latitude>${c.lat}</latitude><altitude>0</altitude><range>4000</range><tilt>0</tilt><heading>0</heading></LookAt>
+<Point><coordinates>${c.lng},${c.lat},0</coordinates></Point></Placemark></Document></kml>`;
+    downloadText(kml, 'vue_google_earth.kml', 'application/vnd.google-earth.kml+xml');
+  };
 
   // Centrer la carte sur les limites du domaine forestier de la zone sélectionnée
   useEffect(() => {
@@ -1814,6 +1862,13 @@ export function Teledetection() {
                 <span className="text-[13px] text-white font-mono font-bold">{activeBeforeDate || '—'}</span>
               </div>
             </div>
+
+            {/* Ouvrir la zone dans Google Earth Pro (curseur temporel = historique Google) */}
+            <button onClick={openInGoogleEarth}
+              title="Exporter la zone en KML et l'ouvrir dans Google Earth Pro (imagerie historique Google via son curseur temporel)"
+              className="flex items-center justify-center gap-1.5 w-full py-1 rounded-md bg-white/10 hover:bg-emerald-600 text-white text-[10px] font-bold transition-colors">
+              <Globe className="w-3.5 h-3.5" /> Comparer dans Google Earth Pro (KML)
+            </button>
 
             {/* Frise temporelle type Google Earth Pro : ◀ ▶ + repères de scènes,
                 pour naviguer sans se perdre entre les dates. Défaut = plus proche de l'analyse. */}

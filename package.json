@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@emailjs/browser": "^4.4.1",
+    "@esri/wayback-core": "^1.1.0",
     "@geoman-io/leaflet-geoman-free": "^2.19.3",
     "@google/genai": "^2.4.0",
     "@mapbox/shp-write": "^0.4.3",
