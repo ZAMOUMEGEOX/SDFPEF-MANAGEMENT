@@ -731,15 +731,6 @@ export function Teledetection() {
     return () => { cancelled = true; };
   }, [refStart, refEnd]);
 
-  // Conversion lat/lng -> tuile XYZ (pour interroger les services Wayback par lieu)
-  const lonLatToTile = (lng: number, lat: number, z: number) => {
-    const n = 2 ** z;
-    const x = Math.floor(((lng + 180) / 360) * n);
-    const latRad = (lat * Math.PI) / 180;
-    const y = Math.floor(((1 - Math.asinh(Math.tan(latRad)) / Math.PI) / 2) * n);
-    return { x, y };
-  };
-
   // VRAIES PRISES DE VUE DISTINCTES (zéro doublon) : on demande à Esri (librairie
   // officielle) UNIQUEMENT les releases qui présentent un CHANGEMENT LOCAL réel à
   // cet endroit -> plus aucune version identique répétée entre 2020 et 2026. Puis,
@@ -772,16 +763,25 @@ export function Teledetection() {
   const refineWaybackForLocation = async (lat: number, lng: number) => {
     const all = waybackAllRef.current;
     if (!all.length) return;
-    const z = Math.min(18, Math.max(12, Math.round(mapRef.current?.getZoom?.() ?? 15)));
-    const { x, y } = lonLatToTile(lng, lat, z);
-    const cacheKey = `${z}/${x}/${y}`;
+    // ZOOM DE DÉTECTION FIXE (≈ tuile 1 km) : la liste des prises de vue réelles ne
+    // dépend QUE de l'endroit, plus du zoom de la carte. Auparavant, dézoomer
+    // réduisait la frise à 2 repères (Esri détecte moins de changements à petite
+    // échelle). Désormais la frise reste riche et stable quel que soit le zoom.
+    // Détection à ÉCHELLE FIXE (indépendante du zoom de la carte) et sur DEUX
+    // niveaux fusionnés (large z15 + fin z17) : la frise reste riche même en
+    // dézoomant et ne dépend QUE de l'endroit. Cache par cellule ~100 m.
+    const cacheKey = `${lat.toFixed(3)},${lng.toFixed(3)}`;
     const cached = waybackTileCache.current.get(cacheKey);
     if (cached) { setWaybackList(cached); setWaybackIdx(nearestIdx(cached, beforePinnedDate.current ?? beforeTargetDate)); return; }
 
     let changes: any[] = [];
     try {
       const mod: any = await import('@esri/wayback-core');
-      changes = await mod.getWaybackItemsWithLocalChanges({ longitude: lng, latitude: lat }, z);
+      const lists = await Promise.all([15, 17].map((zz: number) =>
+        mod.getWaybackItemsWithLocalChanges({ longitude: lng, latitude: lat }, zz).catch(() => [])));
+      const byRel = new Map<number, any>();
+      for (const L of lists) for (const it of (L || [])) if (it?.releaseNum != null) byRel.set(Number(it.releaseNum), it);
+      changes = [...byRel.values()];
     } catch { return; }   // paquet absent / réseau -> on garde la frise seedée
     if (!Array.isArray(changes) || changes.length < 1) return;
 
