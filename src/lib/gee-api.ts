@@ -316,9 +316,9 @@ export async function fetchSavedAlerts(zone: string, includeClosed = false): Pro
 }
 
 // Verdict terrain sur une alerte (par coordonnées -> le backend calcule le geohash)
-export async function sendAlertVerdict(lat: number, lng: number, verdict: Verdict, confScore?: number, note?: string): Promise<boolean> {
+export async function sendAlertVerdict(lat: number, lng: number, verdict: Verdict, confScore?: number, note?: string, cause?: string): Promise<boolean> {
   try {
-    await geePost("/gee/alerts/feedback", { lat, lng, verdict, conf_score: confScore, note });
+    await geePost("/gee/alerts/feedback", { lat, lng, verdict, conf_score: confScore, note, cause });
     return true;
   } catch (e) { console.warn("[alerts/feedback]", e); return false; }
 }

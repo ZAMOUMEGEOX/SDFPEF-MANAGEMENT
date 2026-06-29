@@ -62,6 +62,7 @@ const STATUS_AR: Record<string, string> = {
   nouveau: 'جديد / Nouveau',
   en_cours: 'قيد المعاينة / En cours',
   infraction: 'مخالفة مؤكَّدة / Infraction',
+  naturel: 'سبب طبيعي / Naturel',
   faux_positif: 'إنذار كاذب / Faux',
   cloture: 'مُغلق / Clôturé',
 };
@@ -128,6 +129,47 @@ const CAUSE_INFO: Record<string, { label: string; emoji: string; color: string }
   indetermine:     { label: 'Indéterminé', emoji: '\u2753', color: '#6b7280' },
 };
 const causeInfo = (c?: string) => CAUSE_INFO[c || 'indetermine'] || CAUSE_INFO.indetermine;
+
+// VERDICT TERRAIN — liste de causes proposées à l'agent, groupées : INFRACTION
+// (cadre juridique) vs CAUSE NATURELLE (incendie, vent…) vs AUTRE. L'agent
+// confirme la cause réelle ; elle est enregistrée dans Supabase avec le verdict.
+const VERDICT_CAUSE_GROUPS: { group: string; options: { v: string; t: string }[] }[] = [
+  { group: 'Infraction (cadre juridique)', options: [
+    { v: 'coupe_illegale', t: '\uD83E\uDE93 Coupe illégale' },
+    { v: 'defrichement',   t: '\uD83C\uDF31 Défrichement / mise en culture' },
+    { v: 'surpaturage',    t: '\uD83D\uDC10 Surpâturage' },
+    { v: 'charbonnage',    t: '\u26CF\uFE0F Charbonnage' },
+    { v: 'construction',   t: '\uD83C\uDFD7\uFE0F Construction / piste' },
+    { v: 'infraction_autre', t: '\u2696\uFE0F Autre infraction' },
+  ] },
+  { group: 'Cause naturelle', options: [
+    { v: 'incendie',     t: '\uD83D\uDD25 Incendie' },
+    { v: 'chablis_vent', t: '\uD83C\uDF2C\uFE0F Chablis / vent' },
+    { v: 'secheresse',   t: '\uD83D\uDCA7 Sécheresse / dépérissement' },
+    { v: 'maladie',      t: '\uD83D\uDC1B Maladie / ravageur' },
+    { v: 'inondation',   t: '\uD83C\uDF0A Inondation / glissement' },
+  ] },
+  { group: 'Autre', options: [
+    { v: 'saisonnier',  t: '\uD83C\uDF42 Saisonnier (jachère, phénologie)' },
+    { v: 'nuage_ombre', t: '\u2601\uFE0F Nuage / ombre' },
+    { v: 'indetermine', t: '\u2753 Indéterminé' },
+  ] },
+];
+// Cause probable du modèle -> présélection dans la liste de l'agent
+const MODEL_CAUSE_PRESET: Record<string, string> = {
+  incendie: 'incendie', coupe: 'coupe_illegale', stress_hydrique: 'secheresse',
+  degradation: 'indetermine', indetermine: 'indetermine',
+};
+const causeSelectHtml = (id: string, detected?: string): string => {
+  const pre = MODEL_CAUSE_PRESET[detected || 'indetermine'] || 'indetermine';
+  const opts = VERDICT_CAUSE_GROUPS.map(g =>
+    `<optgroup label="${g.group}">` +
+    g.options.map(o => `<option value="${o.v}"${o.v === pre ? ' selected' : ''}>${o.t}</option>`).join('') +
+    `</optgroup>`).join('');
+  return `<select id="${id}" style="width:100%;font-size:10px;padding:3px;border:1px solid #d1d5db;border-radius:5px;margin:2px 0 5px">${opts}</select>`;
+};
+// Groupes côté affichage (pour la couleur/statut local éventuel)
+const NATUREL_CAUSE_SET = new Set(['incendie', 'chablis_vent', 'secheresse', 'maladie', 'inondation', 'saisonnier', 'nuage_ombre']);
 
 // Options anti-flicker pour les tuiles GEE : garde l'ancien niveau visible
 // pendant le chargement du nouveau, et ne recharge qu'à l'arrêt du zoom/pan.
@@ -1571,15 +1613,19 @@ export function Teledetection() {
   // Pont global pour les liens dans les popups Leaflet (HTML injecte)
   useEffect(() => {
     (window as any).__earthPro = openInEarthPro;
-    // v22 — verdict terrain depuis le popup : confirmation, maj instantanée, rechargement
-    (window as any).__verdict = async (lat: number, lng: number, verdict: 'confirme' | 'faux', sc?: number, btnId?: string) => {
-      const label = verdict === 'confirme' ? 'INFRACTION confirmée' : 'FAUX positif';
-      if (!window.confirm(`Confirmer ce verdict : ${label} ?\n(${lat.toFixed(5)}, ${lng.toFixed(5)})`)) return;
+    // v25 — verdict terrain + CAUSE choisie par l'agent -> enregistrement Supabase
+    (window as any).__verdict = async (lat: number, lng: number, verdict: 'confirme' | 'faux', sc?: number, btnId?: string, causeId?: string) => {
+      const causeEl = causeId ? (document.getElementById(causeId) as HTMLSelectElement | null) : null;
+      const cause = causeEl?.value || undefined;
+      const natural = cause ? NATUREL_CAUSE_SET.has(cause) : false;
+      const label = verdict === 'faux' ? 'FAUX positif'
+        : (natural ? 'Changement réel — cause NATURELLE' : 'INFRACTION confirmée');
+      if (!window.confirm(`Enregistrer ce verdict : ${label} ?\n(${lat.toFixed(5)}, ${lng.toFixed(5)})`)) return;
       const el = btnId ? document.getElementById(btnId) : null;
       if (el) el.innerHTML = '⏳ Enregistrement…';
-      const ok = await sendAlertVerdict(lat, lng, verdict, sc);
+      const ok = await sendAlertVerdict(lat, lng, verdict, sc, undefined, cause);
       if (el) el.innerHTML = ok
-        ? (verdict === 'confirme' ? '✅ Infraction enregistrée' : '🚫 Faux positif enregistré')
+        ? (verdict === 'faux' ? '🚫 Faux positif enregistré' : (natural ? '🌿 Cause naturelle enregistrée' : '✅ Infraction enregistrée'))
         : '⚠️ Échec (vérifier Supabase)';
       if (ok) {
         // maj instantanée de la couleur du polygone correspondant
@@ -1622,10 +1668,11 @@ export function Teledetection() {
           <a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}" target="_blank" rel="noopener" style="text-decoration:none;background:#1a73e8;color:#fff;padding:4px 8px;border-radius:5px;font-weight:bold;font-size:10px">🧭 Itinéraire</a>
         </div>
         <div style="border-top:1px solid #e5e7eb;margin-top:7px;padding-top:6px">
-          <div style="font-size:9px;color:#888;margin-bottom:3px;font-weight:bold">VERDICT TERRAIN</div>
+          <div style="font-size:9px;color:#888;margin-bottom:3px;font-weight:bold">VERDICT TERRAIN — CAUSE RÉELLE</div>
+          ${causeSelectHtml(`cause_${p.id}`, (p as any).cause)}
           <div style="display:flex;gap:6px">
-            <button onclick="window.__verdict && window.__verdict(${p.lat},${p.lng},'confirme',${Number(p.conf_score ?? 0)},'vd_${p.id}')" style="cursor:pointer;border:none;background:#16a34a;color:#fff;padding:4px 8px;border-radius:5px;font-weight:bold;font-size:10px">✓ Infraction</button>
-            <button onclick="window.__verdict && window.__verdict(${p.lat},${p.lng},'faux',${Number(p.conf_score ?? 0)},'vd_${p.id}')" style="cursor:pointer;border:none;background:#dc2626;color:#fff;padding:4px 8px;border-radius:5px;font-weight:bold;font-size:10px">✗ Faux</button>
+            <button onclick="window.__verdict && window.__verdict(${p.lat},${p.lng},'confirme',${Number(p.conf_score ?? 0)},'vd_${p.id}','cause_${p.id}')" style="cursor:pointer;border:none;background:#16a34a;color:#fff;padding:4px 8px;border-radius:5px;font-weight:bold;font-size:10px">✓ Confirmer</button>
+            <button onclick="window.__verdict && window.__verdict(${p.lat},${p.lng},'faux',${Number(p.conf_score ?? 0)},'vd_${p.id}','cause_${p.id}')" style="cursor:pointer;border:none;background:#dc2626;color:#fff;padding:4px 8px;border-radius:5px;font-weight:bold;font-size:10px">✗ Faux</button>
           </div>
           <div id="vd_${p.id}" style="font-size:9px;color:#16a34a;margin-top:4px;font-weight:bold"></div>
         </div>` : ''}
@@ -1696,6 +1743,7 @@ export function Teledetection() {
               Couleur selon le statut de suivi. N'apparaît que si aucune analyse fraîche n'est en cours. */}
           {displayPolygons.length === 0 && savedAlerts.map((a: any, i: number) => {
             const col = a.status === 'infraction' ? '#16a34a'
+                      : a.status === 'naturel' ? '#0891b2'
                       : a.status === 'faux_positif' ? '#9ca3af'
                       : a.status === 'en_cours' ? '#3b82f6'
                       : a.type === 'incendie' ? '#ea580c' : '#eab308';
@@ -2947,7 +2995,7 @@ export function Teledetection() {
               {/* v22 — Liste de travail : alertes ouvertes (clic = vol vers le point) */}
               <div>
                 <div className="flex items-center gap-2 text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider mb-2">
-                  <Target className="w-4 h-4 text-red-500" /> Alertes à traiter ({savedAlerts.filter(a => a.status !== 'infraction' && a.status !== 'faux_positif' && a.status !== 'cloture').length})
+                  <Target className="w-4 h-4 text-red-500" /> Alertes à traiter ({savedAlerts.filter(a => !['infraction', 'naturel', 'faux_positif', 'cloture'].includes(a.status)).length})
                 </div>
                 {/* compteurs par statut */}
                 <div className="flex flex-wrap gap-1.5 mb-2">
@@ -2972,8 +3020,8 @@ export function Teledetection() {
                           <div className="text-[10px] text-[var(--text-muted)] font-mono">{a.lat.toFixed(4)}, {a.lng.toFixed(4)}</div>
                         </div>
                         <span className="text-[9px] px-1.5 py-0.5 rounded shrink-0 font-bold"
-                          style={{ background: a.status === 'infraction' ? '#16a34a33' : a.status === 'faux_positif' ? '#9ca3af33' : a.status === 'en_cours' ? '#3b82f633' : '#eab30833',
-                                   color: a.status === 'infraction' ? '#16a34a' : a.status === 'faux_positif' ? '#6b7280' : a.status === 'en_cours' ? '#3b82f6' : '#a16207' }}>
+                          style={{ background: a.status === 'infraction' ? '#16a34a33' : a.status === 'naturel' ? '#0891b233' : a.status === 'faux_positif' ? '#9ca3af33' : a.status === 'en_cours' ? '#3b82f633' : '#eab30833',
+                                   color: a.status === 'infraction' ? '#16a34a' : a.status === 'naturel' ? '#0891b2' : a.status === 'faux_positif' ? '#6b7280' : a.status === 'en_cours' ? '#3b82f6' : '#a16207' }}>
                           {(STATUS_AR[a.status] ?? a.status).split(' / ')[0]}
                         </span>
                       </button>
