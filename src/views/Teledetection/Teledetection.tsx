@@ -6,7 +6,7 @@ import {
   ChevronDown, Hexagon, Crosshair, Map as MapIcon, RotateCcw,
   MapPin, BarChart3, Download, FileSpreadsheet, DownloadCloud,
   PanelRightClose, PanelRightOpen, Anchor, Waves, TrendingUp, Globe,
-  Flame, LayoutDashboard, X, Target, ShieldCheck, Activity
+  Flame, LayoutDashboard, X, Target, ShieldCheck, Activity, Pencil
 } from 'lucide-react';
 import { MapContainer, TileLayer, LayersControl, useMap, GeoJSON, CircleMarker, Tooltip as LeafletTooltip } from 'react-leaflet';
 import L from 'leaflet';
@@ -14,7 +14,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import '@geoman-io/leaflet-geoman-free';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
-import RoiImport, { type RoiFC } from './RoiImport';
+import RoiImport, { type RoiFC, fcToKml, downloadText } from './RoiImport';
 import {
   checkGeeHealth,
   runAnalyzeAsync,
@@ -511,7 +511,7 @@ export function Teledetection() {
   const [waybackUrl, setWaybackUrl]         = useState<string|null>(null);
   const [waybackDate, setWaybackDate]       = useState<string>('');
   // v15 — frise temporelle : toutes les versions disponibles + index sélectionné
-  const [waybackList, setWaybackList]       = useState<{ date: string; url: string }[]>([]);
+  const [waybackList, setWaybackList]       = useState<{ date: string; url: string; real?: boolean }[]>([]);
   const [waybackIdx, setWaybackIdx]         = useState<number>(-1);
   // v18 — date de PRISE DE VUE reelle (vs date de publication Wayback) + source active
   const [captureInfo, setCaptureInfo]       = useState<string>('');   // ex: "Maxar · 2022-08-14"
@@ -544,6 +544,8 @@ export function Teledetection() {
   const mapRef = useRef<L.Map|null>(null);
   // Liste complète des releases Wayback (clé API) pour la détection par localisation
   const waybackAllRef = useRef<{ url: string; date: string; release: number }[]>([]);
+  // Cache des frises affinées par tuile (évite de re-télécharger les métadonnées)
+  const waybackTileCache = useRef<Map<string, { date: string; url: string; real?: boolean }[]>>(new Map());
 
   // Fix #6 — Persistance des préférences utilisateur (zone, couches, opacités,
   // source historique) entre les sessions via localStorage. Chargée une fois au
@@ -676,14 +678,17 @@ export function Teledetection() {
         }
         if (cancelled || !items.length) return;
         items.sort((a, b) => a.date.localeCompare(b.date));
-        // On garde TOUTES les releases en référence interne (url + release) pour
-        // l'étape d'affinage par localisation, MAIS on n'affiche PAS encore leurs
-        // dates : celles du waybackconfig sont des dates de PUBLICATION (souvent
-        // fausses vs la prise de vue). La frise n'affichera que des dates de
-        // capture VÉRIFIÉES (voir refineWaybackForLocation).
         waybackAllRef.current = items;
-        setWaybackList([]);
-        setWaybackIdx(-1);
+        // On AFFICHE la frise immédiatement à partir des dates de version Wayback
+        // (réelles, publiées par Esri ; marquées real=false). Elles seront ensuite
+        // remplacées, pour la zone visible, par les vraies DATES DE PRISE DE VUE
+        // (real=true) via refineWaybackForLocation. La frise n'est jamais vide.
+        const seen = new Set<string>();
+        const seeded = items
+          .filter(it => (seen.has(it.date) ? false : (seen.add(it.date), true)))
+          .map(it => ({ url: it.url, date: it.date, real: false }));
+        setWaybackList(seeded);
+        setWaybackIdx(nearestIdx(seeded, beforeTargetDate));  // défaut = plus proche de la RÉFÉRENCE
       } catch { /* repli S2 conservé, jamais de crash */ }
     })();
     return () => { cancelled = true; };
@@ -698,54 +703,60 @@ export function Teledetection() {
     return { x, y };
   };
 
-  // HAUTE DÉFINITION + DATES RÉELLES + ZÉRO DOUBLON : pour le centre de carte,
-  // on demande à Esri quelles RELEASES Wayback ont réellement changé l'imagerie
-  // ici (change-detection), puis pour chacune la DATE DE CAPTURE réelle de la
-  // source (Maxar/Airbus...) via le service de métadonnées. Résultat : une frise
-  // de vraies prises de vue distinctes, plus aucune version republiée identique.
+  // HAUTE DÉFINITION + DATES DE PRISE DE VUE RÉELLES + ZÉRO DOUBLON.
+  // Pour le centre de carte, on lit la VRAIE date de capture de chaque release via
+  // l'extension de métadonnées Wayback (WaybackMetadataExtension), puis on
+  // déduplique par date : on obtient la frise des prises de vue réellement
+  // distinctes à cet endroit. En cas d'échec réseau, on CONSERVE la frise seedée
+  // (jamais de frise vide). Résultat mis en cache par tuile.
   const refineWaybackForLocation = async (lat: number, lng: number) => {
     const all = waybackAllRef.current;
     if (!all.length) return;
     const z = 15;
     const { x, y } = lonLatToTile(lng, lat, z);
+    const cacheKey = `${z}/${x}/${y}`;
+    const cached = waybackTileCache.current.get(cacheKey);
+    if (cached) { setWaybackList(cached); setWaybackIdx(nearestIdx(cached, beforeTargetDate)); return; }
+
+    // Téléchargement throttlé (concurrence limitée) des métadonnées par release.
+    const metaUrl = (rel: number) =>
+      `https://metadata.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/exts/WaybackMetadataExtension/maptiles/${rel}/${z}/${y}/${x}`;
+    const parseDate = (d: any): string | null => {
+      if (d == null) return null;
+      let ds = String(d).trim();
+      if (/^\d{12,}$/.test(ds)) ds = new Date(Number(ds)).toISOString().slice(0, 10);
+      else if (/^\d{4}\/\d{2}\/\d{2}$/.test(ds)) ds = ds.replace(/\//g, '-');
+      else if (!/^\d{4}-\d{2}-\d{2}/.test(ds)) return null;
+      return ds.slice(0, 10);
+    };
+    const fetchOne = async (it: { url: string; release: number }) => {
+      try {
+        const r = await fetch(metaUrl(it.release));
+        if (!r.ok) return null;
+        const j = await r.json();
+        const ds = parseDate(j?.data?.date ?? j?.date ?? j?.results?.date ?? j?.SRC_DATE);
+        return ds ? { url: it.url, date: ds, release: it.release } : null;
+      } catch { return null; }
+    };
+
     try {
-      // 1) Releases ayant changé à cet endroit (ordre récent -> ancien)
-      const cdUrl = `https://wayback.maptiles.arcgis.com/arcgis/rest/services/world_imagery/wmts/1.0.0/default028mm/MapServer/tile/changeDetection/${z}/${y}/${x}`;
-      const cd = await fetch(cdUrl);
-      if (!cd.ok) return;
-      const releases: number[] = await cd.json();
-      if (!Array.isArray(releases) || !releases.length) return;
-      const byRelease = new Map(all.map(i => [i.release, i]));
-      // 2) Date de capture réelle par release (métadonnées). On NE GARDE QUE les
-      //    releases pour lesquelles le service renvoie une vraie SRC_DATE : aucune
-      //    date de publication ("fausse") n'est ajoutée à la frise.
-      const refined: { url: string; date: string; release: number }[] = [];
-      await Promise.all(releases.map(async (rel) => {
-        const base = byRelease.get(rel);
-        if (!base) return;
-        try {
-          const mdUrl = `https://wayback.maptiles.arcgis.com/arcgis/rest/services/world_imagery/wmts/1.0.0/default028mm/MapServer/tile/${rel}/${z}/${y}/${x}/metadata?f=json`;
-          const md = await fetch(mdUrl);
-          if (!md.ok) return;
-          const j = await md.json();
-          const d = j?.SRC_DATE || j?.features?.[0]?.attributes?.SRC_DATE;
-          if (!d) return;                      // pas de date vérifiée -> on écarte
-          let ds = String(d);
-          if (/^\d{10,}$/.test(ds)) ds = new Date(Number(ds)).toISOString().slice(0, 10);
-          else if (/^\d{4}$/.test(ds)) ds = `${ds}-01-01`;
-          else if (!/^\d{4}-\d{2}-\d{2}/.test(ds)) return;  // format douteux -> écarté
-          refined.push({ url: base.url, date: ds.slice(0, 10), release: rel });
-        } catch { /* release écartée si métadonnées indisponibles */ }
+      const CONC = 10;
+      const out: ({ url: string; date: string; release: number } | null)[] = new Array(all.length);
+      let cursor = 0;
+      await Promise.all(Array.from({ length: Math.min(CONC, all.length) }, async () => {
+        while (cursor < all.length) { const i = cursor++; out[i] = await fetchOne(all[i]); }
       }));
-      if (!refined.length) { setWaybackList([]); setWaybackIdx(-1); return; }
-      // déduplique par date de capture réelle (zéro mosaïque répétée)
-      refined.sort((a, b) => a.date.localeCompare(b.date));
+      const ok = out.filter(Boolean) as { url: string; date: string; release: number }[];
+      if (ok.length < 2) return;                 // pas assez de vraies dates -> on garde la frise seedée
+      ok.sort((a, b) => b.release - a.release);   // récent -> ancien : on garde la release la plus récente par date
       const seen = new Set<string>();
-      const list = refined.filter(r => (seen.has(r.date) ? false : (seen.add(r.date), true)))
-                          .map(r => ({ url: r.url, date: r.date }));
-      setWaybackList(list as any);
+      const list = ok.filter(r => (seen.has(r.date) ? false : (seen.add(r.date), true)))
+                     .map(r => ({ url: r.url, date: r.date, real: true }));
+      list.sort((a, b) => a.date.localeCompare(b.date));
+      waybackTileCache.current.set(cacheKey, list);
+      setWaybackList(list);
       setWaybackIdx(nearestIdx(list, beforeTargetDate));   // défaut = plus proche de la RÉFÉRENCE
-    } catch { /* repli : on garde la liste déjà affichée */ }
+    } catch { /* on conserve la frise seedée déjà affichée */ }
   };
 
   // Applique l'image Wayback correspondant à l'index choisi (frise temporelle)
@@ -1877,6 +1888,34 @@ export function Teledetection() {
             <button onClick={locateMe} title="Localiser ma position GPS" className="w-8 h-8 md:w-10 md:h-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white hover:scale-110 hover:bg-[var(--brand)] hover:border-transparent transition-all">
               <Crosshair className={cn("w-4 h-4 md:w-5 md:h-5", locating && "animate-pulse")} />
             </button>
+
+            {/* ── Outils de dessin SUR LA CARTE : polygone, point, et export KML/GeoJSON
+                   (ouvrable dans Google Earth Pro). Dessiner crée l'emprise (mode perso). ── */}
+            <div className="h-px w-6 md:w-8 bg-white/20 self-center my-0.5" />
+            <button onClick={() => (drawShape === 'polygon' ? cancelDraw() : startDraw('polygon'))}
+              title="Dessiner un polygone" className={cn("w-8 h-8 md:w-10 md:h-10 backdrop-blur-md border rounded-full flex items-center justify-center text-white transition-all shadow-lg hover:scale-110",
+                drawShape === 'polygon' ? "bg-cyan-500 border-cyan-300" : "bg-black/60 border-white/10 hover:bg-cyan-500 hover:border-transparent")}>
+              <Hexagon className="w-4 h-4 md:w-5 md:h-5" />
+            </button>
+            <button onClick={() => (drawShape === 'point' ? cancelDraw() : startDraw('point'))}
+              title="Placer un point" className={cn("w-8 h-8 md:w-10 md:h-10 backdrop-blur-md border rounded-full flex items-center justify-center text-white transition-all shadow-lg hover:scale-110",
+                drawShape === 'point' ? "bg-cyan-500 border-cyan-300" : "bg-black/60 border-white/10 hover:bg-cyan-500 hover:border-transparent")}>
+              <MapPin className="w-4 h-4 md:w-5 md:h-5" />
+            </button>
+            {customRoi && customRoi.features.length > 0 && (
+              <>
+                <button onClick={toggleEditRoi} title="Éditer les sommets de la forme"
+                  className={cn("w-8 h-8 md:w-10 md:h-10 backdrop-blur-md border rounded-full flex items-center justify-center transition-all shadow-lg hover:scale-110",
+                    editingRoi ? "bg-amber-500 border-amber-300 text-white" : "bg-black/60 border-white/10 text-white hover:bg-amber-500 hover:border-transparent")}>
+                  <Pencil className="w-4 h-4 md:w-5 md:h-5" />
+                </button>
+                <button onClick={() => downloadText(fcToKml(customRoi, customRoiName || 'emprise'), `${customRoiName || 'emprise'}.kml`, 'application/vnd.google-earth.kml+xml')}
+                  title="Télécharger en KML (Google Earth Pro)"
+                  className="w-8 h-8 md:w-10 md:h-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white hover:scale-110 hover:bg-emerald-600 hover:border-transparent transition-all shadow-lg">
+                  <Download className="w-4 h-4 md:w-5 md:h-5" />
+                </button>
+              </>
+            )}
             {/* v21 — Tableau de bord (à la demande) */}
             <button onClick={openDashboard} title="Tableau de bord" className="w-8 h-8 md:w-10 md:h-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full flex items-center justify-center text-white hover:scale-110 hover:bg-sky-500 hover:border-transparent transition-all shadow-lg">
               <LayoutDashboard className="w-4 h-4 md:w-5 md:h-5" />

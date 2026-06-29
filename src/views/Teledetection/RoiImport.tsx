@@ -180,14 +180,14 @@ function extractPoints(rows: any[]): number[][] {
   }).filter(Boolean) as number[][];
 }
 
-// ── Exports client (sans backend) ────────────────────────────────────────────
-function download(content: string, filename: string, mime: string) {
+// ── Exports client (sans backend) — réutilisés par la barre d'outils carte ────
+export function downloadText(content: string, filename: string, mime: string) {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = Object.assign(document.createElement('a'), { href: url, download: filename });
   a.click(); URL.revokeObjectURL(url);
 }
-function fcToKml(fc: RoiFC, name: string): string {
+export function fcToKml(fc: RoiFC, name: string): string {
   const ringStr = (ring: number[][]) => ring.map((c) => `${c[0]},${c[1]},0`).join(' ');
   const polyKml = (coords: number[][][]) =>
     `<Polygon><outerBoundaryIs><LinearRing><coordinates>${ringStr(coords[0])}</coordinates></LinearRing></outerBoundaryIs>` +
@@ -363,9 +363,9 @@ export default function RoiImport({
           <div className="flex items-center gap-1.5 px-2 py-1.5">
             <Download className="w-3 h-3 text-[var(--text-muted)] shrink-0" />
             <span className="text-[9px] font-bold uppercase tracking-wide text-[var(--text-muted)] shrink-0">Télécharger</span>
-            <button onClick={() => download(fcToKml(roi, roiName || 'emprise'), `${roiName || 'emprise'}.kml`, 'application/vnd.google-earth.kml+xml')}
+            <button onClick={() => downloadText(fcToKml(roi, roiName || 'emprise'), `${roiName || 'emprise'}.kml`, 'application/vnd.google-earth.kml+xml')}
               className="ml-auto px-2 py-0.5 rounded border border-cyan-500/40 text-cyan-500 text-[10px] font-bold hover:bg-cyan-500/10">KML</button>
-            <button onClick={() => download(JSON.stringify(roi, null, 2), `${roiName || 'emprise'}.geojson`, 'application/geo+json')}
+            <button onClick={() => downloadText(JSON.stringify(roi, null, 2), `${roiName || 'emprise'}.geojson`, 'application/geo+json')}
               className="px-2 py-0.5 rounded border border-cyan-500/40 text-cyan-500 text-[10px] font-bold hover:bg-cyan-500/10">GeoJSON</button>
           </div>
 
