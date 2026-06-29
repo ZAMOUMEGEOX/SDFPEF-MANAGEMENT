@@ -101,6 +101,24 @@ const nearestIdx = (list: { date: string }[], target: string): number => {
   return best;
 };
 
+// Normalise une valeur de date de PRISE DE VUE Esri (SRC_DATE/SRC_DATE2) en
+// 'YYYY-MM-DD'. Rejette 99999 / 0 (= métadonnée absente). Gère epoch ms, AAAAMMJJ,
+// AAAA, et les formats à séparateurs.
+const parseCaptureDate = (raw: any): string | null => {
+  if (raw == null) return null;
+  let ds = String(raw).trim();
+  if (!ds || ds === '99999' || ds === '0' || /^9{4,5}$/.test(ds)) return null;
+  if (/^\d{12,}$/.test(ds)) return new Date(Number(ds)).toISOString().slice(0, 10);            // epoch ms
+  if (/^\d{8}$/.test(ds)) return `${ds.slice(0, 4)}-${ds.slice(4, 6)}-${ds.slice(6, 8)}`;       // AAAAMMJJ
+  if (/^\d{4}$/.test(ds)) { const y = Number(ds); return (y >= 1980 && y <= 2100) ? `${ds}-01-01` : null; }
+  ds = ds.replace(/[\/.]/g, '-');
+  const m = ds.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  const t = new Date(ds).getTime();                                                             // ex: "Aug 14 2024"
+  if (Number.isFinite(t)) return new Date(t).toISOString().slice(0, 10);
+  return null;
+};
+
 // Idée 5 — libellé + couleur de la cause probable
 const CAUSE_INFO: Record<string, { label: string; emoji: string; color: string }> = {
   incendie:        { label: 'Incendie / brûlis', emoji: '\uD83D\uDD25', color: '#dc2626' },
@@ -730,20 +748,24 @@ export function Teledetection() {
   const fetchCaptureDate = async (metaUrl: string | undefined, lat: number, lng: number): Promise<string | null> => {
     if (!metaUrl) return null;
     try {
-      const d = 0.002;
+      // Les métadonnées World Imagery sont DÉPENDANTES DE L'ÉCHELLE : il faut
+      // interroger à GRANDE échelle (zoom élevé) sinon Esri renvoie la source
+      // basse résolution générique (sans date de prise de vue). On simule donc une
+      // vue zoomée (~200 m sur 256 px). 99999 = métadonnée absente -> ignorée.
+      const d = 0.0011;
       const url = `${metaUrl}/identify?geometry=${lng},${lat}&geometryType=esriGeometryPoint&sr=4326`
         + `&layers=all&tolerance=2&mapExtent=${lng - d},${lat - d},${lng + d},${lat + d}`
-        + `&imageDisplay=96,96,96&returnGeometry=false&f=json`;
+        + `&imageDisplay=256,256,96&returnGeometry=false&f=json`;
       const r = await fetch(url); if (!r.ok) return null;
       const j = await r.json();
-      const at = j?.results?.find((x: any) => x?.attributes && (x.attributes.SRC_DATE2 || x.attributes.SRC_DATE || x.attributes.DATE))?.attributes;
-      let raw = at?.SRC_DATE2 ?? at?.SRC_DATE ?? at?.DATE;
-      if (raw == null) return null;
-      let ds = String(raw).trim();
-      if (/^\d{12,}$/.test(ds)) ds = new Date(Number(ds)).toISOString().slice(0, 10);
-      else if (/^\d{4}\/\d{2}\/\d{2}$/.test(ds)) ds = ds.replace(/\//g, '-');
-      else if (!/^\d{4}-\d{2}-\d{2}/.test(ds)) return null;
-      return ds.slice(0, 10);
+      const cand = (j?.results || [])
+        .map((x: any) => x?.attributes)
+        .filter((a: any) => a && (a.SRC_DATE2 || a.SRC_DATE || a.DATE));
+      for (const a of cand) {
+        const ds = parseCaptureDate(a.SRC_DATE2 ?? a.SRC_DATE ?? a.DATE);
+        if (ds) return ds;
+      }
+      return null;
     } catch { return null; }
   };
 
@@ -810,19 +832,22 @@ export function Teledetection() {
     const fetchCapture = async () => {
       try {
         const c = map.getCenter();
+        // Échelle élevée obligatoire (sinon source basse résolution sans date).
+        const d = 0.0011;
         const url = 'https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/identify'
           + `?geometry=${c.lng},${c.lat}&geometryType=esriGeometryPoint&sr=4326`
-          + '&layers=all&tolerance=2&mapExtent=' + `${c.lng - 0.01},${c.lat - 0.01},${c.lng + 0.01},${c.lat + 0.01}`
-          + '&imageDisplay=2,2,96&returnGeometry=false&f=json';
+          + `&layers=all&tolerance=2&mapExtent=${c.lng - d},${c.lat - d},${c.lng + d},${c.lat + d}`
+          + '&imageDisplay=256,256,96&returnGeometry=false&f=json';
         const r = await fetch(url); if (!r.ok || cancelled) return;
         const j = await r.json();
-        const at = j?.results?.find((x: any) => x?.attributes?.SRC_DATE2 || x?.attributes?.SRC_DATE)?.attributes;
-        if (!at) { setCaptureInfo(''); return; }
-        const src = at.SRC_DESC || at.NICE_DESC || '';
-        const d = at.SRC_DATE2 || at.SRC_DATE || at.DATE || '';
-        // SRC_DATE est souvent un timestamp epoch ms
-        let dStr = String(d);
-        if (/^\d{10,}$/.test(dStr)) dStr = new Date(Number(dStr)).toISOString().slice(0, 10);
+        const cand = (j?.results || []).map((x: any) => x?.attributes)
+          .filter((a: any) => a && (a.SRC_DATE2 || a.SRC_DATE || a.DATE));
+        let src = '', dStr = '';
+        for (const a of cand) {
+          const ds = parseCaptureDate(a.SRC_DATE2 ?? a.SRC_DATE ?? a.DATE);
+          if (ds) { dStr = ds; src = a.SRC_DESC || a.NICE_DESC || ''; break; }
+        }
+        if (cancelled) return;
         setCaptureInfo([src, dStr].filter(Boolean).join(' · '));
       } catch { if (!cancelled) setCaptureInfo(''); }
     };
