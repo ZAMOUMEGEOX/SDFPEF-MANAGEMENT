@@ -1885,7 +1885,7 @@ export function Teledetection() {
         {/* v18 — Frise historique "avant" : source commutable (Wayback / Sentinel-2),
             date de PRISE DE VUE reelle, nombre de scenes disponibles. */}
         {toggles.s2Split && (waybackList.length > 0 || beforeSource === 's2') && (
-          <div className="absolute top-12 md:top-16 left-2 md:left-4 z-[500] pointer-events-auto bg-black/85 backdrop-blur-xl border border-white/10 rounded-xl px-3 py-2 shadow-2xl flex flex-col gap-1.5 w-[320px] max-w-[90vw]">
+          <div className="absolute top-12 md:top-16 left-2 md:left-4 z-[500] pointer-events-auto bg-black/85 backdrop-blur-xl border border-white/10 rounded-xl px-3 py-2 shadow-2xl flex flex-col gap-1.5 w-[344px] max-w-[92vw]">
             <div className="flex items-center justify-between">
               <div className="flex bg-white/10 rounded-md p-0.5 text-[9px] font-bold">
                 <button onClick={() => setBeforeSource('wayback')}
@@ -1936,38 +1936,64 @@ export function Teledetection() {
                 setIdx(v);
               };
               const go = (d: number) => pick(i0 + d);
+
+              // Positions PROPORTIONNELLES AU TEMPS (comme Google Earth Pro) : les
+              // écarts entre repères reflètent les vrais intervalles entre prises de vue.
+              const tMin = new Date(list[0].date).getTime();
+              const tMax = new Date(list[n - 1].date).getTime();
+              const span = Math.max(1, tMax - tMin);
+              const posPct = (d: string) => Math.max(0, Math.min(100, ((new Date(d).getTime() - tMin) / span) * 100));
+              // Repères d'années (1ʳᵉ scène de chaque année, sans chevauchement)
+              const yearSeen = new Set<string>(); const yearMarks: { year: string; pct: number }[] = [];
+              let lastP = -100;
+              for (const s of list) {
+                const yr = String(s.date).slice(0, 4);
+                if (yearSeen.has(yr)) continue; yearSeen.add(yr);
+                const p = posPct(s.date);
+                if (p - lastP < 9) continue;
+                lastP = p; yearMarks.push({ year: yr, pct: p });
+              }
+              const navBtn = "w-6 h-7 shrink-0 rounded-md bg-white/10 hover:bg-[var(--brand)] hover:text-black disabled:opacity-25 text-white flex items-center justify-center font-bold leading-none transition-colors";
+              const curPct = posPct(cur.date);
               return (
                 <>
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => go(-1)} disabled={i0 <= 0}
-                      className="w-7 h-7 shrink-0 rounded-md bg-white/10 hover:bg-[var(--brand)] hover:text-black disabled:opacity-30 text-white flex items-center justify-center font-bold text-lg leading-none">‹</button>
-                    <div className="relative flex-1 h-7 flex items-center">
-                      <div className="absolute inset-x-0 h-[3px] bg-white/15 rounded-full" />
-                      <div className="absolute h-[3px] bg-[var(--brand)] rounded-full"
-                           style={{ left: 0, width: `${n <= 1 ? 100 : (i0 / (n - 1)) * 100}%` }} />
-                      {list.map((s: any, i: number) => (
-                        <button key={i} onClick={() => pick(i)} title={s.date}
-                          className="absolute -translate-x-1/2 inset-y-0 flex items-center group"
-                          style={{ left: `${n <= 1 ? 50 : (i / (n - 1)) * 100}%` }}>
-                          <span className={`block w-[2px] rounded-full transition-all ${i === i0 ? 'bg-[var(--brand)] h-4' : (s.real === false ? 'bg-amber-400/70 h-3' : 'bg-white/40 h-3')} group-hover:bg-white group-hover:h-4`} />
-                        </button>
-                      ))}
-                      <input type="range" min={0} max={n - 1} step={1} value={i0}
-                        onChange={e => pick(Number(e.target.value))}
-                        className="absolute inset-0 w-full opacity-0 cursor-pointer" />
+                  {/* Ligne de navigation : ⏮ ‹ [date] › ⏭ */}
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => pick(0)} disabled={i0 <= 0} title="Plus ancienne" className={navBtn}>«</button>
+                    <button onClick={() => go(-1)} disabled={i0 <= 0} title="Précédente" className={navBtn + " text-lg"}>‹</button>
+                    <div className="flex-1 text-center leading-none px-1">
+                      <div className="text-[15px] font-mono font-bold text-white tracking-tight">{cur?.date || '—'}</div>
+                      <div className="text-[8px] text-white/55 font-bold uppercase tracking-wider truncate">
+                        {isS2
+                          ? `Sentinel-2 · ☁ ${cur?.cloud ?? 0}%`
+                          : (cur?.real === false ? 'date de publication' : (captureInfo ? `📷 ${captureInfo}` : 'date de capture'))}
+                        {` · ${i0 + 1}/${n}`}
+                      </div>
                     </div>
-                    <button onClick={() => go(1)} disabled={i0 >= n - 1}
-                      className="w-7 h-7 shrink-0 rounded-md bg-white/10 hover:bg-[var(--brand)] hover:text-black disabled:opacity-30 text-white flex items-center justify-center font-bold text-lg leading-none">›</button>
+                    <button onClick={() => go(1)} disabled={i0 >= n - 1} title="Suivante" className={navBtn + " text-lg"}>›</button>
+                    <button onClick={() => pick(n - 1)} disabled={i0 >= n - 1} title="Plus récente" className={navBtn}>»</button>
                   </div>
-                  <div className="flex justify-between items-center text-[8px] text-white/40 font-mono mt-1 gap-1">
-                    <span>{list[0]?.date}</span>
-                    <span className="text-[var(--brand)] font-bold truncate">
-                      {i0 + 1}/{n}
-                      {isS2
-                        ? (cur?.url === null ? ' · ⏳ chargement…' : ` · ☁ ${cur?.cloud ?? 0}%`)
-                        : (cur?.real === false ? ' · 🕒 publié' : (captureInfo ? ` · 📷 ${captureInfo}` : ' · 📷 capture'))}
-                    </span>
-                    <span>{list[n - 1]?.date}</span>
+
+                  {/* Rail à repères proportionnels au temps + repères d'années */}
+                  <div className="relative h-9 mt-0.5">
+                    <div className="absolute inset-x-0 top-3 h-[3px] bg-white/15 rounded-full" />
+                    <div className="absolute top-3 h-[3px] bg-[var(--brand)] rounded-full" style={{ left: 0, width: `${curPct}%` }} />
+                    {list.map((s: any, i: number) => (
+                      <button key={i} onClick={() => pick(i)} title={`${s.date}${s.real === false ? ' (publié)' : ''}`}
+                        className="absolute -translate-x-1/2 top-0 h-6 flex items-start group" style={{ left: `${posPct(s.date)}%` }}>
+                        <span className={`block w-[3px] rounded-full transition-all ${i === i0 ? 'bg-[var(--brand)] h-5 mt-[2px]' : (s.real === false ? 'bg-amber-400/80 h-3.5 mt-[5px]' : 'bg-white/45 h-3.5 mt-[5px]')} group-hover:bg-white group-hover:h-5`} />
+                      </button>
+                    ))}
+                    {/* Pastille de la scène sélectionnée */}
+                    <div className="absolute -translate-x-1/2 top-[6px] w-3 h-3 rounded-full bg-[var(--brand)] border-2 border-black shadow pointer-events-none" style={{ left: `${curPct}%` }} />
+                    {/* Étiquettes d'années */}
+                    {yearMarks.map(ym => (
+                      <span key={ym.year} className="absolute -translate-x-1/2 top-[24px] text-[8px] font-mono text-white/45 select-none" style={{ left: `${ym.pct}%` }}>{ym.year}</span>
+                    ))}
+                    {/* Glisseur transparent (clavier + drag) */}
+                    <input type="range" min={0} max={n - 1} step={1} value={i0}
+                      onChange={e => pick(Number(e.target.value))}
+                      className="absolute inset-x-0 top-0 h-6 w-full opacity-0 cursor-pointer" />
                   </div>
                 </>
               );
