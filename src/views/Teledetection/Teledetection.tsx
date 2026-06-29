@@ -546,6 +546,11 @@ export function Teledetection() {
   const waybackAllRef = useRef<{ url: string; date: string; release: number; metaUrl?: string }[]>([]);
   // Cache des frises affinées par tuile (évite de re-télécharger les métadonnées)
   const waybackTileCache = useRef<Map<string, { date: string; url: string; real?: boolean }[]>>(new Map());
+  // LIBERTÉ UTILISATEUR : date choisie manuellement dans la frise. Tant qu'elle est
+  // posée, on NE re-snap PAS sur la date de référence quand la frise se rafraîchit
+  // (déplacement carte / affinage). Réinitialisée seulement si la PÉRIODE DE
+  // RÉFÉRENCE change. null = pas de choix manuel -> défaut = proche de la référence.
+  const beforePinnedDate = useRef<string | null>(null);
 
   // Fix #6 — Persistance des préférences utilisateur (zone, couches, opacités,
   // source historique) entre les sessions via localStorage. Chargée une fois au
@@ -694,6 +699,7 @@ export function Teledetection() {
       if (cancelled || !items.length) return;
       items.sort((a, b) => a.date.localeCompare(b.date));
       waybackAllRef.current = items;
+      beforePinnedDate.current = null;   // nouvelle période de référence -> on repart sur le défaut
       // Frise affichée immédiatement (dates de version, real=false) ; remplacée
       // ensuite, pour la zone visible, par les releases à CHANGEMENT LOCAL réel
       // avec leur DATE DE PRISE DE VUE (real=true). Jamais vide.
@@ -702,7 +708,7 @@ export function Teledetection() {
         .filter(it => (seen.has(it.date) ? false : (seen.add(it.date), true)))
         .map(it => ({ url: it.url, date: it.date, real: false }));
       setWaybackList(seeded);
-      setWaybackIdx(nearestIdx(seeded, beforeTargetDate));
+      setWaybackIdx(nearestIdx(seeded, beforePinnedDate.current ?? beforeTargetDate));
     })();
     return () => { cancelled = true; };
   }, [refStart, refEnd]);
@@ -748,7 +754,7 @@ export function Teledetection() {
     const { x, y } = lonLatToTile(lng, lat, z);
     const cacheKey = `${z}/${x}/${y}`;
     const cached = waybackTileCache.current.get(cacheKey);
-    if (cached) { setWaybackList(cached); setWaybackIdx(nearestIdx(cached, beforeTargetDate)); return; }
+    if (cached) { setWaybackList(cached); setWaybackIdx(nearestIdx(cached, beforePinnedDate.current ?? beforeTargetDate)); return; }
 
     let changes: any[] = [];
     try {
@@ -784,7 +790,7 @@ export function Teledetection() {
     list.sort((a, b) => a.date.localeCompare(b.date));
     waybackTileCache.current.set(cacheKey, list);
     setWaybackList(list);
-    setWaybackIdx(nearestIdx(list, beforeTargetDate));
+    setWaybackIdx(nearestIdx(list, beforePinnedDate.current ?? beforeTargetDate));
   };
 
   // Applique l'image Wayback correspondant à l'index choisi (frise temporelle)
@@ -862,7 +868,7 @@ export function Teledetection() {
         if (cancelled || !list?.length) { setS2List([]); setS2Idx(-1); return; }
         list.sort((a, b) => a.date.localeCompare(b.date));
         setS2List(list);
-        setS2Idx(nearestIdx(list, beforeTargetDate));  // défaut : scène la plus proche de la RÉFÉRENCE
+        setS2Idx(nearestIdx(list, beforePinnedDate.current ?? beforeTargetDate));  // défaut : proche de la RÉFÉRENCE (ou date épinglée)
       } catch { if (!cancelled) { setS2List([]); setS2Idx(-1); } }
       finally { if (!cancelled) setS2Loading(false); }
     })();
@@ -1888,7 +1894,14 @@ export function Teledetection() {
               }
               const i0 = Math.max(0, Math.min(n - 1, idx));
               const cur: any = list[i0];
-              const go = (d: number) => setIdx(Math.max(0, Math.min(n - 1, i0 + d)));
+              // Sélection MANUELLE : on épingle la date choisie pour qu'un rafraîchissement
+              // de la frise ne renvoie pas l'utilisateur sur la date de référence.
+              const pick = (i: number) => {
+                const v = Math.max(0, Math.min(n - 1, i));
+                beforePinnedDate.current = list[v]?.date ?? null;
+                setIdx(v);
+              };
+              const go = (d: number) => pick(i0 + d);
               return (
                 <>
                   <div className="flex items-center gap-2">
@@ -1899,14 +1912,14 @@ export function Teledetection() {
                       <div className="absolute h-[3px] bg-[var(--brand)] rounded-full"
                            style={{ left: 0, width: `${n <= 1 ? 100 : (i0 / (n - 1)) * 100}%` }} />
                       {list.map((s: any, i: number) => (
-                        <button key={i} onClick={() => setIdx(i)} title={s.date}
+                        <button key={i} onClick={() => pick(i)} title={s.date}
                           className="absolute -translate-x-1/2 inset-y-0 flex items-center group"
                           style={{ left: `${n <= 1 ? 50 : (i / (n - 1)) * 100}%` }}>
                           <span className={`block w-[2px] rounded-full transition-all ${i === i0 ? 'bg-[var(--brand)] h-4' : (s.real === false ? 'bg-amber-400/70 h-3' : 'bg-white/40 h-3')} group-hover:bg-white group-hover:h-4`} />
                         </button>
                       ))}
                       <input type="range" min={0} max={n - 1} step={1} value={i0}
-                        onChange={e => setIdx(Number(e.target.value))}
+                        onChange={e => pick(Number(e.target.value))}
                         className="absolute inset-0 w-full opacity-0 cursor-pointer" />
                     </div>
                     <button onClick={() => go(1)} disabled={i0 >= n - 1}
