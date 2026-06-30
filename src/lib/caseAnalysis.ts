@@ -15,6 +15,44 @@
 import type { Case } from '@/views/Contentieux/Contentieux';
 
 // ══════════════════════════════════════════════════════════════════
+// 0) أدوات التواريخ — تقبل صيغتين: يوم/شهر/سنة (صيغة بوابة محاكم) و
+//    سنة-شهر-يوم (الصيغة العالمية). ضرورية حتى لا يفشل حساب الآجال بصمت
+//    على تواريخ المحاضر/الجلسات القادمة من البوابة (يوم/شهر/سنة).
+// ══════════════════════════════════════════════════════════════════
+
+/** يحوّل أي تاريخ (يوم/شهر/سنة أو سنة-شهر-يوم أو ISO) إلى كائن Date محلي، أو null. */
+export function parseFlexibleDate(input?: string | null): Date | null {
+  if (!input) return null;
+  const s = String(input).trim();
+  if (!s) return null;
+  // يوم/شهر/سنة (أو يوم-شهر-سنة) — صيغة البوابة
+  let m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/);
+  if (m) {
+    const [, dd, mm, yy] = m;
+    const d = new Date(Number(yy), Number(mm) - 1, Number(dd));
+    return isNaN(d.getTime()) ? null : d;
+  }
+  // سنة-شهر-يوم
+  m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+  if (m) {
+    const [, yy, mm, dd] = m;
+    const d = new Date(Number(yy), Number(mm) - 1, Number(dd));
+    return isNaN(d.getTime()) ? null : d;
+  }
+  // سقوط احتياطي: محاولة التحليل القياسي
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/** يُنسّق تاريخاً إلى سنة-شهر-يوم بالتوقيت المحلي (يتفادى انزياح يوم بسبب UTC). */
+export function toLocalISODate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
+// ══════════════════════════════════════════════════════════════════
 // 1) محرك الآجال
 // ══════════════════════════════════════════════════════════════════
 
@@ -50,29 +88,24 @@ export const CUSTOM_HOLIDAYS: string[] = [
  */
 export function legalDeadline(fromDateStr: string, days: number): Date | null {
   if (!fromDateStr) return null;
-  const base = new Date(fromDateStr);
-  if (isNaN(base.getTime())) return null;
+  const base = parseFlexibleDate(fromDateStr);
+  if (!base) return null;
   const d = new Date(base);
   d.setDate(d.getDate() + days); // اليوم التالي للمرجع = اليوم 1 من الأجل
-  const isHoliday = (x: Date) => {
-    const iso = x.toISOString().split('T')[0];
-    return x.getDay() === 5 || x.getDay() === 6 || CUSTOM_HOLIDAYS.includes(iso);
-    // ملاحظة: عطلة نهاية الأسبوع الرسمية للمحاكم المغربية هي السبت والأحد عادة،
-    // لكن نُبقي الجمعة (5) ضمن الفحص اختياريًا — إن لم يلزم عدّل الشرط أدناه.
-  };
-  // تصحيح: العطلة الأسبوعية الفعلية بالمحاكم = السبت(6) والأحد(0)
+  // العطلة الأسبوعية الفعلية بالمحاكم المغربية = السبت(6) والأحد(0)
   const isWeekendOrHoliday = (x: Date) => {
-    const iso = x.toISOString().split('T')[0];
+    const iso = toLocalISODate(x);
     return x.getDay() === 6 || x.getDay() === 0 || CUSTOM_HOLIDAYS.includes(iso);
   };
-  void isHoliday;
   while (isWeekendOrHoliday(d)) d.setDate(d.getDate() + 1);
   return d;
 }
 
 function daysBetween(a: Date, b: Date): number {
-  const ms = a.setHours(0, 0, 0, 0) - b.setHours(0, 0, 0, 0);
-  return Math.round(ms / 86400000);
+  // لا نعدّل الوسائط (نسخ آمنة) — تفادياً لإفساد تواريخ مشتركة.
+  const aa = new Date(a.getFullYear(), a.getMonth(), a.getDate()).getTime();
+  const bb = new Date(b.getFullYear(), b.getMonth(), b.getDate()).getTime();
+  return Math.round((aa - bb) / 86400000);
 }
 
 function severityFor(daysLeft: number): DeadlineItem['severity'] {
@@ -112,7 +145,7 @@ export function computeDeadlines(c: Case): DeadlineItem[] {
           items.push({
             key: 'appeal_civil', label: 'أجل الاستئناف (مدني)',
             basis: 'م. 134 ق.م.م — 30 يوماً من تاريخ التبليغ',
-            fromDate: c.notificationDate, dueDate: due.toISOString().split('T')[0],
+            fromDate: c.notificationDate, dueDate: toLocalISODate(due),
             daysLeft: dl, severity: severityFor(dl),
           });
         }
@@ -125,7 +158,7 @@ export function computeDeadlines(c: Case): DeadlineItem[] {
           items.push({
             key: 'cassation', label: 'أجل النقض',
             basis: 'م. 358 ق.م.م — 30 يوماً من تبليغ القرار الاستئنافي',
-            fromDate: c.notificationDate, dueDate: due.toISOString().split('T')[0],
+            fromDate: c.notificationDate, dueDate: toLocalISODate(due),
             daysLeft: dl, severity: severityFor(dl),
           });
         }
@@ -141,7 +174,7 @@ export function computeDeadlines(c: Case): DeadlineItem[] {
         items.push({
           key: 'opposition', label: 'أجل التعرض',
           basis: 'م. 130 ق.م.م — 10 أيام من التبليغ (حكم غيابي)',
-          fromDate: c.notificationDate, dueDate: due.toISOString().split('T')[0],
+          fromDate: c.notificationDate, dueDate: toLocalISODate(due),
           daysLeft: dl, severity: severityFor(dl),
         });
       }
@@ -155,7 +188,7 @@ export function computeDeadlines(c: Case): DeadlineItem[] {
         items.push({
           key: 'appeal_criminal', label: 'أجل الاستئناف (جنحي)',
           basis: 'ق.م.ج — 10 أيام من التبليغ (تحقق من النص حسب نوع المخالفة)',
-          fromDate: c.notificationDate, dueDate: due.toISOString().split('T')[0],
+          fromDate: c.notificationDate, dueDate: toLocalISODate(due),
           daysLeft: dl, severity: severityFor(dl),
         });
       }
@@ -171,7 +204,7 @@ export function computeDeadlines(c: Case): DeadlineItem[] {
       items.push({
         key: 'expert_fee', label: 'أداء مصاريف الخبرة',
         basis: `${days} يوماً من تاريخ الأمر — إسقاط الحق عند عدم الأداء`,
-        fromDate: c.expertFeeOrderDate, dueDate: due.toISOString().split('T')[0],
+        fromDate: c.expertFeeOrderDate, dueDate: toLocalISODate(due),
         daysLeft: dl, severity: severityFor(dl),
       });
     }
@@ -179,15 +212,15 @@ export function computeDeadlines(c: Case): DeadlineItem[] {
 
   // ── التقادم في الجنح الغابوية: 6 أشهر من تاريخ المحضر ──
   if (c.pvDate && !c.reconciliation && c.pvStatus !== 'حفظ / تقادم') {
-    const base = new Date(c.pvDate);
-    if (!isNaN(base.getTime())) {
+    const base = parseFlexibleDate(c.pvDate);
+    if (base) {
       const due = new Date(base);
       due.setMonth(due.getMonth() + 6);
       const dl = daysBetween(new Date(due), new Date(today));
       items.push({
         key: 'prescription', label: 'تقادم المتابعة (محضر المخالفة)',
         basis: 'تقادم الجنح الغابوية — 6 أشهر من تاريخ المحضر',
-        fromDate: c.pvDate, dueDate: due.toISOString().split('T')[0],
+        fromDate: c.pvDate, dueDate: toLocalISODate(due),
         daysLeft: dl, severity: severityFor(dl),
       });
     }
@@ -335,9 +368,9 @@ export function needsManualReview(c: Case): boolean {
 // ══════════════════════════════════════════════════════════════════
 
 function icsDate(d: string): string {
-  // إخراج بصيغة YYYYMMDD (حدث يوم كامل)
-  const x = new Date(d);
-  if (isNaN(x.getTime())) return '';
+  // إخراج بصيغة YYYYMMDD (حدث يوم كامل) — يقبل يوم/شهر/سنة وسنة-شهر-يوم.
+  const x = parseFlexibleDate(d);
+  if (!x) return '';
   const y = x.getFullYear();
   const m = String(x.getMonth() + 1).padStart(2, '0');
   const dd = String(x.getDate()).padStart(2, '0');

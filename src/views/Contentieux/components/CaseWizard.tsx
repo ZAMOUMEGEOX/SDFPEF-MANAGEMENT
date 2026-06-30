@@ -40,10 +40,25 @@ interface CaseWizardProps {
   onCancel: () => void;
 }
 
+/**
+ * معرّف ملف فريد قوي. البديل القديم (رقم عشوائي 100–999) كان يتصادم بعد
+ * نحو 35 ملفاً في السنة فيُكتب فوق ملف موجود (فقدان بيانات). هنا نستعمل
+ * crypto.randomUUID إن توفّر، وإلا توقيتاً + عشوائياً يمنع التصادم عملياً.
+ */
+function makeCaseId(): string {
+  const yr = new Date().getFullYear();
+  try {
+    if (typeof crypto !== 'undefined' && (crypto as any).randomUUID) {
+      return `CTX-${yr}-${(crypto as any).randomUUID().split('-')[0]}`;
+    }
+  } catch { /* ignore */ }
+  return `CTX-${yr}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+}
+
 export function CaseWizard({ initialData, onSave, onCancel }: CaseWizardProps) {
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState<Partial<Case>>(initialData || {
-    id: `CTX-${new Date().getFullYear()}-${Math.floor(Math.random() * 900) + 100}`,
+    id: makeCaseId(),
     date: new Date().toISOString().split('T')[0],
     type: CASE_TYPES[0],
     status: 'قيد التحقيق',
@@ -58,7 +73,7 @@ export function CaseWizard({ initialData, onSave, onCancel }: CaseWizardProps) {
       setFormData(JSON.parse(JSON.stringify(initialData)));
     } else {
       setFormData({
-        id: `CTX-${new Date().getFullYear()}-${Math.floor(Math.random() * 900) + 100}`,
+        id: makeCaseId(),
         date: new Date().toISOString().split('T')[0],
         type: CASE_TYPES[0],
         status: 'قيد التحقيق',
@@ -124,7 +139,7 @@ export function CaseWizard({ initialData, onSave, onCancel }: CaseWizardProps) {
     }
     const finalData = {
       ...formData,
-      id: formData.id || `CTX-${new Date().getFullYear()}-${Math.floor(Math.random() * 900) + 100}`,
+      id: formData.id || makeCaseId(),
       date: formData.date || new Date().toISOString().split('T')[0],
       type: formData.type || CASE_TYPES[0],
       court: formData.court || 'محكمة غير محددة',

@@ -602,9 +602,9 @@ export function exportPeriodicReportXLSX(cases: Case[], from: string, to: string
   const previous = cases.filter(c => c.date >= prevFromStr && c.date <= prevToStr);
 
   const judgedCount = (arr: Case[]) => arr.filter(c => /حكم|قرار|صدر/.test(c.status)).length;
-  const executedCount = (arr: Case[]) => arr.filter(c => c.executionStatus?.includes('منفذ')).length;
-  const recovered = (arr: Case[]) => arr.reduce((s, c) => s + (parseFloat(c.executionAmountRecovered || '0') || 0), 0);
-  const sanctioned = (arr: Case[]) => arr.reduce((s, c) => s + (parseFloat(c.fine || '0') || 0) + (parseFloat(c.compensation || '0') || 0), 0);
+  const executedCount = (arr: Case[]) => arr.filter(c => isExecuted(c)).length;
+  const recovered = (arr: Case[]) => arr.reduce((s, c) => s + (parseAmount(c.executionAmountRecovered)), 0);
+  const sanctioned = (arr: Case[]) => arr.reduce((s, c) => s + (parseAmount(c.fine)) + (parseAmount(c.compensation)), 0);
   const winRate = (arr: Case[]) => {
     const judged = arr.filter(c => /حكم|قرار|صدر/.test(c.status));
     if (judged.length === 0) return 0;
@@ -942,6 +942,41 @@ export async function exportAllCasesPDF(cases: Case[]) {
 
 
 
+/**
+ * يقرأ مبلغاً مالياً نصّياً قد يحوي فواصل آلاف أو مسافات أو فاصلة عشرية عربية/فرنسية.
+ * مثال: "10,000.50" أو "10 000,50" أو "١٠٠٠٠" → عدد صحيح صالح للجمع.
+ */
+function parseAmount(v?: string | number | null): number {
+  if (v == null) return 0;
+  if (typeof v === 'number') return isNaN(v) ? 0 : v;
+  let s = String(v).trim();
+  if (!s) return 0;
+  // أرقام عربية-هندية → لاتينية
+  s = s.replace(/[\u0660-\u0669]/g, d => String(d.charCodeAt(0) - 0x0660))
+       .replace(/[\u06F0-\u06F9]/g, d => String(d.charCodeAt(0) - 0x06F0));
+  s = s.replace(/[^\d.,-]/g, '');               // أبقِ الأرقام والفواصل فقط
+  // إن وُجدت فاصلة وفاصلة عشرية معاً، اعتبر الفاصلة فاصل آلاف
+  if (s.includes(',') && s.includes('.')) s = s.replace(/,/g, '');
+  else s = s.replace(/,/g, '.');                 // وإلا الفاصلة عشرية
+  const parts = s.split('.');
+  if (parts.length > 2) s = parts.slice(0, -1).join('') + '.' + parts[parts.length - 1];
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
+
+/**
+ * هل الملف منفَّذ (جزئياً أو كلياً)؟ مطابقة صريحة بدل احتواء نصّي هشّ كان
+ * يخاطر بعدّ حالات مستقبلية مثل «تعذّر التنفيذ» خطأً.
+ */
+function isExecuted(c: { executionStatus?: string }): boolean {
+  const s = (c.executionStatus || '').trim();
+  return s === 'منفذ كليا' || s === 'منفذ جزئيا';
+}
+/** منفَّذ كلياً فقط — لحساب نسبة الإنجاز الكامل بدقّة. */
+function isFullyExecuted(c: { executionStatus?: string }): boolean {
+  return (c.executionStatus || '').trim() === 'منفذ كليا';
+}
+
 function performParsing(text: string) {
   const clean = text.replace(/[\r]/g, '').replace(/\n{3,}/g, '\n\n').trim();
   const tokens = clean.split(/[\t\n]+/).map(s => s.trim()).filter(Boolean);
@@ -1168,14 +1203,10 @@ function performParsing(text: string) {
       }
     }
   }
-  if (parties.length === 0) {
-    if (clean.includes('الوكالة الوطنية للمياه') || clean.includes('ANEF')) {
-      parties.push({ role: 'مدعي / المطالب بالحق المدني', name: 'الوكالة الوطنية للمياه والغابات' });
-    } else {
-      parties.push({ role: 'مدعي', name: 'إدارة المياه والغابات' });
-    }
-    parties.push({ role: 'مدعى عليه / متهم', name: 'مجهول (استخراج تلقائي)' });
-  }
+  // ملاحظة: لا نخترع أي طرف افتراضي عند فشل الاستخراج. حقن أطراف وهمية
+  // (مثل «المياه والغابات» و«مجهول») يلوّث السجلّ القانوني ويجعل التمييز بين
+  // المستخرَج فعلاً والمُلفَّق مستحيلاً. إن لم تُستخرج أطراف، تبقى اللائحة فارغة
+  // ويُحتفظ بالنص الخام للمراجعة اليدوية.
 
   // ── Status ──
   const lastDecision = infoMap['lastDecision'] || '';
@@ -1724,7 +1755,7 @@ export function Contentieux() {
     if (typeFilter !== 'all') r = r.filter(c => c.type === typeFilter);
     if (courtFilter !== 'all') r = r.filter(c => c.court === courtFilter);
     if (yearFilter !== 'all') r = r.filter(c => c.date?.startsWith(yearFilter));
-    if (executionStatusFilter === '__executed__') r = r.filter(c => c.executionStatus?.includes('منفذ'));
+    if (executionStatusFilter === '__executed__') r = r.filter(c => isExecuted(c));
     else if (executionStatusFilter === '__not_started__') r = r.filter(c => !c.executionStatus);
     else if (executionStatusFilter !== 'all') r = r.filter(c => c.executionStatus === executionStatusFilter);
     if (judgeFilter !== 'all') r = r.filter(c => c.judge === judgeFilter);
@@ -1927,7 +1958,7 @@ export function Contentieux() {
         لم تُثبّت الإضافة بعد؟ <a href={EXTENSION_README_URL} target="_blank" rel="noreferrer" className="text-emerald-600 hover:underline font-bold">دليل التثبيت خطوة بخطوة ←</a>
       </p>
 
-      {isStatsOpen && <ContentieuxStats cases={cases} onClose={() => setIsStatsOpen(false)} onNavigate={handleStatsNavigate} />}
+      {isStatsOpen && <ContentieuxStats cases={cases} pvRecords={pvRecords} onClose={() => setIsStatsOpen(false)} onNavigate={handleStatsNavigate} />}
 
       {/* ── تبويب "القضايا المحلية" ── */}
       <div className={activeTab === 'local' ? '' : 'hidden'}>
@@ -1992,7 +2023,7 @@ export function Contentieux() {
                 { label: 'إجمالي القضايا', value: cases.length, icon: Scale, c: 'emerald', onClick: () => { resetFilters(); scrollToTable(); } },
                 { label: 'قيد الرائجة', value: cases.filter(c => !c.status.includes('حكم') && !c.status.includes('قرار')).length, icon: Search, c: 'blue', onClick: () => { resetFilters(); setStatusFilter('active'); scrollToTable(); } },
                 { label: 'أحكام صادرة', value: cases.filter(c => c.status.includes('حكم') || c.status.includes('قرار')).length, icon: Gavel, c: 'orange', onClick: () => { resetFilters(); setStatusFilter('judged'); scrollToTable(); } },
-                { label: 'أحكام منفذة', value: cases.filter(c => c.executionStatus?.includes('منفذ')).length, icon: CheckCircle2, c: 'emerald', onClick: () => { resetFilters(); setExecutionStatusFilter('__executed__'); scrollToTable(); } },
+                { label: 'أحكام منفذة', value: cases.filter(c => isExecuted(c)).length, icon: CheckCircle2, c: 'emerald', onClick: () => { resetFilters(); setExecutionStatusFilter('__executed__'); scrollToTable(); } },
                 { label: 'آجال حرجة (≤7 أيام)', value: criticalDeadlinesCount, icon: CalendarClock, c: 'red', onClick: () => { resetFilters(); setDeadlineFilter('soon'); scrollToTable(); } },
                 { label: 'يحتاج تدقيق', value: needsReviewCount, icon: ShieldAlert, c: 'amber', onClick: () => { resetFilters(); setReviewFilter('review'); scrollToTable(); } },
                 { label: 'ملفات عود (خصوم متكررون)', value: repeatOffendersCount, icon: Users, c: 'purple', onClick: () => { resetFilters(); setRepeatFilter('repeat'); scrollToTable(); } },
@@ -2007,9 +2038,9 @@ export function Contentieux() {
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               {[
-                { label: 'المبالغ المستخلصة (د.م)', val: cases.reduce((s, c) => s + (parseFloat(c.executionAmountRecovered || '0') || 0), 0).toLocaleString(), cls: 'emerald' },
-                { label: 'مجموع الغرامات المحكوم بها', val: cases.reduce((s, c) => s + (parseFloat(c.fine || '0') || 0) + (parseFloat(c.compensation || '0') || 0), 0).toLocaleString(), cls: 'orange' },
-                { label: 'نسبة التنفيذ', val: (() => { const j = cases.filter(c => c.status.includes('حكم') || c.status.includes('قرار')).length; const e = cases.filter(c => c.executionStatus?.includes('منفذ')).length; return j > 0 ? ((e / j) * 100).toFixed(1) + '%' : '0%'; })(), cls: 'blue' },
+                { label: 'المبالغ المستخلصة (د.م)', val: cases.reduce((s, c) => s + (parseAmount(c.executionAmountRecovered)), 0).toLocaleString(), cls: 'emerald' },
+                { label: 'مجموع الغرامات المحكوم بها', val: cases.reduce((s, c) => s + (parseAmount(c.fine)) + (parseAmount(c.compensation)), 0).toLocaleString(), cls: 'orange' },
+                { label: 'نسبة التنفيذ', val: (() => { const j = cases.filter(c => c.status.includes('حكم') || c.status.includes('قرار')).length; const e = cases.filter(c => isExecuted(c)).length; return j > 0 ? ((e / j) * 100).toFixed(1) + '%' : '0%'; })(), cls: 'blue' },
               ].map((s, i) => (
                 <div key={i} className={`bg-${s.cls}-50 border border-${s.cls}-100 p-5 rounded-2xl`}>
                   <p className={`text-xs font-bold text-${s.cls}-600 mb-1`}>{s.label}</p>
@@ -2595,10 +2626,14 @@ export interface PVRecord {
 // وهي ما يُرسَل مباشرة لشريط تتبع الملفات (حقول رقم/رمز/سنة)
 // ═══════════════════════════════════════════════════════════════════════════
 
-function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
-  const ts  = Date.now();
-  const id  = `PV-${pvInputNumber.replace(/\//g, '-')}-${ts.toString(36).slice(-4).toUpperCase()}`;
+function performParsingPV(text: string, pvInputNumber = '', pvYearHint = '', pvCourtHint = ''): PVRecord {
   const now = new Date().toISOString();
+  // معرّف حتمي: نفس (المحكمة + الرقم + السنة) ⇒ نفس المعرّف دائماً، فيُحدَّث
+  // السجلّ في مكانه بدل تكراره عند إعادة الاستخراج (يحفظ سلامة الحصيلة والإحصاء).
+  const safeNum = String(pvInputNumber || '').replace(/[\/\s]+/g, '-');
+  const yrHint  = (String(pvYearHint || '').match(/\d{4}/)?.[0]) || (text.match(/\b(20\d{2})\b/)?.[1] || '');
+  const ctHint  = (String(pvCourtHint || '').replace(/[\/\s]+/g, '-')) || 'محكمة';
+  const id = `PV-${ctHint}-${safeNum}-${yrHint}`.replace(/-+/g, '-').replace(/-$/,'');
 
   // ── المسار 1: JSON من إضافة v6.6+ ───────────────────────────────────────────
   const structMatch = text.match(
@@ -2997,8 +3032,16 @@ function performParsingPV(text: string, pvInputNumber = ''): PVRecord {
 // ─── تحويل PVRecord إلى Case ─────────────────────────────────────────────────
 function pvRecordToCase(pv: PVRecord): Case {
   const lf = pv.linkedFile;
+  // معرّف حتمي مطابق لمفتاح الأتمتة (CTX-FILE-{أرقام مرتّبة})، فيلتقي الإنشاء
+  // اليدوي والتلقائي على نفس الملف بدل إنشاء نسختين. وعند غياب رقم ملف مرتبط
+  // نشتقّه من معرّف المحضر الحتمي.
+  const ref = pv.linkedFileNumber || [pv.fileNum, pv.fileMark, pv.fileYear].filter(Boolean).join('/');
+  const groups = (ref || '').match(/\d+/g);
+  const caseId = groups && groups.length
+    ? `CTX-FILE-${groups.slice().sort().join('-')}`
+    : `CTX-FROMPV-${pv.id}`;
   return {
-    id: `CTX-PV-${Date.now().toString(36).toUpperCase()}`,
+    id: caseId,
     mahakimId:  lf.fileNumber || pv.linkedFileNumber || undefined,
     court:      lf.court  || pv.court || 'غير محددة',
     type:       lf.fileType || 'جنحية',
@@ -3715,11 +3758,18 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
   const [autoFrom, setAutoFrom]             = useState('');
   const [autoTo, setAutoTo]                 = useState('');
   const [autoCurrent, setAutoCurrent]       = useState<number | null>(null);
-  const [autoLog, setAutoLog]               = useState<{ num: number; status: 'ok'|'fail'|'linked'|'created'; msg: string }[]>([]);
+  const [autoLog, setAutoLog]               = useState<{ num: number; status: 'ok'|'fail'|'linked'|'created'|'raw'; msg: string }[]>([]);
   const autoResolverRef                     = useRef<((pv: PVRecord | null) => void) | null>(null);
   const dossierResolverRef                  = useRef<((r: ReturnType<typeof performParsing> | null) => void) | null>(null);
   const autoAbortRef                        = useRef(false);
   const createdCasesRef                     = useRef<Map<string, string>>(new Map());
+
+  // -- سياق البحث الجاري (مصدر موثوق للرقم/السنة/المحكمة بدل حالة React المتأخّرة) --
+  const pvSearchCtxRef                       = useRef<{ numero: string; year: string; court: string }>({ numero: '', year: '', court: '' });
+  // -- رمز الطلب: يربط كل بحث بجوابه فيُتجاهَل أي جواب متأخّر لطلب سابق --
+  const reqIdCounterRef                      = useRef(0);
+  const activeReqIdRef                       = useRef<number | null>(null);
+  const nextReqId = () => { const id = ++reqIdCounterRef.current; activeReqIdRef.current = id; return id; };
 
   // -- البحث في قاعدة المحاضر المحلية --
   const [pvSearchQuery, setPvSearchQuery]   = useState('');
@@ -3801,9 +3851,14 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
       const d = e.data;
       if (!d || typeof d !== 'object') return;
 
+      // حارس رمز الطلب: تجاهل أي نتيجة/خطأ متأخّر لطلب لم يعد هو الجاري.
+      // (الرسائل بلا reqId — كالتقدّم وإظهار البوابة — تمرّ دائماً.)
+      if (d.reqId != null && activeReqIdRef.current != null && d.reqId !== activeReqIdRef.current) return;
+
       // ✅ نتيجة محضر الضابطة القضائية
       if (d.type === 'MAHAKIM_RESULT' && d.text && d.searchType === 'pv') {
-        const parsed = performParsingPV(d.text, pvNumber.trim());
+        const ctx = pvSearchCtxRef.current;
+        const parsed = performParsingPV(d.text, ctx.numero, ctx.year, ctx.court);
         setPvResult(parsed);
         setPvIsSearching(false);
         setPvSearchStage('');
@@ -3883,7 +3938,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [pvNumber]);
+  }, []);
 
   // ── Paste auto-capture (للملفات فقط) ─────────────────────────────────────
   useEffect(() => {
@@ -3937,11 +3992,13 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     const PRIMARY = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
     const isPrimary = !isAppeal && PRIMARY.includes(pvCourt);
     if (!extensionReady) { setPvIsSearching(false); alert('⚠️ يتطلب إضافة Mahakim Bridge.'); return; }
+    pvSearchCtxRef.current = { numero: pvNumber.trim(), year: pvYear.trim(), court: pvCourt };
+    const reqId = nextReqId();
     window.postMessage({ type: 'MAHAKIM_TO_EXTENSION', payload: {
-      searchType: 'pv', numero: pvNumber.trim(), year: pvYear.trim(),
+      searchType: 'pv', reqId, numero: pvNumber.trim(), year: pvYear.trim(),
       court: courtName, isPrimary, agentType: pvAgentType, agency: pvAgency,
     }}, '*');
-    setTimeout(() => setPvIsSearching(false), 90000);
+    setTimeout(() => { if (!autoRunning) setPvIsSearching(false); }, 200000);
   };
 
   /** مسح نتيجة المحضر وإعادة تعيين */
@@ -4039,9 +4096,11 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     let done = false;
     const finish = (pv: PVRecord | null) => { if (done) return; done = true; autoResolverRef.current = null; clearTimeout(to); resolve(pv); };
     autoResolverRef.current = finish;
-    const to = setTimeout(() => finish(null), 100000); // مهلة أمان لكل محضر
+    pvSearchCtxRef.current = { numero, year: pvYear.trim(), court: pvCourt };
+    const reqId = nextReqId();
+    const to = setTimeout(() => finish(null), 200000); // مهلة أمان أطول من مهلة المتصفح (180ث) لتفادي الاستباق المزدوج
     window.postMessage({ type: 'MAHAKIM_TO_EXTENSION', payload: {
-      searchType: 'pv', numero, year: pvYear.trim(), court: courtName, isPrimary, agentType: pvAgentType, agency: pvAgency,
+      searchType: 'pv', reqId, numero, year: pvYear.trim(), court: courtName, isPrimary, agentType: pvAgentType, agency: pvAgency,
     }}, '*');
   });
 
@@ -4058,9 +4117,10 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
       freshSearchRef.current = true;
       setRemoteNum(num); setRemoteMark(mark); setRemoteYear(year); setRemoteCourt(court);
       setExtractMode('portal');
-      const to = setTimeout(() => finish(null), 100000);
+      const reqId = nextReqId();
+      const to = setTimeout(() => finish(null), 200000);
       window.postMessage({ type: 'MAHAKIM_TO_EXTENSION', payload: {
-        searchType: 'dossier', numero: num, mark, year, court: courtName, isPrimary,
+        searchType: 'dossier', reqId, numero: num, mark, year, court: courtName, isPrimary,
       }}, '*');
     });
 
@@ -4094,11 +4154,14 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
         pv = await searchPVOnce(String(n));
       }
       const hasData = !!(pv && (pv.pvCourtRef || pv.linkedFileNumber || (pv.parties && pv.parties.length)));
-      if (!hasData) {
+      const hasRaw  = !!(pv && pv.rawText && pv.rawText.replace(/\s/g, '').length > 120);
+      if (!hasData && !hasRaw) {
         setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'لا نتيجة' }]);
         await new Promise(r => setTimeout(r, 500));
         continue;
       }
+      // المحضر فيه نص لكن تعثّر استخراج بنيته: نحفظه للمراجعة بدل إسقاطه من السلسلة.
+      const rawOnly = !hasData && hasRaw;
 
       // 2) استخراج رقم الملف المرتبط
       let fnum = pv!.fileNum || '', fmark = pv!.fileMark || '', fyear = pv!.fileYear || '';
@@ -4144,7 +4207,11 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
         await new Promise(r => setTimeout(r, 500));
         continue;
       }
-      setAutoLog(l => [...l, { num: n, status: pvStatus, msg: `حُفظ المحضر${fileMsg}` }]);
+      setAutoLog(l => [...l, {
+        num: n,
+        status: rawOnly ? 'raw' : pvStatus,
+        msg: rawOnly ? 'حُفظ المحضر (نص خام للمراجعة)' : `حُفظ المحضر${fileMsg}`,
+      }]);
 
       // 5) تفريغ والانتقال للتالي
       setResult(null); setPasteData(''); pasteCount.current = 0;
@@ -4153,7 +4220,12 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     setAutoRunning(false); setAutoCurrent(null); setPvSearchStage('');
   };
 
-  const stopAutomation = () => { autoAbortRef.current = true; if (autoResolverRef.current) { autoResolverRef.current(null); autoResolverRef.current = null; } setAutoRunning(false); };
+  const stopAutomation = () => {
+    autoAbortRef.current = true;
+    if (autoResolverRef.current)    { const r = autoResolverRef.current;    autoResolverRef.current = null;    r(null); }
+    if (dossierResolverRef.current) { const r = dossierResolverRef.current; dossierResolverRef.current = null; r(null); }
+    setAutoRunning(false);
+  };
 
 
   /**
@@ -4194,10 +4266,11 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     const courtName = isAppeal ? court.replace('استئناف ','').trim() : court;
     const PRIMARY = ['تطوان','طنجة','العرائش','القصر الكبير','شفشاون','وزان','الحسيمة','تارجيست'];
     const isPrimary = !isAppeal && PRIMARY.includes(court);
+    const reqId = nextReqId();
     window.postMessage({ type: 'MAHAKIM_TO_EXTENSION', payload: {
-      searchType: 'dossier', numero: num, mark, year, court: courtName, isPrimary,
+      searchType: 'dossier', reqId, numero: num, mark, year, court: courtName, isPrimary,
     }}, '*');
-    setTimeout(() => setIsSearching(false), 90000);
+    setTimeout(() => setIsSearching(false), 200000);
   };
 
   /** بحث عن ملف قضائي */
@@ -4210,10 +4283,11 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     const isPrimary = !isAppeal && PRIMARY.includes(remoteCourt);
     if (extensionReady) {
       freshSearchRef.current = true;
+      const reqId = nextReqId();
       window.postMessage({ type: 'MAHAKIM_TO_EXTENSION', payload: {
-        numero: remoteNum.trim(), mark: remoteMark.trim(), year: remoteYear.trim(), court: courtName, isPrimary,
+        reqId, numero: remoteNum.trim(), mark: remoteMark.trim(), year: remoteYear.trim(), court: courtName, isPrimary,
       }}, '*');
-      setTimeout(() => setIsSearching(false), 90000);
+      setTimeout(() => setIsSearching(false), 200000);
       return;
     }
     try {
@@ -4564,7 +4638,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
                               {autoLog.slice().reverse().map((e,i)=>(
                                 <div key={i} className="flex items-center justify-between px-2.5 py-1.5 text-[11px]">
                                   <span className="font-mono font-bold text-stone-600">محضر {e.num}</span>
-                                  <span className={`font-bold ${e.status==='fail'?'text-red-500':e.status==='created'?'text-emerald-600':e.status==='linked'?'text-blue-600':'text-stone-500'}`}>
+                                  <span className={`font-bold ${e.status==='fail'?'text-red-500':e.status==='created'?'text-emerald-600':e.status==='linked'?'text-blue-600':e.status==='raw'?'text-amber-600':'text-stone-500'}`}>
                                     {e.status==='fail'?'✗ '+e.msg:'✓ '+e.msg}
                                   </span>
                                 </div>

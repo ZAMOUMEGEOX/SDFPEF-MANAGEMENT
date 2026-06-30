@@ -119,8 +119,12 @@ export async function linkPVToCase(pvId: string, caseId: string): Promise<{ succ
   }
 }
 
-// ─── مولّد ID فريد للمحضر ──────────────────────────────────────────────────
-export function generatePVId(pvNumber: string, year: string): string {
-  const clean = `${pvNumber}-${year}`.replace(/[\/\\\s]/g, '-');
-  return `PV-${clean}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+// ─── مولّد ID حتمي للمحضر ───────────────────────────────────────────────────
+// نفس (الرقم + السنة [+ المحكمة]) ⇒ نفس المعرّف، فيُحدَّث السجلّ في مكانه عبر
+// upsert بدل تكراره. (لا طابع زمني — التكرار كان يُضخّم الحصيلة والإحصاء.)
+export function generatePVId(pvNumber: string, year: string, court = ''): string {
+  const ct = court ? court.replace(/[\/\\\s]+/g, '-') : 'محكمة';
+  const num = String(pvNumber || '').replace(/[\/\\\s]+/g, '-');
+  const yr = (String(year || '').match(/\d{4}/)?.[0]) || '';
+  return `PV-${ct}-${num}-${yr}`.replace(/-+/g, '-').replace(/-$/, '');
 }

@@ -2,7 +2,30 @@ import React, { useState, useMemo } from 'react';
 import { X, PieChartIcon, TrendingUp, BarChart3, AlertCircle, Sparkles, Bot, Loader2, ShieldAlert, CalendarClock, Users, MousePointerClick } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Case } from '../Contentieux';
+import type { PVRecord } from '../Contentieux';
 import { computeDeadlines, buildRepeatOffenderIndex, getQualityFlags } from '@/lib/caseAnalysis';
+
+/** قراءة مبلغ مالي قد يحوي فواصل آلاف/مسافات/أرقاماً عربية. */
+function parseAmount(v?: string | number | null): number {
+  if (v == null) return 0;
+  if (typeof v === 'number') return isNaN(v) ? 0 : v;
+  let s = String(v).trim();
+  if (!s) return 0;
+  s = s.replace(/[\u0660-\u0669]/g, d => String(d.charCodeAt(0) - 0x0660))
+       .replace(/[\u06F0-\u06F9]/g, d => String(d.charCodeAt(0) - 0x06F0))
+       .replace(/[^\d.,-]/g, '');
+  if (s.includes(',') && s.includes('.')) s = s.replace(/,/g, '');
+  else s = s.replace(/,/g, '.');
+  const parts = s.split('.');
+  if (parts.length > 2) s = parts.slice(0, -1).join('') + '.' + parts[parts.length - 1];
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
+/** منفَّذ (جزئياً أو كلياً) — مطابقة صريحة بدل احتواء نصّي هشّ. */
+function isExecuted(c: { executionStatus?: string }): boolean {
+  const s = (c.executionStatus || '').trim();
+  return s === 'منفذ كليا' || s === 'منفذ جزئيا';
+}
 
 /** أوامر التنقل التي يمكن لبطاقات/مبيانات الإحصائيات إصدارها لتصفية القائمة الرئيسية */
 export type StatsNavigateAction =
@@ -12,7 +35,7 @@ export type StatsNavigateAction =
   | { type: 'needsReview' }
   | { type: 'repeatOffenders' };
 
-export function ContentieuxStats({ cases, onClose, onNavigate }: { cases: Case[], onClose: () => void, onNavigate?: (action: StatsNavigateAction) => void }) {
+export function ContentieuxStats({ cases, pvRecords = [], onClose, onNavigate }: { cases: Case[], pvRecords?: PVRecord[], onClose: () => void, onNavigate?: (action: StatsNavigateAction) => void }) {
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
@@ -20,10 +43,18 @@ export function ContentieuxStats({ cases, onClose, onNavigate }: { cases: Case[]
     setIsAnalyzing(true);
     setAiAnalysis(null);
     try {
+      // حماية الخصوصية: لا تُرسَل أسماء الأطراف/الخصوم لجهة خارجية. نُرسل نسخة
+      // مُعمّاة تحتفظ بالحقول التحليلية (محكمة/نوع/وضعية/تواريخ/مبالغ) فقط.
+      const redactedCases = cases.map((c, i) => ({
+        ...c,
+        defendant: c.defendant ? `طرف#${i + 1}` : c.defendant,
+        parties: (c.parties || []).map((p, j) => ({ role: p.role, name: `طرف#${i + 1}.${j + 1}` })),
+        auditLog: undefined,
+      }));
       const response = await fetch('/api/analyze-cases', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cases })
+        body: JSON.stringify({ cases: redactedCases })
       });
       const data = await response.json();
       if (data.analysis) {
@@ -59,8 +90,8 @@ export function ContentieuxStats({ cases, onClose, onNavigate }: { cases: Case[]
   const executionData = Object.entries(executionCounts).map(([name, value]) => ({ name, value }));
 
   // 3. Financials (Fines + Compensations vs Recovered)
-  const totalFinesAndComps = cases.reduce((sum, c) => sum + (parseFloat(c.fine || '0') || 0) + (parseFloat(c.compensation || '0') || 0), 0);
-  const totalRecovered = cases.reduce((sum, c) => sum + (parseFloat(c.executionAmountRecovered || '0') || 0), 0);
+  const totalFinesAndComps = cases.reduce((sum, c) => sum + parseAmount(c.fine) + parseAmount(c.compensation), 0);
+  const totalRecovered = cases.reduce((sum, c) => sum + parseAmount(c.executionAmountRecovered), 0);
   
   const financialData = [
     { name: 'مبالغ محكوم بها', value: totalFinesAndComps, color: '#f97316' },
@@ -77,7 +108,7 @@ export function ContentieuxStats({ cases, onClose, onNavigate }: { cases: Case[]
     { name: 'لم يبلغ / تعذر', value: unnotifiedCases.length }
   ];
 
-  const executionRate = judgedCases.length > 0 ? ((cases.filter(c => c.executionStatus?.includes('منفذ')).length / judgedCases.length) * 100).toFixed(1) : '0';
+  const executionRate = judgedCases.length > 0 ? ((cases.filter(isExecuted).length / judgedCases.length) * 100).toFixed(1) : '0';
   const notificationRate = judgedCases.length > 0 ? ((notifiedCases.length / judgedCases.length) * 100).toFixed(1) : '0';
   const recoveryRate = totalFinesAndComps > 0 ? ((totalRecovered / totalFinesAndComps) * 100).toFixed(1) : '0';
 
@@ -128,6 +159,14 @@ export function ContentieuxStats({ cases, onClose, onNavigate }: { cases: Case[]
     return Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 8);
   }, [cases]);
 
+  // 9. إحصاء محاضر الضابطة القضائية (يظهر فقط إن مُرّرت المحاضر)
+  const pvStats = useMemo(() => {
+    const total = pvRecords.length;
+    const linked = pvRecords.filter(p => !!p.linkedCaseId).length;
+    const withFileNum = pvRecords.filter(p => !!(p.linkedFileNumber || (p as any).fileNum)).length;
+    return { total, linked, unlinked: total - linked, withFileNum, withoutFileNum: total - withFileNum };
+  }, [pvRecords]);
+
   return (
     <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center md:p-4 z-50 md:overflow-y-auto" dir="rtl">
       <div className="bg-stone-50 md:rounded-2xl w-full h-full md:h-auto md:max-h-[90vh] max-w-6xl shadow-2xl relative flex flex-col md:my-8 animate-in zoom-in-95">
@@ -152,6 +191,28 @@ export function ContentieuxStats({ cases, onClose, onNavigate }: { cases: Case[]
         </div>
 
         <div className="p-4 md:p-6 overflow-y-auto flex-1 space-y-6 md:space-y-8 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+
+          {/* إحصاء محاضر الضابطة القضائية */}
+          {pvStats.total > 0 && (
+            <div className="bg-white p-4 md:p-6 rounded-2xl border border-blue-100 shadow-sm">
+              <h3 className="font-bold text-stone-800 mb-4 flex items-center gap-2">
+                <CalendarClock className="size-4 text-blue-600" /> محاضر الضابطة القضائية
+              </h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: 'إجمالي المحاضر', value: pvStats.total, cls: 'text-blue-700' },
+                  { label: 'مربوطة بملف', value: pvStats.linked, cls: 'text-emerald-600' },
+                  { label: 'غير مربوطة', value: pvStats.unlinked, cls: 'text-amber-600' },
+                  { label: 'بلا رقم ملف زجري', value: pvStats.withoutFileNum, cls: 'text-red-500' },
+                ].map((s, i) => (
+                  <div key={i} className="bg-stone-50 rounded-xl p-3 text-center border border-stone-100">
+                    <p className={`text-2xl font-black ${s.cls}`}>{s.value}</p>
+                    <p className="text-[11px] text-stone-500 mt-1">{s.label}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           
           {/* AI Analysis Section */}
           {(aiAnalysis || isAnalyzing) && (
