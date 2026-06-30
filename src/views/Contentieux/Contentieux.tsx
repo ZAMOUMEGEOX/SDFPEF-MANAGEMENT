@@ -3770,6 +3770,8 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
   const reqIdCounterRef                      = useRef(0);
   const activeReqIdRef                       = useRef<number | null>(null);
   const nextReqId = () => { const id = ++reqIdCounterRef.current; activeReqIdRef.current = id; return id; };
+  // -- سبب آخر فشل بحث (للتمييز بين «لا نتيجة» القطعية والفشل العابر) --
+  const lastSearchErrRef                     = useRef<string>('');
 
   // -- البحث في قاعدة المحاضر المحلية --
   const [pvSearchQuery, setPvSearchQuery]   = useState('');
@@ -3857,8 +3859,17 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
 
       // ✅ نتيجة محضر الضابطة القضائية
       if (d.type === 'MAHAKIM_RESULT' && d.text && d.searchType === 'pv') {
-        const ctx = pvSearchCtxRef.current;
-        const parsed = performParsingPV(d.text, ctx.numero, ctx.year, ctx.court);
+        let parsed: PVRecord | null = null;
+        try {
+          const ctx = pvSearchCtxRef.current;
+          parsed = performParsingPV(d.text, ctx.numero, ctx.year, ctx.court);
+        } catch (e) {
+          // فشل تحليل غير متوقّع: لا نُسقط الحلقة — نمرّر فشلاً لتتابع للتالي.
+          lastSearchErrRef.current = 'parse_error';
+          setPvIsSearching(false); setPvSearchStage('');
+          if (autoResolverRef.current) { const r = autoResolverRef.current; autoResolverRef.current = null; r(null); }
+          return;
+        }
         setPvResult(parsed);
         setPvIsSearching(false);
         setPvSearchStage('');
@@ -3873,7 +3884,8 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
       if (d.type === 'MAHAKIM_RESULT' && d.text) {
         // أثناء أتمتة الملف المرتبط: التقط النتيجة وحُلّها للحلقة (دون تلويث العرض)
         if (dossierResolverRef.current) {
-          const parsedAuto = performParsing(d.text);
+          let parsedAuto: ReturnType<typeof performParsing> | null = null;
+          try { parsedAuto = performParsing(d.text); } catch { parsedAuto = null; }
           const r = dossierResolverRef.current; dossierResolverRef.current = null;
           freshSearchRef.current = false;
           setIsSearching(false); setSearchStage('');
@@ -3902,6 +3914,7 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
       // أخطاء
       if (d.type === 'MAHAKIM_ERROR' && d.searchType === 'pv') {
         setPvIsSearching(false); setPvSearchStage('');
+        lastSearchErrRef.current = String(d.error || '');
         // أثناء الأتمتة: لا نُظهر تنبيهاً — نمرّر فشلاً للحلقة لتتابع للمحضر التالي
         if (autoResolverRef.current) { const r = autoResolverRef.current; autoResolverRef.current = null; r(null); return; }
         const ERR: Record<string,string> = {
@@ -4142,82 +4155,100 @@ function MahakimIntegration({ onSave, onSavePV, cases: allCases = [] }: {
     setAutoRunning(true); setAutoLog([]); autoAbortRef.current = false; createdCasesRef.current.clear();
     setMainTab('pv'); setExtractMode('portal');
 
-    for (let n = from; n <= to; n++) {
-      if (autoAbortRef.current) break;
-      setAutoCurrent(n); setPvNumber(String(n)); setPvSearchStage(`أتمتة: محضر رقم ${n}`);
+    // الفشل القطعي (لا نتيجة فعلية) — لا داعي لإعادة محاولته (تسريع الفجوات).
+    const isDefinitiveEmpty = () => /no_results|no_response|empty|no_results_found/i.test(lastSearchErrRef.current || '');
 
-      // 1) بحث المحضر — مع إعادة محاولة واحدة عند الفشل العابر
-      let pv = await searchPVOnce(String(n));
-      if (!pv && !autoAbortRef.current) {
-        setPvSearchStage(`إعادة محاولة محضر رقم ${n}`);
-        await new Promise(r => setTimeout(r, 1300));
-        pv = await searchPVOnce(String(n));
-      }
-      const hasData = !!(pv && (pv.pvCourtRef || pv.linkedFileNumber || (pv.parties && pv.parties.length)));
-      const hasRaw  = !!(pv && pv.rawText && pv.rawText.replace(/\s/g, '').length > 120);
-      if (!hasData && !hasRaw) {
-        setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'لا نتيجة' }]);
-        await new Promise(r => setTimeout(r, 500));
-        continue;
-      }
-      // المحضر فيه نص لكن تعثّر استخراج بنيته: نحفظه للمراجعة بدل إسقاطه من السلسلة.
-      const rawOnly = !hasData && hasRaw;
+    try {
+      for (let n = from; n <= to; n++) {
+        if (autoAbortRef.current) break;
+        setAutoCurrent(n); setPvNumber(String(n)); setPvSearchStage(`أتمتة: محضر رقم ${n}`);
 
-      // 2) استخراج رقم الملف المرتبط
-      let fnum = pv!.fileNum || '', fmark = pv!.fileMark || '', fyear = pv!.fileYear || '';
-      if (!fnum && pv!.linkedFileNumber) {
-        const s = splitFileRef(pv!.linkedFileNumber); fnum = s.num; fmark = s.mark; fyear = s.year;
-      }
-
-      // 3) بحث الملف المرتبط في "تتبع الملفات" وحفظه — ثم ربط المحضر به
-      let linkedCaseId = ''; let fileMsg = '';
-      if (fnum) {
-        const fKey = fileNumKey(`${fnum}/${fmark}/${fyear}`);
-        const cached = createdCasesRef.current.get(fKey);
-        if (cached) {
-          linkedCaseId = cached; fileMsg = ' + الملف (مرتبط)';
-        } else {
-          const court = pv!.linkedFile?.court || pv!.court || pvCourt;
-          setPvSearchStage(`أتمتة: ملف ${fnum}/${fmark}/${fyear}`);
-          let dres = await searchDossierOnce(fnum, fmark, fyear, court);
-          if (!dres && !autoAbortRef.current) {
+        // كل دورة محميّة بالكامل: أي استثناء يُسجَّل ويُكمل للتالي — لا تنهار السلسلة أبداً.
+        try {
+          // 1) بحث المحضر — مع إعادة محاولة واحدة فقط عند الفشل العابر (لا عند «لا نتيجة»).
+          lastSearchErrRef.current = '';
+          let pv = await searchPVOnce(String(n));
+          if (!pv && !autoAbortRef.current && !isDefinitiveEmpty()) {
+            setPvSearchStage(`إعادة محاولة محضر رقم ${n}`);
             await new Promise(r => setTimeout(r, 1300));
-            dres = await searchDossierOnce(fnum, fmark, fyear, court);
+            pv = await searchPVOnce(String(n));
           }
-          const dossierOk = !!(dres && ((dres.mahakimId && dres.mahakimId !== '-') || (dres.procedures && dres.procedures.length) || (dres.parties && dres.parties.length)));
-          if (dossierOk) {
-            try {
-              const caseId = `CTX-FILE-${fKey}`;
-              await saveDossierResult(dres!, caseId);
-              createdCasesRef.current.set(fKey, caseId);
-              linkedCaseId = caseId; fileMsg = ' + حُفظ الملف';
-            } catch { fileMsg = ' (فشل حفظ الملف)'; }
-          } else {
-            fileMsg = ' (الملف بلا نتيجة)';
+
+          const hasData = !!(pv && (pv.pvCourtRef || pv.linkedFileNumber || (pv.parties && pv.parties.length)));
+          const hasRaw  = !!(pv && pv.rawText && pv.rawText.replace(/\s/g, '').length > 120);
+          if (!hasData && !hasRaw) {
+            setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'لا نتيجة' }]);
+            continue;
           }
+          // المحضر فيه نص لكن تعثّر استخراج بنيته: نحفظه للمراجعة بدل إسقاطه.
+          const rawOnly = !hasData && hasRaw;
+
+          // 2) استخراج رقم الملف المرتبط (محمي ضد المراجع المشوّهة)
+          let fnum = pv!.fileNum || '', fmark = pv!.fileMark || '', fyear = pv!.fileYear || '';
+          if (!fnum && pv!.linkedFileNumber) {
+            try { const s = splitFileRef(pv!.linkedFileNumber); fnum = s.num; fmark = s.mark; fyear = s.year; }
+            catch { fnum = ''; fmark = ''; fyear = ''; }
+          }
+
+          // 3) بحث الملف المرتبط وحفظه — ثم ربط المحضر به
+          let linkedCaseId = ''; let fileMsg = '';
+          if (fnum) {
+            let fKey = '';
+            try { fKey = fileNumKey(`${fnum}/${fmark}/${fyear}`); } catch { fKey = `${fnum}-${fmark}-${fyear}`; }
+            const cached = createdCasesRef.current.get(fKey);
+            if (cached) {
+              linkedCaseId = cached; fileMsg = ' + الملف (مرتبط)';
+            } else {
+              const court = pv!.linkedFile?.court || pv!.court || pvCourt;
+              setPvSearchStage(`أتمتة: ملف ${fnum}/${fmark}/${fyear}`);
+              lastSearchErrRef.current = '';
+              let dres = await searchDossierOnce(fnum, fmark, fyear, court);
+              if (!dres && !autoAbortRef.current && !isDefinitiveEmpty()) {
+                await new Promise(r => setTimeout(r, 1300));
+                dres = await searchDossierOnce(fnum, fmark, fyear, court);
+              }
+              const dossierOk = !!(dres && ((dres.mahakimId && dres.mahakimId !== '-') || (dres.procedures && dres.procedures.length) || (dres.parties && dres.parties.length)));
+              if (dossierOk) {
+                try {
+                  const caseId = `CTX-FILE-${fKey}`;
+                  await saveDossierResult(dres!, caseId);
+                  createdCasesRef.current.set(fKey, caseId);
+                  linkedCaseId = caseId; fileMsg = ' + حُفظ الملف';
+                } catch { fileMsg = ' (فشل حفظ الملف)'; }
+              } else {
+                fileMsg = ' (الملف بلا نتيجة)';
+              }
+            }
+          }
+
+          // 4) حفظ المحضر (مربوطاً بالملف إن وُجد)
+          const pvStatus: 'ok'|'linked' = linkedCaseId ? 'linked' : 'ok';
+          try {
+            await autoSavePVRecord(pv!, linkedCaseId || undefined);
+          } catch {
+            setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'فشل حفظ المحضر' }]);
+            continue;
+          }
+          setAutoLog(l => [...l, {
+            num: n,
+            status: rawOnly ? 'raw' : pvStatus,
+            msg: rawOnly ? 'حُفظ المحضر (نص خام للمراجعة)' : `حُفظ المحضر${fileMsg}`,
+          }]);
+        } catch (err) {
+          // شبكة الأمان النهائية: مهما حدث في هذه الدورة، نُسجّل ونُكمل.
+          setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'تعذّرت معالجة المحضر — تابعنا للتالي' }]);
+        } finally {
+          // تنظيف الحالة بين المحاضر دائماً، وإفلات أي انتظار عالق.
+          autoResolverRef.current = null;
+          dossierResolverRef.current = null;
+          setResult(null); setPasteData(''); pasteCount.current = 0;
+          await new Promise(r => setTimeout(r, 600));
         }
       }
-
-      // 4) حفظ المحضر (مربوطاً بالملف إن وُجد)
-      let pvStatus: 'ok'|'linked'|'created' = linkedCaseId ? 'linked' : 'ok';
-      try {
-        await autoSavePVRecord(pv!, linkedCaseId || undefined);
-      } catch {
-        setAutoLog(l => [...l, { num: n, status: 'fail', msg: 'فشل حفظ المحضر' }]);
-        await new Promise(r => setTimeout(r, 500));
-        continue;
-      }
-      setAutoLog(l => [...l, {
-        num: n,
-        status: rawOnly ? 'raw' : pvStatus,
-        msg: rawOnly ? 'حُفظ المحضر (نص خام للمراجعة)' : `حُفظ المحضر${fileMsg}`,
-      }]);
-
-      // 5) تفريغ والانتقال للتالي
-      setResult(null); setPasteData(''); pasteCount.current = 0;
-      await new Promise(r => setTimeout(r, 800));
+    } finally {
+      // مهما حدث، نُعيد الواجهة لحالة سليمة (لا تبقى «جارٍ المعالجة» أبداً).
+      setAutoRunning(false); setAutoCurrent(null); setPvSearchStage('');
     }
-    setAutoRunning(false); setAutoCurrent(null); setPvSearchStage('');
   };
 
   const stopAutomation = () => {
