@@ -1,9 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { MapPin, Users, AlertTriangle, FileText, Plus, Shield, Search, Filter, Download, Briefcase, FileOutput, FilePlus2, User, Calendar, Scale, ChevronLeft, Check, FileCode2, Map, Gavel } from 'lucide-react';
+import { Shield, Search, FilePlus2, ChevronLeft, Check, FileCode2, Map, Scale, FileText, Gavel, MapPin, Crosshair, Layers } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { loadInfractions, updateInfractionStatut, formatPVNumber, type InfractionRecord, type InfractionKPIs } from '@/lib/pv';
+import { loadInfractions, updateInfractionStatut, formatPVNumber, toNum, type InfractionRecord, type InfractionKPIs } from '@/lib/pv';
+import { generatePVDocx, type PVDocxData } from '@/lib/pvDocx';
+import { exportChevauchementDocx } from '@/lib/forestDocx';
+import {
+  requestParcelPickForPV, onParcelDelivered, consumePendingParcel, savePVParcel,
+  extractCoordPoints, areaToHaAreCa, showPVParcelOnMap, type DeliveredParcel,
+} from '@/lib/pvParcelBridge';
 
 const customIcon = new L.Icon({
   iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
@@ -82,6 +88,12 @@ interface PVFormData {
   birthPlace: string; cin: string; dob: string; profession: string
   maritalStatus: string; address: string; outsideMaroc: boolean
   legalDescription: string
+  // ── Parcelle capturée depuis la carte Domaine Forestier ──
+  parcelGeojson: any | null
+  parcelAreaM2: number
+  parcelCoordPoints: Array<{ num: number; x: string; y: string }>
+  parcelOverlap: DeliveredParcel['overlap'] | null
+  parcelProvince: string | null
 }
 
 const EMPTY_FORM: PVFormData = {
@@ -100,6 +112,7 @@ const EMPTY_FORM: PVFormData = {
   birthPlace: '', cin: '', dob: '', profession: '',
   maritalStatus: 'متزوج', address: '', outsideMaroc: false,
   legalDescription: '',
+  parcelGeojson: null, parcelAreaM2: 0, parcelCoordPoints: [], parcelOverlap: null, parcelProvince: null,
 }
 
 // ══════════════════════════════════════════════════════
@@ -290,97 +303,46 @@ function PVManagement({ pvData, kpis, isLoading, onRefresh }: {
 }
 
 // ══════════════════════════════════════════════════════
-// GENERATE DOCX FROM SAVED RECORD
+// GENERATE DOCX FROM SAVED RECORD (tous les champs préservés)
 // ══════════════════════════════════════════════════════
 function generateDocxFromRecord(pv: InfractionRecord) {
-  const pvNum = formatPVNumber(pv)
-  const contrevenant = [pv.contrevenant_prenom, pv.contrevenant_nom].filter(Boolean).join(' ') || 'مجهول'
-  generateDocxContent({
-    pvNum,
+  const data: PVDocxData = {
+    pvNum: formatPVNumber(pv),
     date: pv.date_redaction || '',
     heure: pv.heure_constat || '',
-    agent1: { nom: pv.agent_1_nom || '', grade: pv.agent_1_grade || '', residence: pv.agent_1_residence || '' },
+    agents: [
+      { nom: pv.agent_1_nom || '', grade: pv.agent_1_grade || '', residence: pv.agent_1_residence || '' },
+      { nom: pv.agent_2_nom || '', grade: pv.agent_2_grade || '', residence: pv.agent_2_residence || '' },
+      { nom: pv.agent_3_nom || '', grade: pv.agent_3_grade || '', residence: pv.agent_3_residence || '' },
+    ].filter(a => a.nom),
     foret: pv.foret_nom || '',
     canton: pv.foret_section || '',
     decreeNum: pv.decret_num || '',
+    decreeDate: pv.decret_date || '',
     placeName: pv.lieu_dit || '',
     commune: pv.commune || '',
-    province: pv.imaala || '',
+    province: pv.imaala || pv.province || '',
+    coordX: pv.coord_x != null ? String(pv.coord_x) : '',
+    coordY: pv.coord_y != null ? String(pv.coord_y) : '',
     infractions: pv.infraction_types || [],
-    ha: String(pv.surface_hectares || 0),
-    are: String(pv.surface_ares || 0),
-    ca: String(pv.surface_centiares || 0),
-    contrevenant,
+    ha: String(toNum(pv.surface_hectares)),
+    are: String(toNum(pv.surface_ares)),
+    ca: String(toNum(pv.surface_centiares)),
+    degats: pv.degats || [],
+    contrevenantPrenom: pv.contrevenant_prenom || '',
+    contrevenantNom: pv.contrevenant_nom || '',
+    filiation: pv.contrevenant_nasab || '',
+    motherName: pv.contrevenant_mere || '',
+    birthPlace: pv.contrevenant_lieu_naiss || '',
+    dob: pv.contrevenant_ddn || '',
+    profession: pv.contrevenant_profession || '',
+    maritalStatus: pv.contrevenant_situation || '',
+    address: pv.contrevenant_adresse || '',
     cin: pv.contrevenant_cin || '',
+    outsideMaroc: !!pv.contrevenant_hors_maroc,
     legalDescription: pv.description_juridique || '',
-  })
-}
-
-function generateDocxContent(d: any) {
-  const content = `<html dir="rtl" lang="ar">
-<head><meta charset="utf-8"><title>محضر الضبط</title>
-<style>
-  body{font-family:'Traditional Arabic',Arial;padding:40px;line-height:2;font-size:14pt}
-  .header{text-align:center;margin-bottom:30px;border-bottom:2px solid #000;padding-bottom:15px}
-  .section{margin:15px 0}
-  .bold{font-weight:bold}
-  table{width:100%;border-collapse:collapse;margin:10px 0}
-  td{padding:6px 10px;border:1px solid #ccc}
-</style></head>
-<body>
-<div class="header">
-  <p>المملكة المغربية</p>
-  <p>وزارة الفلاحة والصيد البحري والتنمية القروية والمياه والغابات</p>
-  <p class="bold" style="font-size:16pt">الوكالة الوطنية للمياه والغابات</p>
-  <p>المديرية الإقليمية بتطوان</p>
-  <br/>
-  <p class="bold" style="font-size:18pt">مـحـضـر ضـبـط الـجـنـح الـغـابـويـة</p>
-  <p>رقم: <span class="bold">${d.pvNum}</span></p>
-</div>
-
-<div class="section">
-  <p>نحن <span class="bold">${d.agent1.nom}</span>، بصفتنا <span class="bold">${d.agent1.grade}</span>، 
-  المقيم بـ${d.agent1.residence}، المكلفون بمراقبة وصون الملك الغابوي،</p>
-  <p>بتاريخ <span class="bold">${d.date}</span>، <span class="bold">${d.heure || ''}</span>،</p>
-  <p>أثناء قيامنا بمهام المراقبة والحراسة بغابة <span class="bold">${d.foret}</span>، 
-  قسم <span class="bold">${d.canton}</span>،</p>
-  <p>بالموقع المسمى: <span class="bold">${d.placeName}</span>، 
-  جماعة <span class="bold">${d.commune}</span>، 
-  <span class="bold">${d.province}</span>،</p>
-</div>
-
-<div class="section">
-  <p class="bold">الجرائم المعاينة:</p>
-  <p>${d.infractions.map((i: string) => `• ${i}`).join('<br/>')}</p>
-  <p>المساحة: <span class="bold">${d.ha} هـ ${d.are} آر ${d.ca} سنتيار</span></p>
-</div>
-
-<div class="section">
-  <p class="bold">هوية المخالف:</p>
-  <p>السيد/ة: <span class="bold">${d.contrevenant}</span></p>
-  <p>رقم بطاقة التعريف: <span class="bold">${d.cin || '—'}</span></p>
-</div>
-
-<div class="section">
-  <p class="bold">الوصف القانوني:</p>
-  <p>${d.legalDescription}</p>
-</div>
-
-<div style="margin-top:60px;display:flex;justify-content:space-between">
-  <div style="text-align:center"><p>توقيع المحرر</p><br/><br/>________________</div>
-  <div style="text-align:center"><p>توقيع المخالف</p><br/><br/>________________</div>
-</div>
-</body></html>`
-
-  const blob = new Blob(['\ufeff', content], { type: 'application/msword' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `PV_${d.pvNum.replace(/\//g, '-')}.doc`
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
+  }
+  generatePVDocx(data)
 }
 
 // ══════════════════════════════════════════════════════
@@ -409,6 +371,35 @@ function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void
 
   const setAgent = (n: 1 | 2 | 3, field: keyof AgentData, val: string) =>
     setForm(f => ({ ...f, [`agent${n}`]: { ...f[`agent${n}`], [field]: val } }));
+
+  // ── Réception de la parcelle capturée sur la carte Domaine Forestier ──
+  const applyDeliveredParcel = (loc: DeliveredParcel) => {
+    const { ha, are, ca } = areaToHaAreCa(loc.areaM2);
+    const pts = extractCoordPoints(loc.geojson);
+    setMapCoords({ lat: loc.centroidLat, lng: loc.centroidLng });
+    setForm(f => ({
+      ...f,
+      parcelGeojson: loc.geojson,
+      parcelAreaM2: loc.areaM2,
+      parcelCoordPoints: pts,
+      parcelOverlap: loc.overlap || null,
+      parcelProvince: loc.province || null,
+      coordX: loc.lambertX ? String(loc.lambertX.toFixed(2)) : f.coordX,
+      coordY: loc.lambertY ? String(loc.lambertY.toFixed(2)) : f.coordY,
+      // n'écrase la surface que si l'utilisateur ne l'a pas déjà saisie
+      ha: (f.ha === '0' || f.ha === '') ? ha : f.ha,
+      are: (f.are === '0' || f.are === '') ? are : f.are,
+      ca: (f.ca === '0' || f.ca === '') ? ca : f.ca,
+    }));
+  };
+
+  useEffect(() => {
+    // parcelle éventuellement livrée pendant que le formulaire était démonté
+    const pending = consumePendingParcel();
+    if (pending) applyDeliveredParcel(pending);
+    return onParcelDelivered(applyDeliveredParcel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleNext = () => setCurrentStep(p => Math.min(p + 1, totalSteps));
   const handlePrev = () => setCurrentStep(p => Math.max(p - 1, 1));
@@ -439,6 +430,51 @@ function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void
 
   const pvNum = `${form.pvNum}/${form.pvYear}/${form.brigade}`;
 
+  // Construit l'objet DOCX à partir du formulaire (source unique de vérité)
+  const buildDocxData = (): PVDocxData => ({
+    pvNum,
+    date: form.date,
+    heure: form.heure,
+    agents: [form.agent1, form.agent2, form.agent3].slice(0, form.nbAgents).filter(a => a.nom),
+    foret: form.foret,
+    canton: form.canton,
+    decreeNum: form.decreeNum,
+    decreeDate: form.decreeDate,
+    placeName: form.placeName,
+    commune: form.commune,
+    province: form.province,
+    coordX: form.coordX || (mapCoords ? mapCoords.lng.toFixed(6) : ''),
+    coordY: form.coordY || (mapCoords ? mapCoords.lat.toFixed(6) : ''),
+    infractions: form.infractions,
+    ha: form.ha,
+    are: form.are,
+    ca: form.ca,
+    degats: form.degats,
+    contrevenantPrenom: form.firstName,
+    contrevenantNom: form.lastName,
+    filiation: form.filiation,
+    motherName: form.motherName,
+    birthPlace: form.birthPlace,
+    dob: form.dob,
+    profession: form.profession,
+    maritalStatus: form.maritalStatus,
+    address: form.address,
+    cin: form.cin,
+    outsideMaroc: form.outsideMaroc,
+    legalDescription: form.legalDescription,
+    coordPoints: form.parcelCoordPoints,
+    overlap: form.parcelOverlap
+      ? {
+          globalPosition: form.parcelOverlap.globalPosition,
+          totalPercentage: form.parcelOverlap.totalPercentage,
+          hits: form.parcelOverlap.hits.map(h => ({
+            foret: h.foret, foretAr: h.foretAr, canton: h.canton,
+            percentage: h.percentage, intersectionArea: h.intersectionArea,
+          })),
+        }
+      : null,
+  });
+
   const savePV = async () => {
     setSaving(true); setSaveError('');
     try {
@@ -447,7 +483,7 @@ function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          numero_pv_ordre: form.pvNum,
+          numero_pv_ordre: form.pvNum ? Number(form.pvNum) : null,
           numero_carnet: form.pvYear.split('/')[0] || form.pvYear,
           brigade_code: form.brigade,
           date_redaction: form.date,
@@ -466,24 +502,24 @@ function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void
           foret_nom_ar: form.foret,
           foret_section: form.canton,
           decret_num: form.decreeNum,
-          decret_date: form.decreeDate,
+          decret_date: form.decreeDate || null,
           lieu_dit: form.placeName,
           commune: form.commune,
           qiada: form.commune,
           imaala: form.province,
-          coord_x: form.coordX || (mapCoords ? String(mapCoords.lng) : ''),
-          coord_y: form.coordY || (mapCoords ? String(mapCoords.lat) : ''),
+          coord_x: form.coordX ? toNum(form.coordX) : (mapCoords ? mapCoords.lng : null),
+          coord_y: form.coordY ? toNum(form.coordY) : (mapCoords ? mapCoords.lat : null),
           infraction_types: form.infractions,
           infraction_details: {},
-          surface_hectares: form.ha,
-          surface_ares: form.are,
-          surface_centiares: form.ca,
+          surface_hectares: toNum(form.ha),
+          surface_ares: toNum(form.are),
+          surface_centiares: toNum(form.ca),
           degats: form.degats,
           contrevenant_prenom: form.firstName,
           contrevenant_nom: form.lastName,
           contrevenant_nasab: form.filiation,
           contrevenant_mere: form.motherName,
-          contrevenant_ddn: form.dob,
+          contrevenant_ddn: form.dob || null,
           contrevenant_lieu_naiss: form.birthPlace,
           contrevenant_situation: form.maritalStatus,
           contrevenant_profession: form.profession,
@@ -497,12 +533,27 @@ function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void
       const data = await res.json();
       if (!res.ok || !data.success) {
         setSaveError(data.error || 'Erreur lors de la sauvegarde');
-        return false;
+        return null;
       }
-      return true;
+      const pvId: string | null = data.id ?? data.record?.id ?? data.pv?.id ?? null;
+      // Rattachement de la parcelle capturée (domaine.parcels, kind='pv')
+      if (pvId && form.parcelGeojson) {
+        await savePVParcel(pvId, pvNum, {
+          geojson: form.parcelGeojson,
+          centroidLat: mapCoords?.lat ?? 0,
+          centroidLng: mapCoords?.lng ?? 0,
+          lambertX: toNum(form.coordX),
+          lambertY: toNum(form.coordY),
+          areaM2: form.parcelAreaM2,
+          perimeterKm: 0,
+          province: form.parcelProvince,
+          overlap: form.parcelOverlap,
+        });
+      }
+      return pvId ?? 'ok';
     } catch (e) {
       setSaveError('Erreur de connexion');
-      return false;
+      return null;
     } finally {
       setSaving(false);
     }
@@ -514,14 +565,7 @@ function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void
   };
 
   const handleSaveAndGenerate = async () => {
-    generateDocxContent({
-      pvNum, date: form.date, heure: form.heure, agent1: form.agent1,
-      foret: form.foret, canton: form.canton, decreeNum: form.decreeNum,
-      placeName: form.placeName, commune: form.commune, province: form.province,
-      infractions: form.infractions, ha: form.ha, are: form.are, ca: form.ca,
-      contrevenant: `${form.firstName} ${form.lastName}`,
-      cin: form.cin, legalDescription: form.legalDescription,
-    });
+    await generatePVDocx(buildDocxData());
     const ok = await savePV();
     if (ok) { setForm(EMPTY_FORM); setCurrentStep(1); onSaved(); onClose(); }
   };
@@ -675,9 +719,60 @@ function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void
                 </select>
               </div>
             </div>
+
+            {/* ── Capture de la parcelle sur la carte Domaine Forestier ── */}
+            <div className="p-6 border rounded-xl space-y-4 bg-gradient-to-br from-emerald-50/60 to-white border-emerald-200 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-lg bg-emerald-100 text-emerald-700 border border-emerald-200"><Layers className="size-5" /></div>
+                  <div>
+                    <h4 className="text-sm font-bold text-emerald-900">قطعة المخالفة على خريطة الملك الغابوي</h4>
+                    <p className="text-xs text-stone-500 mt-1">ارسم حدود القطعة على الخريطة ليُحسب المركز والمساحة والتداخل مع الملك الغابوي تلقائياً.</p>
+                  </div>
+                </div>
+                <button type="button" onClick={() => requestParcelPickForPV(pvNum)}
+                  className="flex items-center justify-center gap-2 px-5 py-3 bg-emerald-700 text-white rounded-xl text-xs uppercase tracking-widest font-bold hover:bg-emerald-800 transition-colors shadow-md shadow-emerald-900/10 whitespace-nowrap">
+                  <Crosshair className="size-4" /> تحديد القطعة على الخريطة
+                </button>
+              </div>
+
+              {form.parcelGeojson && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2">
+                  <ParcelStat label="المساحة" value={`${(form.parcelAreaM2 / 10000).toFixed(3)} هـ`} />
+                  <ParcelStat label="عدد النقاط" value={String(form.parcelCoordPoints.length)} />
+                  <ParcelStat label="X مركز" value={form.coordX || '—'} />
+                  <ParcelStat label="Y مركز" value={form.coordY || '—'} />
+                  {form.parcelOverlap && (
+                    <div className="col-span-2 md:col-span-4">
+                      <div className={`flex items-center justify-between px-4 py-2 rounded-lg text-xs font-bold border ${
+                        form.parcelOverlap.globalPosition === 'داخل الملك الغابوي' ? 'bg-red-50 text-red-700 border-red-200' :
+                        form.parcelOverlap.globalPosition === 'جزئيا داخل الملك الغابوي' ? 'bg-orange-50 text-orange-700 border-orange-200' :
+                        'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      }`}>
+                        <span>{form.parcelOverlap.globalPosition}</span>
+                        <span>نسبة التداخل {form.parcelOverlap.totalPercentage.toFixed(1)}%</span>
+                      </div>
+                    </div>
+                  )}
+                  <div className="col-span-2 md:col-span-4 flex gap-2">
+                    <button type="button" onClick={() => showPVParcelOnMap(form.parcelGeojson, pvNum)}
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-white border border-stone-200 text-stone-700 rounded-lg text-xs font-bold hover:bg-stone-50 transition-colors">
+                      <MapPin className="size-4" /> إعادة عرض القطعة على الخريطة
+                    </button>
+                    {form.parcelOverlap && (
+                      <button type="button" onClick={() => exportOverlapReport(form)}
+                        className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-white border border-stone-200 text-stone-700 rounded-lg text-xs font-bold hover:bg-blue-50 hover:text-blue-700 transition-colors">
+                        <FileCode2 className="size-4" /> تقرير التداخل (DOCX)
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="mt-4 rounded-xl overflow-hidden h-[300px] border border-stone-200 relative">
               <div className="absolute inset-0 z-10 p-2 flex flex-col items-start justify-between pointer-events-none">
-                <span className="text-xs bg-white text-stone-700 px-3 py-1.5 rounded-lg shadow-md font-medium border border-stone-100 mt-2 ml-2 self-end">انقر على الخريطة لتحديد الإحداثيات</span>
+                <span className="text-xs bg-white text-stone-700 px-3 py-1.5 rounded-lg shadow-md font-medium border border-stone-100 mt-2 ml-2 self-end">أو انقر يدوياً لتحديد نقطة مركزية (احتياطي)</span>
                 {mapCoords && (
                   <div className="bg-white/90 backdrop-blur border border-stone-200 p-3 rounded-xl shadow-lg mb-2 mr-2 text-xs flex gap-4 pointer-events-auto">
                     <div><span className="text-stone-500 block mb-1">X (Longitude)</span><span className="font-mono text-stone-800">{mapCoords.lng.toFixed(6)}</span></div>
@@ -867,6 +962,33 @@ function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void
 // ══════════════════════════════════════════════════════
 // HELPERS
 // ══════════════════════════════════════════════════════
+function ParcelStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-white border border-stone-200 rounded-lg px-3 py-2 text-center shadow-sm">
+      <p className="text-[10px] text-stone-400 font-bold uppercase tracking-widest mb-0.5">{label}</p>
+      <p className="text-sm font-mono font-bold text-stone-800">{value}</p>
+    </div>
+  );
+}
+
+// Génère le rapport de chevauchement (DOCX) à partir de la parcelle capturée.
+function exportOverlapReport(form: PVFormData) {
+  if (!form.parcelOverlap || !form.parcelGeojson) return;
+  const ov = form.parcelOverlap;
+  const importedArea = form.parcelAreaM2 || 0;
+  const insideArea = ov.totalIntersectionArea || 0;
+  exportChevauchementDocx({
+    layerName: `قطعة المحضر ${form.pvNum}/${form.pvYear}/${form.brigade}`.replace(/\/+$/,''),
+    globalPosition: ov.globalPosition,
+    totalPercentage: ov.totalPercentage,
+    importedArea,
+    insideArea,
+    outsideArea: Math.max(0, importedArea - insideArea),
+    totalIntersectionArea: insideArea,
+    hits: ov.hits,
+  });
+}
+
 function SummaryRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between items-center py-2 border-b border-stone-100 last:border-0">

@@ -140,18 +140,27 @@ export async function deleteInfraction(id: string): Promise<{ success: boolean; 
 
 export function formatPVNumber(inf: Pick<InfractionRecord, 'numero_pv' | 'numero_pv_ordre' | 'numero_carnet' | 'brigade_code'>): string {
   if (inf.numero_pv) return inf.numero_pv
-  if (inf.numero_pv_ordre && inf.numero_carnet) {
+  if (inf.numero_pv_ordre != null && inf.numero_carnet) {
     return `${inf.numero_pv_ordre}/${inf.numero_carnet}/${inf.brigade_code || 'BM'}`
   }
   return '—'
+}
+
+/** Convertit une valeur (string|number|null) en nombre sûr, 0 par défaut. */
+export function toNum(v: unknown): number {
+  if (v == null || v === '') return 0
+  const n = typeof v === 'number' ? v : parseFloat(String(v).replace(',', '.'))
+  return Number.isFinite(n) ? n : 0
 }
 
 export function computeKPIs(data: InfractionRecord[]): InfractionKPIs {
   const now = new Date()
   return {
     total: data.length,
-    surface: data.reduce((s, r) =>
-      s + (r.surface_hectares || 0) + (r.surface_ares || 0) / 100 + (r.surface_centiares || 0) / 10000, 0),
+    surface: data.reduce(
+      (s, r) => s + toNum(r.surface_hectares) + toNum(r.surface_ares) / 100 + toNum(r.surface_centiares) / 10000,
+      0
+    ),
     parquet: data.filter(r => r.transmis_parquet || r.statut === 'transmis_parquet').length,
     mois: data.filter(r => {
       const d = new Date(r.date_redaction || r.created_at)
