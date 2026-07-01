@@ -138,6 +138,21 @@ export async function deleteInfraction(id: string): Promise<{ success: boolean; 
   }
 }
 
+/** Mise à jour complète d'un PV existant (édition). Passe par supabase directement,
+ *  comme updateInfractionStatut — cohérent avec le pattern d'écriture client existant. */
+export async function updateInfraction(
+  id: string,
+  payload: Record<string, unknown>
+): Promise<{ success: boolean; error: string | null }> {
+  try {
+    const { error } = await supabase.from('infractions').update(payload).eq('id', id)
+    if (error) return { success: false, error: error.message }
+    return { success: true, error: null }
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 export function formatPVNumber(inf: Pick<InfractionRecord, 'numero_pv' | 'numero_pv_ordre' | 'numero_carnet' | 'brigade_code'>): string {
   if (inf.numero_pv) return inf.numero_pv
   if (inf.numero_pv_ordre != null && inf.numero_carnet) {

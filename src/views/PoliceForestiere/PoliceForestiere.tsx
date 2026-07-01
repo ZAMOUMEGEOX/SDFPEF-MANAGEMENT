@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { Shield, Search, FilePlus2, ChevronLeft, Check, FileCode2, Map, Scale, FileText, Gavel, MapPin, Crosshair, Layers } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Shield, Search, FilePlus2, ChevronLeft, Check, FileCode2, Map, Scale, FileText, Gavel, MapPin, Crosshair, Layers, Pencil, Trash2, Download, SlidersHorizontal, X, ArrowUpDown, CheckSquare, Square } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { loadInfractions, updateInfractionStatut, formatPVNumber, toNum, type InfractionRecord, type InfractionKPIs } from '@/lib/pv';
+import { loadInfractions, updateInfractionStatut, updateInfraction, deleteInfraction, formatPVNumber, toNum, type InfractionRecord, type InfractionKPIs } from '@/lib/pv';
 import { generatePVDocx, type PVDocxData } from '@/lib/pvDocx';
 import { exportChevauchementDocx } from '@/lib/forestDocx';
 import {
@@ -115,24 +115,59 @@ const EMPTY_FORM: PVFormData = {
   parcelGeojson: null, parcelAreaM2: 0, parcelCoordPoints: [], parcelOverlap: null, parcelProvince: null,
 }
 
+// Convertit un enregistrement InfractionRecord en état de formulaire (édition).
+function recordToForm(rec: InfractionRecord): PVFormData {
+  const nb = Math.max(1, [rec.agent_1_nom, rec.agent_2_nom, rec.agent_3_nom].filter(Boolean).length);
+  return {
+    pvNum: rec.numero_pv_ordre != null ? String(rec.numero_pv_ordre) : '',
+    pvYear: rec.numero_carnet || '',
+    brigade: rec.brigade_code || 'BM',
+    date: rec.date_redaction || new Date().toISOString().split('T')[0],
+    heure: rec.heure_constat || '',
+    nbAgents: nb, activeAgent: 1,
+    agent1: { nom: rec.agent_1_nom || '', grade: rec.agent_1_grade || 'تقني متخصص للمياه والغابات', residence: rec.agent_1_residence || '' },
+    agent2: { nom: rec.agent_2_nom || '', grade: rec.agent_2_grade || 'تقني للمياه والغابات', residence: rec.agent_2_residence || '' },
+    agent3: { nom: rec.agent_3_nom || '', grade: rec.agent_3_grade || 'تقني للمياه والغابات', residence: rec.agent_3_residence || '' },
+    foret: rec.foret_nom || '', canton: rec.foret_section || '',
+    decreeNum: rec.decret_num || '', decreeDate: rec.decret_date || '',
+    placeName: rec.lieu_dit || '', commune: rec.commune || '', province: rec.imaala || rec.province || 'إقليم تطوان',
+    coordX: rec.coord_x != null ? String(rec.coord_x) : '', coordY: rec.coord_y != null ? String(rec.coord_y) : '',
+    infractions: rec.infraction_types || [],
+    ha: String(toNum(rec.surface_hectares)), are: String(toNum(rec.surface_ares)), ca: String(toNum(rec.surface_centiares)),
+    degats: (rec.degats && rec.degats.length) ? rec.degats : [{ type: '', quantite: '', equivalent: '' }],
+    firstName: rec.contrevenant_prenom || '', lastName: rec.contrevenant_nom || '',
+    filiation: rec.contrevenant_nasab || '', motherName: rec.contrevenant_mere || '',
+    birthPlace: rec.contrevenant_lieu_naiss || '', cin: rec.contrevenant_cin || '',
+    dob: rec.contrevenant_ddn || '', profession: rec.contrevenant_profession || '',
+    maritalStatus: rec.contrevenant_situation || 'متزوج', address: rec.contrevenant_adresse || '',
+    outsideMaroc: !!rec.contrevenant_hors_maroc, legalDescription: rec.description_juridique || '',
+    parcelGeojson: null, parcelAreaM2: 0, parcelCoordPoints: [], parcelOverlap: null, parcelProvince: null,
+  };
+}
+
 // ══════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ══════════════════════════════════════════════════════
 export function PoliceForestiere() {
   const [showForm, setShowForm] = useState(false);
+  const [editRecord, setEditRecord] = useState<InfractionRecord | null>(null);
   const [pvData, setPvData] = useState<InfractionRecord[]>([]);
   const [kpis, setKpis] = useState<InfractionKPIs>({ total: 0, surface: 0, parquet: 0, mois: 0 });
   const [isLoading, setIsLoading] = useState(true);
 
   const fetchData = async () => {
     setIsLoading(true);
-    const { data, kpis: k } = await loadInfractions({ limit: 100 });
+    const { data, kpis: k } = await loadInfractions({ limit: 500 });
     setPvData(data);
     setKpis(k);
     setIsLoading(false);
   };
 
   useEffect(() => { fetchData(); }, []);
+
+  const openNew = () => { setEditRecord(null); setShowForm(true); };
+  const openEdit = (rec: InfractionRecord) => { setEditRecord(rec); setShowForm(true); };
+  const closeForm = () => { setShowForm(false); setEditRecord(null); };
 
   return (
     <div className="p-4 md:p-8 space-y-4 md:space-y-6">
@@ -142,12 +177,12 @@ export function PoliceForestiere() {
           <p className="text-xs md:text-sm text-stone-500 mt-1">Gestion des patrouilles, centres de conservation et saisie des procès-verbaux.</p>
         </div>
         {!showForm ? (
-          <button onClick={() => setShowForm(true)} className="flex items-center justify-center gap-2 px-4 py-3 md:py-2 w-full sm:w-auto bg-emerald-800 text-white rounded-xl text-xs uppercase tracking-widest font-bold hover:bg-emerald-900 transition-colors shadow-sm">
+          <button onClick={openNew} className="flex items-center justify-center gap-2 px-4 py-3 md:py-2 w-full sm:w-auto bg-emerald-800 text-white rounded-xl text-xs uppercase tracking-widest font-bold hover:bg-emerald-900 transition-colors shadow-sm">
             <FilePlus2 className="size-4" />
             Nouveau Procès-Verbal
           </button>
         ) : (
-          <button onClick={() => setShowForm(false)} className="flex items-center justify-center gap-2 px-4 py-3 md:py-2 w-full sm:w-auto bg-white border border-stone-200 text-stone-700 rounded-xl text-xs uppercase tracking-widest font-bold hover:bg-stone-50 transition-colors shadow-sm">
+          <button onClick={closeForm} className="flex items-center justify-center gap-2 px-4 py-3 md:py-2 w-full sm:w-auto bg-white border border-stone-200 text-stone-700 rounded-xl text-xs uppercase tracking-widest font-bold hover:bg-stone-50 transition-colors shadow-sm">
             <ChevronLeft className="size-4" />
             Retour au suivi
           </button>
@@ -155,8 +190,8 @@ export function PoliceForestiere() {
       </div>
 
       {showForm
-        ? <PVForm onClose={() => setShowForm(false)} onSaved={fetchData} />
-        : <PVManagement pvData={pvData} kpis={kpis} isLoading={isLoading} onRefresh={fetchData} />
+        ? <PVForm onClose={closeForm} onSaved={fetchData} initial={editRecord} />
+        : <PVManagement pvData={pvData} kpis={kpis} isLoading={isLoading} onRefresh={fetchData} onEdit={openEdit} />
       }
     </div>
   );
@@ -165,13 +200,24 @@ export function PoliceForestiere() {
 // ══════════════════════════════════════════════════════
 // PV MANAGEMENT (LIST)
 // ══════════════════════════════════════════════════════
-function PVManagement({ pvData, kpis, isLoading, onRefresh }: {
+function PVManagement({ pvData, kpis, isLoading, onRefresh, onEdit }: {
   pvData: InfractionRecord[];
   kpis: InfractionKPIs;
   isLoading: boolean;
   onRefresh: () => void;
+  onEdit: (rec: InfractionRecord) => void;
 }) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
+  const [fStatut, setFStatut] = useState('all');
+  const [fForet, setFForet] = useState('all');
+  const [fCommune, setFCommune] = useState('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [sortBy, setSortBy] = useState<'date' | 'pv' | 'surface'>('date');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -182,12 +228,101 @@ function PVManagement({ pvData, kpis, isLoading, onRefresh }: {
     return () => window.removeEventListener('searchItemSelected', handler);
   }, []);
 
-  const filtered = pvData.filter(pv =>
-    formatPVNumber(pv).toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (pv.contrevenant_nom || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (pv.foret_nom || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (pv.commune || '').toLowerCase().includes(searchQuery.toLowerCase())
+  // Options de filtre dérivées des données chargées
+  const foretOptions = useMemo(
+    () => [...new Set(pvData.map(p => p.foret_nom).filter(Boolean) as string[])].sort(),
+    [pvData]
   );
+  const communeOptions = useMemo(
+    () => [...new Set(pvData.map(p => p.commune).filter(Boolean) as string[])].sort(),
+    [pvData]
+  );
+
+  const surfaceHa = (p: InfractionRecord) =>
+    toNum(p.surface_hectares) + toNum(p.surface_ares) / 100 + toNum(p.surface_centiares) / 10000;
+
+  // Filtrage + tri (côté client, sur les lignes chargées)
+  const filtered = useMemo(() => {
+    const q = searchQuery.toLowerCase();
+    let rows = pvData.filter(pv => {
+      const matchSearch =
+        !q ||
+        formatPVNumber(pv).toLowerCase().includes(q) ||
+        (pv.contrevenant_nom || '').toLowerCase().includes(q) ||
+        (pv.contrevenant_prenom || '').toLowerCase().includes(q) ||
+        (pv.foret_nom || '').toLowerCase().includes(q) ||
+        (pv.commune || '').toLowerCase().includes(q) ||
+        (pv.contrevenant_cin || '').toLowerCase().includes(q) ||
+        (pv.lieu_dit || '').toLowerCase().includes(q);
+      const matchStatut = fStatut === 'all' || (pv.statut || 'nouveau') === fStatut;
+      const matchForet = fForet === 'all' || pv.foret_nom === fForet;
+      const matchCommune = fCommune === 'all' || pv.commune === fCommune;
+      const d = pv.date_redaction || '';
+      const matchFrom = !dateFrom || d >= dateFrom;
+      const matchTo = !dateTo || d <= dateTo;
+      return matchSearch && matchStatut && matchForet && matchCommune && matchFrom && matchTo;
+    });
+    rows = rows.sort((a, b) => {
+      let cmp = 0;
+      if (sortBy === 'date') cmp = (a.date_redaction || a.created_at).localeCompare(b.date_redaction || b.created_at);
+      else if (sortBy === 'pv') cmp = formatPVNumber(a).localeCompare(formatPVNumber(b), undefined, { numeric: true });
+      else cmp = surfaceHa(a) - surfaceHa(b);
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return rows;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pvData, searchQuery, fStatut, fForet, fCommune, dateFrom, dateTo, sortBy, sortDir]);
+
+  const activeFilterCount =
+    (fStatut !== 'all' ? 1 : 0) + (fForet !== 'all' ? 1 : 0) + (fCommune !== 'all' ? 1 : 0) +
+    (dateFrom ? 1 : 0) + (dateTo ? 1 : 0);
+
+  const resetFilters = () => {
+    setFStatut('all'); setFForet('all'); setFCommune('all'); setDateFrom(''); setDateTo(''); setSearchQuery('');
+  };
+
+  // Sélection
+  const allVisibleSelected = filtered.length > 0 && filtered.every(p => selected.has(p.id));
+  const toggleAll = () =>
+    setSelected(prev => {
+      if (allVisibleSelected) return new Set();
+      return new Set(filtered.map(p => p.id));
+    });
+  const toggleOne = (id: string) =>
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  const clearSelection = () => setSelected(new Set());
+  const selectedRecords = filtered.filter(p => selected.has(p.id));
+
+  // Actions en lot
+  const bulkTransmit = async () => {
+    setBusy(true);
+    for (const id of selected) await updateInfractionStatut(id, 'transmis_parquet');
+    clearSelection(); setBusy(false); onRefresh();
+  };
+  const bulkDelete = async () => {
+    if (!window.confirm(`حذف ${selected.size} محضراً نهائياً؟ لا يمكن التراجع.`)) return;
+    setBusy(true);
+    for (const id of selected) await deleteInfraction(id);
+    clearSelection(); setBusy(false); onRefresh();
+  };
+  const bulkExport = async () => {
+    setBusy(true);
+    for (const pv of selectedRecords) { generateDocxFromRecord(pv); await new Promise(r => setTimeout(r, 250)); }
+    setBusy(false);
+  };
+  const exportCsv = () => exportListCSV(filtered);
+
+  // Actions unitaires
+  const removeOne = async (pv: InfractionRecord) => {
+    if (!window.confirm(`حذف المحضر ${formatPVNumber(pv)} نهائياً؟`)) return;
+    setBusy(true);
+    await deleteInfraction(pv.id);
+    setBusy(false); onRefresh();
+  };
 
   const statusLabel = (s: string | null) => {
     switch(s) {
@@ -197,6 +332,14 @@ function PVManagement({ pvData, kpis, isLoading, onRefresh }: {
       default:                 return { label: 'Nouveau', cls: 'bg-blue-100 text-blue-800 border border-blue-200' }
     }
   }
+
+  const STATUT_OPTIONS = [
+    { v: 'all', l: 'كل الحالات' },
+    { v: 'nouveau', l: 'جديد' },
+    { v: 'en_cours', l: 'قيد البحث' },
+    { v: 'transmis_parquet', l: 'محال على النيابة' },
+    { v: 'cloture', l: 'مُغلق' },
+  ];
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -210,23 +353,97 @@ function PVManagement({ pvData, kpis, isLoading, onRefresh }: {
 
       {/* Main Table */}
       <div className="bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden flex flex-col">
-        <div className="p-5 border-b border-stone-100 flex flex-col sm:flex-row gap-4 justify-between items-center bg-white text-stone-600">
-          <div className="relative w-full max-w-sm">
+        {/* Toolbar */}
+        <div className="p-4 md:p-5 border-b border-stone-100 flex flex-col lg:flex-row gap-3 justify-between items-stretch lg:items-center bg-white text-stone-600">
+          <div className="relative w-full lg:max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-stone-400" />
             <input
               type="text"
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Rechercher par N° PV, contrevenant, forêt..."
-              className="w-full pl-10 pr-4 py-2 bg-stone-50 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-stone-800 font-mono"
+              placeholder="Rechercher : N° PV, contrevenant, CIN, forêt, lieu-dit…"
+              className="w-full pl-10 pr-4 py-2.5 bg-stone-50 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-stone-800"
             />
           </div>
-          <div className="flex gap-2">
-            <button onClick={onRefresh} className="flex justify-center items-center gap-2 px-4 py-2 bg-white border border-stone-200 text-stone-700 rounded-lg text-xs font-bold uppercase tracking-widest hover:bg-stone-50 transition-colors">
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => setShowFilters(v => !v)}
+              className={`flex justify-center items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest transition-colors border ${
+                showFilters || activeFilterCount ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-50'
+              }`}>
+              <SlidersHorizontal className="size-4" /> Filtres
+              {activeFilterCount > 0 && <span className="ml-1 inline-flex items-center justify-center size-5 rounded-full bg-emerald-600 text-white text-[10px]">{activeFilterCount}</span>}
+            </button>
+            <button onClick={exportCsv} title="Exporter la liste filtrée (CSV)"
+              className="flex justify-center items-center gap-2 px-4 py-2.5 bg-white border border-stone-200 text-stone-700 rounded-lg text-xs font-bold uppercase tracking-widest hover:bg-stone-50 transition-colors">
+              <Download className="size-4" /> CSV
+            </button>
+            <button onClick={onRefresh}
+              className="flex justify-center items-center gap-2 px-4 py-2.5 bg-white border border-stone-200 text-stone-700 rounded-lg text-xs font-bold uppercase tracking-widest hover:bg-stone-50 transition-colors">
               ↻ Actualiser
             </button>
           </div>
         </div>
+
+        {/* Filter panel */}
+        {showFilters && (
+          <div className="p-4 md:p-5 border-b border-stone-100 bg-stone-50/60 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" dir="rtl">
+            <FilterSelect label="الحالة" value={fStatut} onChange={setFStatut} options={STATUT_OPTIONS.map(o => ({ v: o.v, l: o.l }))} />
+            <FilterSelect label="الغابة" value={fForet} onChange={setFForet} options={[{ v: 'all', l: 'كل الغابات' }, ...foretOptions.map(f => ({ v: f, l: f }))]} />
+            <FilterSelect label="الجماعة" value={fCommune} onChange={setFCommune} options={[{ v: 'all', l: 'كل الجماعات' }, ...communeOptions.map(c => ({ v: c, l: c }))]} />
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold text-stone-600">من تاريخ</label>
+                <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="w-full bg-white border border-stone-200 rounded-lg px-2 py-2 text-xs font-mono outline-none focus:border-emerald-500" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold text-stone-600">إلى تاريخ</label>
+                <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="w-full bg-white border border-stone-200 rounded-lg px-2 py-2 text-xs font-mono outline-none focus:border-emerald-500" />
+              </div>
+            </div>
+            <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap items-end justify-between gap-3">
+              <div className="flex items-end gap-2">
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-stone-600">الترتيب حسب</label>
+                  <select value={sortBy} onChange={e => setSortBy(e.target.value as any)} className="bg-white border border-stone-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500">
+                    <option value="date">التاريخ</option>
+                    <option value="pv">رقم المحضر</option>
+                    <option value="surface">المساحة</option>
+                  </select>
+                </div>
+                <button onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
+                  className="flex items-center gap-1 px-3 py-2 bg-white border border-stone-200 rounded-lg text-xs font-bold text-stone-700 hover:bg-stone-50">
+                  <ArrowUpDown className="size-3.5" /> {sortDir === 'asc' ? 'تصاعدي' : 'تنازلي'}
+                </button>
+              </div>
+              <button onClick={resetFilters} className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-stone-500 hover:text-red-600 transition-colors">
+                <X className="size-3.5" /> إعادة تعيين الفلاتر
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Bulk action bar */}
+        {selected.size > 0 && (
+          <div className="px-4 md:px-5 py-3 border-b border-emerald-100 bg-emerald-50/70 flex flex-wrap items-center justify-between gap-3">
+            <span className="text-xs font-bold text-emerald-800">{selected.size} محضراً محدداً</span>
+            <div className="flex flex-wrap gap-2">
+              <button disabled={busy} onClick={bulkTransmit} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-emerald-200 text-emerald-700 rounded-lg text-xs font-bold hover:bg-emerald-100 transition-colors disabled:opacity-50">
+                <Gavel className="size-3.5" /> إحالة على النيابة
+              </button>
+              <button disabled={busy} onClick={bulkExport} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-blue-200 text-blue-700 rounded-lg text-xs font-bold hover:bg-blue-50 transition-colors disabled:opacity-50">
+                <FileCode2 className="size-3.5" /> تصدير DOCX
+              </button>
+              <button disabled={busy} onClick={bulkDelete} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-red-200 text-red-700 rounded-lg text-xs font-bold hover:bg-red-50 transition-colors disabled:opacity-50">
+                <Trash2 className="size-3.5" /> حذف
+              </button>
+              <button onClick={clearSelection} className="flex items-center gap-1.5 px-3 py-1.5 text-stone-500 rounded-lg text-xs font-bold hover:text-stone-800 transition-colors">
+                <X className="size-3.5" /> إلغاء التحديد
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Table */}
         <div className="overflow-x-auto">
           {isLoading ? (
             <div className="flex items-center justify-center py-16 text-stone-400">
@@ -235,58 +452,73 @@ function PVManagement({ pvData, kpis, isLoading, onRefresh }: {
             </div>
           ) : filtered.length === 0 ? (
             <div className="text-center py-16 text-stone-400 text-sm">
-              {searchQuery ? 'Aucun résultat pour cette recherche' : 'Aucun PV enregistré'}
+              {searchQuery || activeFilterCount ? 'Aucun résultat pour ces critères' : 'Aucun PV enregistré'}
             </div>
           ) : (
             <table className="w-full text-sm text-left">
               <thead className="text-[10px] text-stone-500 font-bold uppercase tracking-widest bg-stone-50/50 border-b border-stone-200">
                 <tr>
-                  <th className="px-6 py-4">Référence PV</th>
-                  <th className="px-6 py-4">Date & Forêt</th>
-                  <th className="px-6 py-4">Nature Infraction</th>
-                  <th className="px-6 py-4">Contrevenant</th>
-                  <th className="px-6 py-4">Statut</th>
-                  <th className="px-6 py-4 text-right">Actions</th>
+                  <th className="px-4 py-4 w-10">
+                    <button onClick={toggleAll} className="text-stone-400 hover:text-emerald-700 transition-colors" title="تحديد الكل">
+                      {allVisibleSelected ? <CheckSquare className="size-4 text-emerald-600" /> : <Square className="size-4" />}
+                    </button>
+                  </th>
+                  <th className="px-4 py-4">Référence PV</th>
+                  <th className="px-4 py-4">Date & Forêt</th>
+                  <th className="px-4 py-4">Nature Infraction</th>
+                  <th className="px-4 py-4">Contrevenant</th>
+                  <th className="px-4 py-4">Surface</th>
+                  <th className="px-4 py-4">Statut</th>
+                  <th className="px-4 py-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100">
                 {filtered.map((pv) => {
                   const s = statusLabel(pv.statut)
+                  const isSel = selected.has(pv.id)
                   return (
-                    <tr key={pv.id} className="hover:bg-stone-50/50 transition-colors">
-                      <td className="px-6 py-4 font-bold text-stone-900 text-xs font-mono">{formatPVNumber(pv)}</td>
-                      <td className="px-6 py-4">
+                    <tr key={pv.id} className={`transition-colors ${isSel ? 'bg-emerald-50/40' : 'hover:bg-stone-50/50'}`}>
+                      <td className="px-4 py-4">
+                        <button onClick={() => toggleOne(pv.id)} className="text-stone-400 hover:text-emerald-700 transition-colors">
+                          {isSel ? <CheckSquare className="size-4 text-emerald-600" /> : <Square className="size-4" />}
+                        </button>
+                      </td>
+                      <td className="px-4 py-4 font-bold text-stone-900 text-xs font-mono">{formatPVNumber(pv)}</td>
+                      <td className="px-4 py-4">
                         <div className="flex flex-col">
                           <span className="text-stone-800 font-medium">{pv.date_redaction || '—'}</span>
                           <span className="text-[10px] text-stone-500 uppercase tracking-widest">{pv.foret_nom || '—'}</span>
                         </div>
                       </td>
-                      <td className="px-6 py-4 text-stone-800 italic text-xs max-w-[200px] truncate" dir="rtl">
+                      <td className="px-4 py-4 text-stone-800 italic text-xs max-w-[200px] truncate" dir="rtl">
                         {(pv.infraction_types || []).join('، ') || pv.description_juridique || '—'}
                       </td>
-                      <td className="px-6 py-4 text-stone-600 font-medium" dir="rtl">
+                      <td className="px-4 py-4 text-stone-600 font-medium" dir="rtl">
                         {[pv.contrevenant_prenom, pv.contrevenant_nom].filter(Boolean).join(' ') || '—'}
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-4 text-stone-600 font-mono text-xs whitespace-nowrap">{surfaceHa(pv).toFixed(3)} هـ</td>
+                      <td className="px-4 py-4">
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] uppercase font-bold tracking-widest ${s.cls}`}>
                           {s.label}
                         </span>
                       </td>
-                      <td className="px-6 py-4 text-right">
-                        <div className="flex justify-end gap-2">
-                          <button
-                            title="Transmettre au Parquet"
-                            onClick={() => updateInfractionStatut(pv.id, 'transmis_parquet').then(onRefresh)}
-                            className="p-2 text-stone-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg border border-stone-200 transition-colors"
-                          >
+                      <td className="px-4 py-4 text-right">
+                        <div className="flex justify-end gap-1.5">
+                          <button title="تعديل" onClick={() => onEdit(pv)}
+                            className="p-2 text-stone-400 hover:text-amber-700 hover:bg-amber-50 rounded-lg border border-stone-200 transition-colors">
+                            <Pencil className="size-4" />
+                          </button>
+                          <button title="Transmettre au Parquet" onClick={() => updateInfractionStatut(pv.id, 'transmis_parquet').then(onRefresh)}
+                            className="p-2 text-stone-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg border border-stone-200 transition-colors">
                             <Gavel className="size-4" />
                           </button>
-                          <button
-                            title="Générer DOCX"
-                            onClick={() => generateDocxFromRecord(pv)}
-                            className="p-2 text-stone-400 hover:text-blue-700 hover:bg-blue-50 rounded-lg border border-stone-200 transition-colors"
-                          >
+                          <button title="Générer DOCX" onClick={() => generateDocxFromRecord(pv)}
+                            className="p-2 text-stone-400 hover:text-blue-700 hover:bg-blue-50 rounded-lg border border-stone-200 transition-colors">
                             <FileCode2 className="size-4" />
+                          </button>
+                          <button title="حذف" onClick={() => removeOne(pv)}
+                            className="p-2 text-stone-400 hover:text-red-700 hover:bg-red-50 rounded-lg border border-stone-200 transition-colors">
+                            <Trash2 className="size-4" />
                           </button>
                         </div>
                       </td>
@@ -297,9 +529,58 @@ function PVManagement({ pvData, kpis, isLoading, onRefresh }: {
             </table>
           )}
         </div>
+
+        {/* Footer count */}
+        {!isLoading && filtered.length > 0 && (
+          <div className="px-5 py-3 border-t border-stone-100 bg-stone-50/50 text-xs text-stone-500 flex justify-between">
+            <span>{filtered.length} محضراً معروضاً{activeFilterCount ? ` (مُفلتَر من ${pvData.length})` : ''}</span>
+            <span>{selected.size > 0 ? `${selected.size} محدد` : ''}</span>
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+// Sélecteur de filtre réutilisable
+function FilterSelect({ label, value, onChange, options }: {
+  label: string; value: string; onChange: (v: string) => void; options: Array<{ v: string; l: string }>;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label className="text-[11px] font-bold text-stone-600">{label}</label>
+      <select value={value} onChange={e => onChange(e.target.value)}
+        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all">
+        {options.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+      </select>
+    </div>
+  );
+}
+
+// Export CSV (BOM UTF-8 pour Excel arabe)
+function exportListCSV(rows: InfractionRecord[]) {
+  const headers = ['N° PV', 'Date', 'Heure', 'Forêt', 'Canton', 'Commune', 'Lieu-dit', 'Infractions', 'Surface (ha)', 'Contrevenant', 'CIN', 'Statut'];
+  const esc = (v: any) => {
+    const s = String(v ?? '').replace(/"/g, '""');
+    return /[",;\n]/.test(s) ? `"${s}"` : s;
+  };
+  const surfaceHa = (p: InfractionRecord) =>
+    (toNum(p.surface_hectares) + toNum(p.surface_ares) / 100 + toNum(p.surface_centiares) / 10000).toFixed(3);
+  const lines = rows.map(p => [
+    formatPVNumber(p), p.date_redaction || '', p.heure_constat || '', p.foret_nom || '', p.foret_section || '',
+    p.commune || '', p.lieu_dit || '', (p.infraction_types || []).join(' / '), surfaceHa(p),
+    [p.contrevenant_prenom, p.contrevenant_nom].filter(Boolean).join(' '), p.contrevenant_cin || '', p.statut || 'nouveau',
+  ].map(esc).join(';'));
+  const csv = '\ufeff' + [headers.join(';'), ...lines].join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `PV_export_${new Date().toISOString().split('T')[0]}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 // ══════════════════════════════════════════════════════
@@ -348,10 +629,15 @@ function generateDocxFromRecord(pv: InfractionRecord) {
 // ══════════════════════════════════════════════════════
 // PV FORM (7 STEPS)
 // ══════════════════════════════════════════════════════
-function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: () => void; initial?: InfractionRecord | null }) {
+  const isEdit = !!initial?.id;
   const [currentStep, setCurrentStep] = useState(1);
-  const [form, setForm] = useState<PVFormData>(EMPTY_FORM);
-  const [mapCoords, setMapCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [form, setForm] = useState<PVFormData>(() => initial ? recordToForm(initial) : EMPTY_FORM);
+  const [mapCoords, setMapCoords] = useState<{ lat: number; lng: number } | null>(
+    initial && (initial.coord_y != null && initial.coord_x != null)
+      ? null // coords Lambert stockées ; le centroïde WGS84 n'est pas reconstruit ici
+      : null
+  );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
 
@@ -475,67 +761,78 @@ function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void
       : null,
   });
 
+  const buildPayload = () => ({
+    numero_pv_ordre: form.pvNum ? Number(form.pvNum) : null,
+    numero_carnet: form.pvYear.split('/')[0] || form.pvYear,
+    brigade_code: form.brigade,
+    date_redaction: form.date,
+    heure_constat: form.heure,
+    nb_agents: form.nbAgents,
+    agent_1_nom: form.agent1.nom,
+    agent_1_grade: form.agent1.grade,
+    agent_1_residence: form.agent1.residence,
+    agent_2_nom: form.agent2.nom,
+    agent_2_grade: form.agent2.grade,
+    agent_2_residence: form.agent2.residence,
+    agent_3_nom: form.agent3.nom,
+    agent_3_grade: form.agent3.grade,
+    agent_3_residence: form.agent3.residence,
+    foret_nom: form.foret,
+    foret_nom_ar: form.foret,
+    foret_section: form.canton,
+    decret_num: form.decreeNum,
+    decret_date: form.decreeDate || null,
+    lieu_dit: form.placeName,
+    commune: form.commune,
+    qiada: form.commune,
+    imaala: form.province,
+    coord_x: form.coordX ? toNum(form.coordX) : (mapCoords ? mapCoords.lng : null),
+    coord_y: form.coordY ? toNum(form.coordY) : (mapCoords ? mapCoords.lat : null),
+    infraction_types: form.infractions,
+    infraction_details: {},
+    surface_hectares: toNum(form.ha),
+    surface_ares: toNum(form.are),
+    surface_centiares: toNum(form.ca),
+    degats: form.degats,
+    contrevenant_prenom: form.firstName,
+    contrevenant_nom: form.lastName,
+    contrevenant_nasab: form.filiation,
+    contrevenant_mere: form.motherName,
+    contrevenant_ddn: form.dob || null,
+    contrevenant_lieu_naiss: form.birthPlace,
+    contrevenant_situation: form.maritalStatus,
+    contrevenant_profession: form.profession,
+    contrevenant_cin: form.cin,
+    contrevenant_adresse: form.address,
+    contrevenant_hors_maroc: form.outsideMaroc,
+    description_juridique: form.legalDescription,
+    // en édition on conserve le statut existant ; en création : 'nouveau'
+    statut: initial?.statut || 'nouveau',
+  });
+
   const savePV = async () => {
     setSaving(true); setSaveError('');
+    const payload = buildPayload();
     try {
-      const res = await fetch('/api/save-pv', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          numero_pv_ordre: form.pvNum ? Number(form.pvNum) : null,
-          numero_carnet: form.pvYear.split('/')[0] || form.pvYear,
-          brigade_code: form.brigade,
-          date_redaction: form.date,
-          heure_constat: form.heure,
-          nb_agents: form.nbAgents,
-          agent_1_nom: form.agent1.nom,
-          agent_1_grade: form.agent1.grade,
-          agent_1_residence: form.agent1.residence,
-          agent_2_nom: form.agent2.nom,
-          agent_2_grade: form.agent2.grade,
-          agent_2_residence: form.agent2.residence,
-          agent_3_nom: form.agent3.nom,
-          agent_3_grade: form.agent3.grade,
-          agent_3_residence: form.agent3.residence,
-          foret_nom: form.foret,
-          foret_nom_ar: form.foret,
-          foret_section: form.canton,
-          decret_num: form.decreeNum,
-          decret_date: form.decreeDate || null,
-          lieu_dit: form.placeName,
-          commune: form.commune,
-          qiada: form.commune,
-          imaala: form.province,
-          coord_x: form.coordX ? toNum(form.coordX) : (mapCoords ? mapCoords.lng : null),
-          coord_y: form.coordY ? toNum(form.coordY) : (mapCoords ? mapCoords.lat : null),
-          infraction_types: form.infractions,
-          infraction_details: {},
-          surface_hectares: toNum(form.ha),
-          surface_ares: toNum(form.are),
-          surface_centiares: toNum(form.ca),
-          degats: form.degats,
-          contrevenant_prenom: form.firstName,
-          contrevenant_nom: form.lastName,
-          contrevenant_nasab: form.filiation,
-          contrevenant_mere: form.motherName,
-          contrevenant_ddn: form.dob || null,
-          contrevenant_lieu_naiss: form.birthPlace,
-          contrevenant_situation: form.maritalStatus,
-          contrevenant_profession: form.profession,
-          contrevenant_cin: form.cin,
-          contrevenant_adresse: form.address,
-          contrevenant_hors_maroc: form.outsideMaroc,
-          description_juridique: form.legalDescription,
-          statut: 'nouveau',
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        setSaveError(data.error || 'Erreur lors de la sauvegarde');
-        return null;
+      let pvId: string | null = null;
+      if (isEdit && initial) {
+        const { success, error } = await updateInfraction(initial.id, payload);
+        if (!success) { setSaveError(error || 'Erreur lors de la mise à jour'); return null; }
+        pvId = initial.id;
+      } else {
+        const res = await fetch('/api/save-pv', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          setSaveError(data.error || 'Erreur lors de la sauvegarde');
+          return null;
+        }
+        pvId = data.id ?? data.record?.id ?? data.pv?.id ?? null;
       }
-      const pvId: string | null = data.id ?? data.record?.id ?? data.pv?.id ?? null;
       // Rattachement de la parcelle capturée (domaine.parcels, kind='pv')
       if (pvId && form.parcelGeojson) {
         await savePVParcel(pvId, pvNum, {
@@ -572,7 +869,7 @@ function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void
 
   const LocationPicker = () => {
     useMapEvents({
-      click(e) {
+      click(e: any) {
         setMapCoords({ lat: e.latlng.lat, lng: e.latlng.lng });
         set('coordX', e.latlng.lng.toFixed(6));
         set('coordY', e.latlng.lat.toFixed(6));
@@ -622,6 +919,11 @@ function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void
         {/* STEP 1 */}
         {currentStep === 1 && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {isEdit && (
+              <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+                <Pencil className="size-4" /> وضع التعديل: أنت تُحرّر محضراً موجوداً ({initial ? formatPVNumber(initial) : ''}).
+              </div>
+            )}
             <h3 className="text-lg font-serif italic text-emerald-900 mb-6">رقم المحضر والتاريخ</h3>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
               <FormInputLight label="رقم في الدفتر" type="text" placeholder="مثال: 05" value={form.pvNum} onChange={(e: any) => set('pvNum', e.target.value)} />
@@ -923,7 +1225,7 @@ function PVForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void
               <button type="button" onClick={handleSaveOnly} disabled={saving}
                 className="flex-1 py-4 bg-white text-emerald-700 border border-emerald-200 shadow-sm rounded-xl font-bold hover:bg-emerald-50 transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
               >
-                <Check className="size-5" /> {saving ? 'جاري الحفظ...' : 'حفظ في النظام'}
+                <Check className="size-5" /> {saving ? 'جاري الحفظ...' : (isEdit ? 'حفظ التعديلات' : 'حفظ في النظام')}
               </button>
               <button type="button" onClick={handleSaveAndGenerate} disabled={saving}
                 className="flex-1 py-4 bg-emerald-800 text-white rounded-xl font-bold shadow-md shadow-emerald-900/10 hover:bg-emerald-900 transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
