@@ -2,7 +2,8 @@
 // ════════════════════════════════════════════════════════════════════════════
 // pvModel.ts — Modèle de données + composition narrative ARABE du PV forestier
 // (تقرير الجنحة). Source unique de vérité : toute la logique de rédaction est
-// ICI (dates en toutes lettres, paragraphes conditionnels, clôture حرر/حرر وختم).
+// ICI (dates en toutes lettres, paragraphes conditionnels, clôture حرر/حرر وختم,
+// génération du وصف الجنحة selon la typologie du Dahir du 10/10/1917).
 // pvDocx.ts ne fait QUE la mise en page (docx + html) à partir de ce module.
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -228,6 +229,8 @@ export const FEATURE_PRESETS: Array<{ label: string; symbol: PVSymbol; details: 
   { label: 'بناية للماشية', symbol: { kind: 'crosshatch', color: '#334155' }, details: 'بناية للماشية بمواد قابلة للاشتعال على مساحة حوالي ... متر مربع' },
   { label: 'أعمدة حديدية غير مسقفة', symbol: { kind: 'solid', color: '#fdba74' }, details: 'تشييد بناية حديدية غير مسقفة على مساحة حوالي ... متر مربع' },
   { label: 'سور اسمنتي', symbol: { kind: 'outline', color: '#7c3aed' }, details: 'بناء سور اسمنتي على طول حوالي ... متر طولي، و كذا باب رئيسي من حديد' },
+  { label: 'الرعي', symbol: { kind: 'dots', color: '#a16207' }, details: 'الرعي غير المرخص داخل الملك الغابوي' },
+  { label: 'إيقاد النار', symbol: { kind: 'solid', color: '#ef4444' }, details: 'إيقاد النار داخل الملك الغابوي' },
   { label: 'أخرى', symbol: { kind: 'solid', color: '#0ea5e9' }, details: '' },
 ]
 
@@ -241,20 +244,48 @@ export const LEGAL_SUGGESTIONS = [
   'صيد وحيازة طيور محمية بواسطة أدوات وآلات ممنوعة داخل محمية وحيازتها والاتجار فيها',
 ]
 
-/** Génère automatiquement une proposition de وصف الجنحة à partir des entités. */
+// ──────────────────────────────────────────────────────
+// 4-bis) TYPOLOGIE LÉGALE (Dahir 10/10/1917) → génération du وصف الجنحة
+//   Ordre canonique conforme aux modèles officiels et à la typologie du Dahir :
+//   استخراج الأتربة → التعشيب → قطع وحمل العود الحي → الغرس → التسييج → الحرث
+//   → الرعي → إيقاد النار → البناء
+// ──────────────────────────────────────────────────────
+interface CanonPart { keys: string[]; part: string; article: string }
+const CANON_PARTS: CanonPart[] = [
+  { keys: ['صهريج', 'بئر', 'أتربة', 'حفر', 'استخراج'], part: 'استخراج الأتربة', article: 'الفصل 32' },
+  { keys: ['تعشيب'], part: 'التعشيب', article: 'الفصل 32' },
+  { keys: ['قطع', 'عود'], part: 'قطع وحمل العود الحي', article: 'الفصلان 36 و37' },
+  { keys: ['غرس', 'الغرس', 'زيتون', 'أشجار مثمرة'], part: 'الغرس', article: 'الفصل 34' },
+  { keys: ['تسييج', 'سور', 'أسلاك'], part: 'التسييج', article: 'الفصل 34' },
+  { keys: ['حرث'], part: 'الحرث', article: 'الفصل 34' },
+  { keys: ['رعي'], part: 'الرعي', article: 'الفصلان 41 و42' },
+  { keys: ['نار', 'حريق', 'إيقاد'], part: 'إيقاد النار', article: 'الفصول 46 إلى 56' },
+  { keys: ['منزل', 'بناية', 'براكة', 'حظيرة', 'أعمدة', 'سكن', 'بناء', 'خيمة'], part: 'البناء', article: 'الفصلان 52 و53' },
+]
+
+function matchedCanonParts(features: PVFeature[]): CanonPart[] {
+  const hay = features.map(f => `${f.label} ${f.details}`).join(' | ')
+  return CANON_PARTS.filter(c => c.keys.some(k => hay.includes(k)))
+}
+
+/** Génère le وصف الجنحة exactement au format des modèles officiels :
+ *  « الترامي على الملك الغابوي باستخراج الأتربة ، الغرس ، التسييج والبناء » */
 export function suggestLegalDescription(features: PVFeature[]): string {
-  const labels = features.map(f => f.label)
-  const parts: string[] = []
-  const has = (s: string) => labels.some(l => l.includes(s))
-  if (has('صهريج') || has('بئر')) parts.push('استخراج الأتربة')
-  if (has('تعشيب')) parts.push('التعشيب')
-  if (has('قطع')) parts.push('قطع وحمل العود الحي')
-  if (has('الغرس') || has('غرس')) parts.push('الغرس')
-  if (has('التسييج') || has('سور')) parts.push('التسييج')
-  if (has('حرث')) parts.push('الحرث')
-  if (has('منزل') || has('بناية') || has('براكة') || has('حظيرة') || has('أعمدة')) parts.push('البناء')
+  const parts = matchedCanonParts(features).map(c => c.part)
   if (!parts.length) return ''
-  return `الترامي على الملك الغابوي بـ${parts.join(' ، ')}`
+  if (parts.length === 1) return `الترامي على الملك الغابوي ب${parts[0]}`
+  const head = parts.slice(0, -1).join(' ، ')
+  const last = parts[parts.length - 1]
+  return `الترامي على الملك الغابوي ب${head} و${last}`
+}
+
+/** Référence légale ESTIMATIVE (aide interne, NE PAS insérer dans le PV :
+ *  les modèles officiels ne citent pas les articles dans وصف الجنحة). */
+export function suggestLegalArticles(features: PVFeature[]): string {
+  const arts: string[] = []
+  matchedCanonParts(features).forEach(c => { if (!arts.includes(c.article)) arts.push(c.article) })
+  if (!arts.length) return ''
+  return `مرجع استرشادي: ${arts.join(' ، ')} من ظهير 10 أكتوبر 1917 (يُتحقق منه قبل الإحالة)`
 }
 
 // ──────────────────────────────────────────────────────

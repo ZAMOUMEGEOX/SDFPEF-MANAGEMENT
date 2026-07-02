@@ -7,10 +7,12 @@
 //   • sessionStorage 'anef_show_parcel'    = demande d'affichage d'une parcelle
 //   • events: 'parcel:pick-requested' / 'parcel:delivered' / 'anef:open-map'
 //
-// NOUVEAU : capture MULTI-ENTITÉS. Un PV porte une parcelle globale ET des
-// entités par infraction (بناية، صهريج، تعشيب…). La carte ne change pas :
-// on mémorise côté PV « à qui » est destinée la prochaine livraison via
-// 'anef_pv_feature_target' (module + sessionStorage pour survivre au démontage).
+// Capture MULTI-ENTITÉS + drapeau de RETOUR :
+//   'anef_pv_feature_target' → à quelle entité est destinée la livraison
+//   'anef_return_to_pv'      → posé au départ vers la carte ; consommé par
+//     PoliceForestiere au montage pour ROUVRIR automatiquement le brouillon.
+//   ⚠ La navigation automatique carte→Police après « إرفاق » se règle dans
+//     DomaineForestier.tsx (condition target.kind === 'pv') — fichier à fournir.
 // ════════════════════════════════════════════════════════════════════════════
 import proj4 from 'proj4'
 import { saveParcelForTarget } from '@/lib/forestRepo'
@@ -51,6 +53,7 @@ export interface DeliveredParcel {
 }
 
 const FEATURE_TARGET_KEY = 'anef_pv_feature_target'
+const RETURN_KEY = 'anef_return_to_pv'
 
 /** WGS84 → Lambert Nord Maroc (pour le clic manuel sur la mini-carte). */
 export function wgs84ToLambert(lat: number, lng: number): { x: number; y: number } {
@@ -63,6 +66,7 @@ export function wgs84ToLambert(lat: number, lng: number): { x: number; y: number
 export function requestParcelPickForPV(ref: string): void {
   try {
     sessionStorage.removeItem(FEATURE_TARGET_KEY) // livraison destinée à la parcelle globale
+    sessionStorage.setItem(RETURN_KEY, '1')       // au retour → rouvrir le brouillon PV
     sessionStorage.setItem('anef_parcel_target', JSON.stringify({ kind: 'pv' as const, id: '', ref }))
     ;(window as any).__anefParcelPicking = true
   } catch {}
@@ -70,11 +74,11 @@ export function requestParcelPickForPV(ref: string): void {
   window.dispatchEvent(new CustomEvent('anef:open-map'))
 }
 
-/** Demande à la carte le dessin de la géométrie d'UNE ENTITÉ (infraction).
- *  La carte suit le protocole inchangé ; le PV route la livraison via featureId. */
+/** Demande à la carte le dessin de la géométrie d'UNE ENTITÉ (infraction). */
 export function requestParcelPickForFeature(ref: string, featureId: string, featureLabel: string): void {
   try {
     sessionStorage.setItem(FEATURE_TARGET_KEY, featureId)
+    sessionStorage.setItem(RETURN_KEY, '1')
     sessionStorage.setItem('anef_parcel_target', JSON.stringify({ kind: 'pv' as const, id: '', ref: `${ref} — ${featureLabel}` }))
     ;(window as any).__anefParcelPicking = true
   } catch {}
@@ -82,8 +86,21 @@ export function requestParcelPickForFeature(ref: string, featureId: string, feat
   window.dispatchEvent(new CustomEvent('anef:open-map'))
 }
 
-/** À qui est destinée la livraison en attente ? null = parcelle globale.
- *  NE consomme PAS (la consommation se fait à la livraison effective). */
+/** Consomme le drapeau « retour vers le PV » (posé au départ vers la carte). */
+export function consumeReturnToPV(): boolean {
+  try {
+    const v = sessionStorage.getItem(RETURN_KEY)
+    if (v) sessionStorage.removeItem(RETURN_KEY)
+    return !!v
+  } catch { return false }
+}
+
+/** Une livraison de parcelle attend-elle d'être consommée ? (sans consommer) */
+export function hasPendingParcel(): boolean {
+  try { return sessionStorage.getItem('anef_parcel_pending') != null } catch { return false }
+}
+
+/** À qui est destinée la livraison en attente ? null = parcelle globale. */
 export function peekFeatureTarget(): string | null {
   try { return sessionStorage.getItem(FEATURE_TARGET_KEY) } catch { return null }
 }
@@ -103,6 +120,7 @@ export function cancelParcelPick(): void {
     ;(window as any).__anefParcelPicking = false
     sessionStorage.removeItem('anef_parcel_target')
     sessionStorage.removeItem(FEATURE_TARGET_KEY)
+    sessionStorage.removeItem(RETURN_KEY)
   } catch {}
   window.dispatchEvent(new CustomEvent('parcel:pick-cancelled'))
 }
