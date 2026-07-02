@@ -1,17 +1,16 @@
 // src/lib/pvParcelBridge.ts
 // ════════════════════════════════════════════════════════════════════════════
 // pvParcelBridge.ts — Pont spatial entre Police Forestière et le module Domaine
-// Forestier (carte). Il PARLE EXACTEMENT le même protocole que le contentieux :
-//   • sessionStorage 'anef_parcel_target'  = cible du rattachement { kind, id, ref }
+// Forestier (carte). Même protocole que le contentieux :
+//   • sessionStorage 'anef_parcel_target'  = cible { kind, id, ref }
 //   • sessionStorage 'anef_parcel_pending' = parcelle livrée (secours si démonté)
 //   • sessionStorage 'anef_show_parcel'    = demande d'affichage d'une parcelle
 //   • events: 'parcel:pick-requested' / 'parcel:delivered' / 'anef:open-map'
 //
-// La géométrie est capturée à la volée (parcel:delivered fournit toujours le
-// payload) ; l'écriture dans domaine.parcels est DIFFÉRÉE jusqu'à ce que le PV
-// possède un id réel (savePVParcel), pour éviter un enregistrement sous un id
-// brouillon. C'est pourquoi requestParcelPickForPV pose un target SANS id
-// (id vide) : DomaineForestier saute alors sa propre écriture (garde `if target?.id`).
+// NOUVEAU : capture MULTI-ENTITÉS. Un PV porte une parcelle globale ET des
+// entités par infraction (بناية، صهريج، تعشيب…). La carte ne change pas :
+// on mémorise côté PV « à qui » est destinée la prochaine livraison via
+// 'anef_pv_feature_target' (module + sessionStorage pour survivre au démontage).
 // ════════════════════════════════════════════════════════════════════════════
 import proj4 from 'proj4'
 import { saveParcelForTarget } from '@/lib/forestRepo'
@@ -51,17 +50,51 @@ export interface DeliveredParcel {
   capturedAt?: string
 }
 
-/** Demande à la carte d'entrer en mode « sélection de parcelle » pour un PV.
- *  ref = libellé affiché sur la carte (ex. n° PV). id volontairement vide :
- *  l'écriture domaine.parcels se fera plus tard, une fois le PV enregistré. */
+const FEATURE_TARGET_KEY = 'anef_pv_feature_target'
+
+/** WGS84 → Lambert Nord Maroc (pour le clic manuel sur la mini-carte). */
+export function wgs84ToLambert(lat: number, lng: number): { x: number; y: number } {
+  const [x, y] = proj4('EPSG:4326', 'EPSG:26191', [lng, lat]) as [number, number]
+  return { x, y }
+}
+
+/** Demande à la carte le dessin de la PARCELLE GLOBALE du PV.
+ *  id volontairement vide : l'écriture domaine.parcels se fera après save. */
 export function requestParcelPickForPV(ref: string): void {
-  const target = { kind: 'pv' as const, id: '', ref }
   try {
-    sessionStorage.setItem('anef_parcel_target', JSON.stringify(target))
+    sessionStorage.removeItem(FEATURE_TARGET_KEY) // livraison destinée à la parcelle globale
+    sessionStorage.setItem('anef_parcel_target', JSON.stringify({ kind: 'pv' as const, id: '', ref }))
     ;(window as any).__anefParcelPicking = true
   } catch {}
   window.dispatchEvent(new CustomEvent('parcel:pick-requested'))
   window.dispatchEvent(new CustomEvent('anef:open-map'))
+}
+
+/** Demande à la carte le dessin de la géométrie d'UNE ENTITÉ (infraction).
+ *  La carte suit le protocole inchangé ; le PV route la livraison via featureId. */
+export function requestParcelPickForFeature(ref: string, featureId: string, featureLabel: string): void {
+  try {
+    sessionStorage.setItem(FEATURE_TARGET_KEY, featureId)
+    sessionStorage.setItem('anef_parcel_target', JSON.stringify({ kind: 'pv' as const, id: '', ref: `${ref} — ${featureLabel}` }))
+    ;(window as any).__anefParcelPicking = true
+  } catch {}
+  window.dispatchEvent(new CustomEvent('parcel:pick-requested'))
+  window.dispatchEvent(new CustomEvent('anef:open-map'))
+}
+
+/** À qui est destinée la livraison en attente ? null = parcelle globale.
+ *  NE consomme PAS (la consommation se fait à la livraison effective). */
+export function peekFeatureTarget(): string | null {
+  try { return sessionStorage.getItem(FEATURE_TARGET_KEY) } catch { return null }
+}
+
+/** Consomme la cible d'entité après livraison. */
+export function consumeFeatureTarget(): string | null {
+  try {
+    const v = sessionStorage.getItem(FEATURE_TARGET_KEY)
+    sessionStorage.removeItem(FEATURE_TARGET_KEY)
+    return v
+  } catch { return null }
 }
 
 /** Annule une sélection en cours. */
@@ -69,6 +102,7 @@ export function cancelParcelPick(): void {
   try {
     ;(window as any).__anefParcelPicking = false
     sessionStorage.removeItem('anef_parcel_target')
+    sessionStorage.removeItem(FEATURE_TARGET_KEY)
   } catch {}
   window.dispatchEvent(new CustomEvent('parcel:pick-cancelled'))
 }
@@ -95,7 +129,7 @@ export function consumePendingParcel(): DeliveredParcel | null {
   }
 }
 
-/** Affiche une parcelle déjà enregistrée sur la carte (rouge) — ex. depuis un PV sauvegardé. */
+/** Affiche une parcelle déjà enregistrée sur la carte (rouge). */
 export function showPVParcelOnMap(geojson: any, ref: string): void {
   try {
     sessionStorage.setItem('anef_show_parcel', JSON.stringify({ geojson, ref, openFiche: false }))
@@ -103,7 +137,7 @@ export function showPVParcelOnMap(geojson: any, ref: string): void {
   window.dispatchEvent(new CustomEvent('anef:open-map'))
 }
 
-/** Persiste la parcelle capturée dans domaine.parcels, liée au PV enregistré (kind='pv'). */
+/** Persiste la parcelle capturée dans domaine.parcels, liée au PV (kind='pv'). */
 export async function savePVParcel(pvId: string, ref: string, loc: DeliveredParcel): Promise<string | null> {
   if (!pvId || !loc?.geojson) return null
   try {
@@ -123,7 +157,7 @@ export async function savePVParcel(pvId: string, ref: string, loc: DeliveredParc
   }
 }
 
-/** Convertit l'anneau extérieur du polygone (WGS84) en table de points Lambert numérotés. */
+/** Anneau extérieur (WGS84) → table de points Lambert numérotés. */
 export function extractCoordPoints(geojson: any): Array<{ num: number; x: string; y: string }> {
   try {
     const f = geojson?.type === 'FeatureCollection' ? geojson.features?.[0] : geojson
@@ -131,13 +165,15 @@ export function extractCoordPoints(geojson: any): Array<{ num: number; x: string
     let ring: number[][] | null = null
     if (geom?.type === 'Polygon') ring = geom.coordinates?.[0] || null
     else if (geom?.type === 'MultiPolygon') ring = geom.coordinates?.[0]?.[0] || null
+    else if (geom?.type === 'Point') {
+      const [x, y] = proj4('EPSG:4326', 'EPSG:26191', [geom.coordinates[0], geom.coordinates[1]]) as [number, number]
+      return [{ num: 1, x: x.toFixed(1), y: y.toFixed(1) }]
+    }
     if (!ring || ring.length < 3) return []
 
     const pts = ring.slice()
-    // retire le sommet de fermeture dupliqué s'il existe
     if (pts.length > 1) {
-      const a = pts[0]
-      const b = pts[pts.length - 1]
+      const a = pts[0], b = pts[pts.length - 1]
       if (a[0] === b[0] && a[1] === b[1]) pts.pop()
     }
     return pts.map((c, i) => {
@@ -149,7 +185,7 @@ export function extractCoordPoints(geojson: any): Array<{ num: number; x: string
   }
 }
 
-/** Décompose une surface en m² vers hectares / ares / centiares (chaînes). */
+/** m² → hectares / ares / centiares (chaînes). */
 export function areaToHaAreCa(areaM2: number): { ha: string; are: string; ca: string } {
   const a = Math.max(0, areaM2 || 0)
   const ha = Math.floor(a / 10000)

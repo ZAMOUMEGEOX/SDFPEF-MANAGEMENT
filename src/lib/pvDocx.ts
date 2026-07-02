@@ -1,242 +1,70 @@
 // src/lib/pvDocx.ts
 // ════════════════════════════════════════════════════════════════════════════
-// Génération du « تقرير الجنحة » (PV forestier) FIDÈLE au modèle officiel ANEF :
+// pvDocx.ts — Mise en page du « تقرير الجنحة » (PV forestier) — modèle officiel ANEF
 //   • Page 1 : A4 PAYSAGE, 3 colonnes RTL
-//        [ corps du rapport (gauche) | en-tête + description (milieu) | إعلام واستدعاء (droite) ]
-//   • Page 2 : dédiée au « التصميم » — liste des coordonnées de la parcelle (+ image si fournie)
+//       [ corps du rapport | en-tête + n° + وصف الجنحة | إعلام واستدعاء ]
+//   • Page 2 : « التصميم البياني » professionnel : plan (pvPlan.ts) + tables de
+//       coordonnées PAR ENTITÉ (une parcelle peut porter plusieurs infractions).
 //
-// Source unique : composePV() construit le CONTENU une seule fois ; deux moteurs
-// de rendu le mettent en page à l'identique :
-//   - renderDocx()  → vrai .docx (lib docx, RTL natif)  → generatePVDocx()
-//   - renderHtml()  → HTML paysage imprimable           → generatePVPdf() (impression navigateur)
+// La composition du contenu vit dans pvModel.ts (composePV). Ici : rendu pur.
+//   - renderDocx() → .docx natif RTL (lib docx)      → generatePVDocx()
+//   - renderHtml() → HTML paysage imprimable          → previewPVHtml()/generatePVPdf()
+// Les deux moteurs consomment le MÊME ComposedPV → sorties identiques.
 // ════════════════════════════════════════════════════════════════════════════
 import {
   Document, Packer, Paragraph, TextRun, AlignmentType, Table, TableRow, TableCell,
   WidthType, BorderStyle, ShadingType, VerticalAlign, PageOrientation, PageBreak, ImageRun,
 } from 'docx'
+import { composePV, type ComposedPV, type PVComposeInput, type PVCoordPoint, type PVFeature } from './pvModel'
+import { buildPlanSvg, svgToPngDataUrl } from './pvPlan'
 
-// ──────────────────────────────────────────────────────
-// Types
-// ──────────────────────────────────────────────────────
-export interface PVCoordPoint { num: number; x: string; y: string }
-
-export interface PVOverlap {
-  globalPosition: string
-  totalPercentage: number
-  hits: Array<{ foret: string; foretAr: string; canton: string; percentage: number; intersectionArea: number }>
-}
-
-export interface PVDocxData {
-  pvNum: string
-  date: string
-  heure: string
-  agents: Array<{ nom: string; grade: string; residence: string }>
-  foret: string
-  canton: string
-  decreeNum: string
-  decreeDate: string
-  placeName: string
-  commune: string
-  province: string
-  coordX: string
-  coordY: string
-  infractions: string[]
-  ha: string
-  are: string
-  ca: string
-  degats: Array<{ type: string; quantite: string; equivalent: string }>
-  contrevenantPrenom: string
-  contrevenantNom: string
-  filiation: string
-  motherName: string
-  birthPlace: string
-  dob: string
-  profession: string
-  maritalStatus: string
-  address: string
-  cin: string
-  outsideMaroc: boolean
-  legalDescription: string
-  // ── Champs liaison carte (facultatifs) ──
-  coordPoints?: PVCoordPoint[]
-  overlap?: PVOverlap | null
-  mapImage?: string | null // dataURL (image du plan capturé) — page 2
-  // ── Champs narratifs facultatifs (respect du modèle) ──
-  indicatif?: string        // « الرقم الاستدلالي » ex : 8 58
-  serie?: string            // pied de page ex : السلسلة 8 رقم 2
-  patrouilleNum?: string    // n° décision de ratissage/تمشيط
-  patrouilleDate?: string   // date de la décision
-  chefCentre?: string       // رئيس مركز حماية الغابات ...
-  heureText?: string        // ex : الثالثة زوالا
-  investigationText?: string// narration de l'enquête (فتحنا بحثا...)
-  redactionLieu?: string    // lieu de rédaction (ex : المضيق)
-}
+export type { PVComposeInput, PVCoordPoint, PVFeature }
 
 // ──────────────────────────────────────────────────────
 // Constantes de style
 // ──────────────────────────────────────────────────────
 const FONT = 'Traditional Arabic'
-const A4L = { width: 16838, height: 11906 } // A4 paysage (twips)
-const GREEN = '166534'
-const RED = 'DC2626'
-const ORANGE = 'EA580C'
-const AR_MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'ماي', 'يونيو', 'يوليوز', 'غشت', 'شتنبر', 'أكتوبر', 'نونبر', 'دجنبر']
+const A4L = { width: 16838, height: 11906 } // twips
 
-const arDate = (iso: string): string => {
-  if (!iso) return '............'
-  const parts = iso.split('-').map(Number)
-  const [y, m, d] = parts
-  if (!y || !m || !d) return iso
-  return `${d} ${AR_MONTHS[m - 1] || ''} ${y}`
-}
-
-const overlapColor = (pos: string) =>
-  pos === 'داخل الملك الغابوي' ? RED : pos === 'جزئيا داخل الملك الغابوي' ? ORANGE : GREEN
-
-// Isole le n° PV en LTR pour préserver l'ordre « 08/03/2025/BM » malgré le contexte RTL.
+// n° PV isolé en LTR pour préserver « 08/03/2025/BM » en contexte RTL
 const LRI = '\u2066', PDI = '\u2069'
 const ltrPV = (s: string) => `${LRI}${s}${PDI}`
 
-// ══════════════════════════════════════════════════════
-// 1) COMPOSITION DU CONTENU (source unique)
-// ══════════════════════════════════════════════════════
-interface ComposedPV {
-  pvNum: string
-  indicatif: string
-  serie: string
-  title: string
-  ministry: string[]
-  numBoxL1: string
-  numBoxL2: string
-  descTitle: string
-  legalDescription: string
-  midFootnote: string
-  bodyParas: Array<{ text: string; bold?: boolean }>
-  infractions: string[]
-  damagesIntro: string
-  damages: string[]
-  redaction: string
-  overlapLine: { text: string; color: string } | null
-  summonsTitle: string
-  summonsLines: string[]
-  summonsFootnote: string
-  coordPoints: PVCoordPoint[]
-  areaText: string
-  mapImage?: string | null
+// ──────────────────────────────────────────────────────
+// Préparation : compose + plan (une seule fois pour les deux moteurs)
+// ──────────────────────────────────────────────────────
+interface PreparedPV {
+  c: ComposedPV
+  planSvg: string | null
+  planW: number
+  planH: number
 }
 
-function composePV(d: PVDocxData): ComposedPV {
-  const agentsNames = d.agents.filter(a => a.nom).map(a => a.nom).join(' ، ')
-  const residence = d.agents[0]?.residence || d.redactionLieu || '............'
-  const areaText = `${d.ha || '0'} هكتار ${d.are || '0'} آر ${d.ca || '0'} سنتيار`
-  const contrevenant = [d.contrevenantPrenom, d.contrevenantNom].filter(Boolean).join(' ') || 'مجهول'
+function prepare(inp: PVComposeInput, parcelCoordPoints: PVCoordPoint[], parcelGeojson: any | null): PreparedPV {
+  const c = composePV(inp, parcelCoordPoints)
+  const plan = buildPlanSvg({
+    pvNum: inp.pvNum,
+    parcelGeojson,
+    features: inp.features,
+    areaSummaryLines: c.areaSummaryLines,
+  })
+  return { c, planSvg: plan?.svg ?? null, planW: plan?.width ?? 0, planH: plan?.height ?? 0 }
+}
 
-  // Corps « تقرير الجنحة »
-  const intro =
-    `في سنة ${d.date ? d.date.split('-')[0] : 'ألفين و ...'} ، بتاريخ ${arDate(d.date)} ، نحن الموقعون أسفله ` +
-    `${agentsNames || '............'} تقنيون للمياه والغابات بمحل اقامتنا بـ${residence} ، المحلفون والحاملون لشعار مهنتنا.`
-
-  const witness =
-    `نشهد أنه حوالي الساعة ${d.heureText || d.heure || '............'} ، بغابة ${d.foret || '............'} ، ` +
-    `قسم ${d.canton || '............'} في طور التحديد النهائي بموجب المرسوم الوزاري عدد ${d.decreeNum || '02.84.321'} ` +
-    `المؤرخ في ${d.decreeDate || '1984/10/09'} ، بالضبط بالمكان المسمى "${d.placeName || '............'}" ` +
-    `التابع ترابيا لجماعة وقيادة ${d.commune || '............'} ، ${d.province || 'عمالة تطوان'}.`
-
-  const patrouille =
-    `عاينا ${d.chefCentre ? 'و برفقتنا ' + d.chefCentre : 'و برفقتنا رئيس مركز حماية الغابات للمضيق-الفنيدق'} ` +
-    `${d.patrouilleNum ? `في إطار قرار عملية تمشيط للمنطقة الغابوية (عدد ${d.patrouilleNum} بتاريخ ${arDate(d.patrouilleDate || '')})` : 'أثناء مهام المراقبة والحراسة'} ` +
-    `بالمكان ذي الإحداثيات X=${d.coordX || '............'} Y=${d.coordY || '............'} ، ` +
-    `قطعة غابوية مساحتها الإجمالية حوالي ${areaText} (انظر التصميم البياني بالصفحة الموالية) ، تم الترامي عليها بـ :`
-
-  const damagesIntro = 'و قد قدرنا الأضرار الناجمة عن هذا الترامي بحوالي :'
-  const damages = d.degats
-    .filter(g => g.type || g.quantite || g.equivalent)
-    .map(g => [g.quantite, g.type && `من ${g.type}`, g.equivalent && `أي ما يعادل ${g.equivalent}`].filter(Boolean).join(' '))
-
-  const investigation =
-    d.investigationText ||
-    'فتحنا بحثا من أجل التوصل لهوية المخالف ، وبعد التنسيق مع المصالح المختصة تم تحديد هويته على النحو التالي.'
-
-  const identity =
-    `الهوية الكاملة للمخالف هي : ${contrevenant} ${d.filiation || ''}${d.motherName ? ' ومن والدته ' + d.motherName : ''} ، ` +
-    `مزداد${d.dob ? ' بتاريخ ' + arDate(d.dob) : ''}${d.birthPlace ? ' بـ' + d.birthPlace : ''} ، ` +
-    `رقم بطاقة تعريفه الوطنية ${d.cin || '............'} ، مهنته ${d.profession || '............'} ، ` +
-    `حالته العائلية ${d.maritalStatus || '............'} ، عنوانه ${d.address || '............'}` +
-    `${d.outsideMaroc ? ' (مقيم خارج التراب الوطني — تطبق في حقه الإجراءات الخاصة)' : ''}.`
-
-  const redaction = `حرر وختم بـ${d.redactionLieu || residence} في ${arDate(d.date)}`
-
-  const bodyParas: Array<{ text: string; bold?: boolean }> = [
-    { text: intro },
-    { text: witness },
-    { text: patrouille },
-  ]
-
-  const overlapLine = d.overlap
-    ? {
-        text: `موقع القطعة بالنسبة للملك الغابوي : ${d.overlap.globalPosition} (نسبة التداخل ${d.overlap.totalPercentage.toFixed(1)}%)`,
-        color: overlapColor(d.overlap.globalPosition),
-      }
-    : null
-
-  // Colonne « إعلام واستدعاء » (formulaire pré-imprimé)
-  const summonsLines = [
-    'في سنة ألفين و ............ في ............',
-    'من شهر ............ بطلب من إدارة المياه و الغابات',
-    'و بإقامة دعوى من طرف ............',
-    'للمياه و الغابات بمحل إقامته بـ ............',
-    'التي اختار محل سكناه بـ ............',
-    'أشهد أنا الموقع أسفله ............',
-    '............ للمياه و الغابات',
-    'الساكن بـ ............ المحلف و الحامل لشعار',
-    'مهنتي أني بلغت التقرير من جهة إلى ............ (1)',
-    'الساكن بـ ............',
-    'و تكلمت في ذلك مع ............ (2)',
-    'الساكن بـ ............',
-    'و تكلمت في ذلك مع ............ (3)',
-    'الساكن بـ ............',
-    'و تكلمت في ذلك مع ............ (4)',
-    'بورقة استدعاء للحضور بتاريخ ............',
-    'على الساعة ............ و الأيام الموالية إن اقتضى الحال أمام المحكمة',
-    'في جلسة جنحية بـ ............ للحكم عليه بالعقوبات',
-    'التي ينص عليها القانون ، و لكي يكون على علم بذلك تركت له نسخة من التقرير و من صك هذه المرافعة.',
-  ]
-
-  return {
-    pvNum: d.pvNum,
-    indicatif: d.indicatif || '8 58',
-    serie: d.serie || 'السلسلة 8 رقم 2',
-    title: 'تقرير الجنحة',
-    ministry: [
-      'المملكة المغربية',
-      'الوكالة الوطنية للمياه والغابات',
-      'المديرية الإقليمية للوكالة الوطنية للمياه و الغابات لتطوان',
-      'من اختصاص المحكمة تطوان',
-    ],
-    numBoxL1: 'رقم سجل التقارير',
-    numBoxL2: 'صحيفة دفتر تقييد الجنحة',
-    descTitle: 'وصف الجنحة المثبتة',
-    legalDescription: d.legalDescription || '............',
-    midFootnote:
-      '(1)- يبين مكان تحقيق الجنحة بكيفية واضحة. و إذا وقعت مباشرته داخل الغابة فيبين اسمها و اسم الفرع و سن الغابة ' +
-      'وكذلك الناحية الإدارية التي وقع فيها التحقيق (الجماعة القروية، القيادة، الدائرة...).',
-    bodyParas,
-    infractions: d.infractions.length ? d.infractions : ['............'],
-    damagesIntro,
-    damages: damages.length ? damages : ['............'],
-    redaction: `${investigation}\n${identity}\n${redaction}`,
-    overlapLine,
-    summonsTitle: 'إعلام و استدعاء',
-    summonsLines,
-    summonsFootnote: '(1)- يبين المكان الذي وقع فيه إعلام : بالمنزل أو ب',
-    coordPoints: (d.coordPoints || []).filter(p => p.x || p.y),
-    areaText,
-    mapImage: d.mapImage || null,
-  }
+/** Groupes de tables de coordonnées de la page 2 : parcelle + chaque entité. */
+function coordGroups(c: ComposedPV): Array<{ title: string; pts: PVCoordPoint[] }> {
+  const groups: Array<{ title: string; pts: PVCoordPoint[] }> = []
+  if (c.parcelCoordPoints.length)
+    groups.push({ title: 'القطعة الاجمالية', pts: c.parcelCoordPoints })
+  c.features.forEach(f => {
+    if (f.showCoordsTable && f.coordPoints.length)
+      groups.push({ title: f.label, pts: f.coordPoints })
+  })
+  return groups
 }
 
 // ══════════════════════════════════════════════════════
-// 2) RENDU DOCX (lib docx — paysage, RTL natif)
+// 1) RENDU DOCX
 // ══════════════════════════════════════════════════════
 const THIN = { style: BorderStyle.SINGLE, size: 4, color: '000000' } as const
 const NO = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' } as const
@@ -280,11 +108,14 @@ function bodyColumn(c: ComposedPV): (Paragraph | Table)[] {
     }),
   ]
   c.bodyParas.forEach(p => out.push(line(p.text, { bold: p.bold, size: 16, align: AlignmentType.BOTH })))
-  c.infractions.forEach(inf => out.push(par([run('- ' + inf, { size: 15 })], { after: 20, line: 220 })))
+  c.infractionBullets.forEach(inf => out.push(par([run('- ' + inf, { size: 15 })], { after: 20, line: 220 })))
   if (c.overlapLine) out.push(line(c.overlapLine.text, { size: 15, color: c.overlapLine.color, bold: true }))
-  out.push(line(c.damagesIntro, { size: 16, align: AlignmentType.BOTH }))
+  if (c.damagesIntro) out.push(line(c.damagesIntro, { size: 16, align: AlignmentType.BOTH }))
   c.damages.forEach(dm => out.push(par([run('- ' + dm, { size: 15 })], { after: 20, line: 220 })))
-  c.redaction.split('\n').forEach(t => out.push(line(t, { size: 16, align: AlignmentType.BOTH })))
+  c.investigationParas.forEach(t => out.push(line(t, { size: 16, align: AlignmentType.BOTH })))
+  if (c.seizurePara) out.push(line(c.seizurePara, { size: 16, align: AlignmentType.BOTH }))
+  if (c.identityPara) out.push(line(c.identityPara.text, { size: 16, bold: c.identityPara.bold, align: AlignmentType.BOTH }))
+  out.push(line(c.closingLine, { size: 16, align: AlignmentType.BOTH, after: 60 }))
   out.push(line(c.serie, { size: 13, color: '777777', after: 0 }))
   return out
 }
@@ -308,7 +139,7 @@ function summonsColumn(c: ComposedPV): Paragraph[] {
   ]
   c.summonsLines.forEach(l => out.push(line(l, { size: 13, after: 60 })))
   out.push(new Paragraph({ text: '', spacing: { after: 60 } }))
-  out.push(line('و بـه الإشهـاد', { bold: true, size: 14, align: AlignmentType.CENTER }))
+  out.push(line(c.attestation, { bold: true, size: 14, align: AlignmentType.CENTER }))
   out.push(new Paragraph({ text: '', spacing: { after: 120 } }))
   out.push(line(c.summonsFootnote, { size: 11, color: '555555' }))
   return out
@@ -322,7 +153,6 @@ function page1Table(c: ComposedPV): Table {
       borders: { top: NO, bottom: NO, right: NO, left: leftBorder ? THIN : NO },
       children,
     })
-  // Ordre visuel RTL : [droite=summons, milieu=mid, gauche=body]
   return new Table({
     visuallyRightToLeft: true,
     width: { size: 100, type: WidthType.PERCENTAGE },
@@ -340,55 +170,98 @@ function page1Table(c: ComposedPV): Table {
   })
 }
 
-function page2Design(c: ComposedPV, logoBytes?: Uint8Array | null): (Paragraph | Table)[] {
+/** Table de coordonnées d'un groupe (en-tête = nom de l'entité). */
+function coordTableDocx(title: string, pts: PVCoordPoint[]): Table {
+  return new Table({
+    visuallyRightToLeft: true,
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { top: THIN, bottom: THIN, left: THIN, right: THIN, insideHorizontal: THIN, insideVertical: THIN },
+    rows: [
+      new TableRow({
+        children: [new TableCell({
+          columnSpan: 3, borders: CELL_ALL,
+          shading: { type: ShadingType.CLEAR, fill: 'DCE8DC', color: 'auto' },
+          children: [line(title, { bold: true, align: AlignmentType.CENTER, size: 15 })],
+        })],
+      }),
+      new TableRow({
+        tableHeader: true,
+        children: ['Y', 'X', 'Pts'].map(h => new TableCell({
+          borders: CELL_ALL,
+          shading: { type: ShadingType.CLEAR, fill: 'F1F5F1', color: 'auto' },
+          children: [line(h, { bold: true, align: AlignmentType.CENTER, size: 14 })],
+        })),
+      }),
+      ...pts.map(p => new TableRow({
+        children: [
+          new TableCell({ borders: CELL_ALL, children: [line(p.y || '—', { align: AlignmentType.CENTER, size: 13 })] }),
+          new TableCell({ borders: CELL_ALL, children: [line(p.x || '—', { align: AlignmentType.CENTER, size: 13 })] }),
+          new TableCell({ borders: CELL_ALL, children: [line(String(p.num), { align: AlignmentType.CENTER, bold: true, size: 13 })] }),
+        ],
+      })),
+    ],
+  })
+}
+
+async function page2Design(p: PreparedPV): Promise<(Paragraph | Table)[]> {
+  const { c } = p
   const out: (Paragraph | Table)[] = [
     new Paragraph({ children: [new PageBreak()] }),
-    par([run(`رسم بياني للقطعة المترامى عليها موضوع المحضر عدد ${c.pvNum}`, { bold: true, size: 22, underline: true })], { align: AlignmentType.CENTER, after: 160 }),
+    par([run(c.planTitle, { bold: true, size: 22, underline: true })], { align: AlignmentType.CENTER, after: 140 }),
   ]
 
-  if (c.mapImage) {
+  const groups = coordGroups(c)
+
+  // colonne image (plan) — ratio préservé, largeur bornée à ~660px
+  let planCell: (Paragraph | Table)[] = [
+    line('يُرفق هنا التصميم البياني للقطعة المترامى عليها (لم تُرسم أي هندسة بعد).', { align: AlignmentType.CENTER, color: '777777', size: 15 }),
+  ]
+  if (p.planSvg) {
     try {
-      const base64 = c.mapImage.includes(',') ? c.mapImage.split(',')[1] : c.mapImage
+      const dataUrl = await svgToPngDataUrl(p.planSvg, p.planW, p.planH, 2)
+      const base64 = dataUrl.split(',')[1]
       const bytes = Uint8Array.from(atob(base64), ch => ch.charCodeAt(0))
-      out.push(new Paragraph({
+      const targetW = groups.length ? 660 : 900
+      const targetH = Math.round(targetW * (p.planH / p.planW))
+      planCell = [new Paragraph({
         alignment: AlignmentType.CENTER,
-        children: [new ImageRun({ data: bytes, transformation: { width: 900, height: 520 }, type: 'png' })],
-      }))
-    } catch { /* image invalide → on garde la table */ }
+        children: [new ImageRun({ data: bytes, transformation: { width: targetW, height: targetH }, type: 'png' })],
+      })]
+    } catch { /* environnement sans canvas → note conservée */ }
   }
 
-  if (c.coordPoints.length) {
-    const w = 2600
-    out.push(new Paragraph({ text: '', spacing: { after: 120 } }))
-    out.push(line('لائحة إحداثيات القطعة (Lambert / EPSG:26191)', { bold: true, align: AlignmentType.CENTER, size: 16 }))
-    out.push(new Table({
-      visuallyRightToLeft: true,
-      width: { size: 60, type: WidthType.PERCENTAGE },
-      columnWidths: [w, w, w],
-      borders: { top: THIN, bottom: THIN, left: THIN, right: THIN, insideHorizontal: THIN, insideVertical: THIN },
-      rows: [
-        new TableRow({
-          tableHeader: true,
-          children: ['Y', 'X', 'النقطة'].map(h => new TableCell({ borders: CELL_ALL, shading: { type: ShadingType.CLEAR, fill: 'E8F5E9', color: 'auto' }, verticalAlign: VerticalAlign.CENTER, children: [line(h, { bold: true, align: AlignmentType.CENTER, size: 16 })] })),
-        }),
-        ...c.coordPoints.map(p => new TableRow({
-          children: [
-            new TableCell({ borders: CELL_ALL, children: [line(p.y || '—', { align: AlignmentType.CENTER, size: 14 })] }),
-            new TableCell({ borders: CELL_ALL, children: [line(p.x || '—', { align: AlignmentType.CENTER, size: 14 })] }),
-            new TableCell({ borders: CELL_ALL, children: [line('B' + p.num, { align: AlignmentType.CENTER, bold: true, size: 14 })] }),
-          ],
-        })),
-      ],
-    }))
-    out.push(new Paragraph({ text: '', spacing: { after: 80 } }))
-    out.push(line(`المساحة الإجمالية : ${c.areaText}`, { bold: true, align: AlignmentType.CENTER, size: 16 }))
-  } else if (!c.mapImage) {
-    out.push(line('يُرفق هنا التصميم البياني (المخطط الطبوغرافي) للقطعة المترامى عليها.', { align: AlignmentType.CENTER, color: '777777', size: 16 }))
+  if (!groups.length) {
+    out.push(...planCell)
+    return out
   }
+
+  // colonne coordonnées : tables empilées avec respiration
+  const coordCell: (Paragraph | Table)[] = [
+    line('لائحة إحداثيات المخالفات ( Lambert Nord Maroc — EPSG:26191 )', { bold: true, align: AlignmentType.CENTER, size: 14, after: 80 }),
+  ]
+  groups.forEach((g, i) => {
+    coordCell.push(coordTableDocx(g.title, g.pts))
+    if (i < groups.length - 1) coordCell.push(new Paragraph({ text: '', spacing: { after: 80 } }))
+  })
+
+  out.push(new Table({
+    visuallyRightToLeft: true,
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    columnWidths: [10400, 5400], // RTL : [plan | coords] rendu coords à droite
+    borders: { top: NO, bottom: NO, left: NO, right: NO, insideHorizontal: NO, insideVertical: NO },
+    rows: [new TableRow({
+      children: [
+        new TableCell({ borders: { top: NO, bottom: NO, left: NO, right: NO }, verticalAlign: VerticalAlign.TOP, margins: { left: 100, right: 100 }, children: planCell }),
+        new TableCell({ borders: { top: NO, bottom: NO, left: NO, right: NO }, verticalAlign: VerticalAlign.TOP, margins: { left: 100, right: 100 }, children: coordCell }),
+      ],
+    })],
+  }))
+  out.push(new Paragraph({ text: '', spacing: { after: 80 } }))
+  out.push(line(`المساحة الإجمالية للقطعة : ${c.areaText}`, { bold: true, align: AlignmentType.CENTER, size: 16 }))
   return out
 }
 
-async function renderDocx(c: ComposedPV): Promise<Blob> {
+async function renderDocx(p: PreparedPV): Promise<Blob> {
   const doc = new Document({
     styles: { default: { document: { run: { font: FONT, size: 16 } } } },
     sections: [{
@@ -399,8 +272,8 @@ async function renderDocx(c: ComposedPV): Promise<Blob> {
         },
       },
       children: [
-        page1Table(c),
-        ...page2Design(c),
+        page1Table(p.c),
+        ...(await page2Design(p)),
       ],
     }],
   })
@@ -408,29 +281,43 @@ async function renderDocx(c: ComposedPV): Promise<Blob> {
 }
 
 // ══════════════════════════════════════════════════════
-// 3) RENDU HTML (pour l'impression PDF — mise en page identique)
+// 2) RENDU HTML (aperçu + impression PDF — identique)
 // ══════════════════════════════════════════════════════
 const esc = (s: string) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-function renderHtml(c: ComposedPV): string {
-  const summons = c.summonsLines.map(l => `<div class="sline">${esc(l)}</div>`).join('')
-  const bodyParas = c.bodyParas.map(p => `<p class="just">${esc(p.text)}</p>`).join('')
-  const infractions = c.infractions.map(i => `<div class="bul">- ${esc(i)}</div>`).join('')
-  const damages = c.damages.map(d => `<div class="bul">- ${esc(d)}</div>`).join('')
-  const overlap = c.overlapLine ? `<p class="ov" style="color:${c.overlapLine.color}">${esc(c.overlapLine.text)}</p>` : ''
-  const redaction = c.redaction.split('\n').map(t => `<p class="just">${esc(t)}</p>`).join('')
-  const ministry = c.ministry.map((m, i) => `<div class="${i < 2 ? 'minb' : 'min'}">${esc(m)}</div>`).join('')
+function coordTableHtml(title: string, pts: PVCoordPoint[]): string {
+  const rows = pts.map(p => `<tr><td>${esc(p.y || '—')}</td><td>${esc(p.x || '—')}</td><td><b>${p.num}</b></td></tr>`).join('')
+  return `<table class="coord">
+    <thead>
+      <tr><th colspan="3" class="cg-title">${esc(title)}</th></tr>
+      <tr><th>Y</th><th>X</th><th>Pts</th></tr>
+    </thead><tbody>${rows}</tbody></table>`
+}
 
-  const coordRows = c.coordPoints.map(p => `<tr><td>${esc(p.y || '—')}</td><td>${esc(p.x || '—')}</td><td><b>B${p.num}</b></td></tr>`).join('')
+function renderHtml(p: PreparedPV): string {
+  const c = p.c
+  const bodyParas = c.bodyParas.map(x => `<p class="just">${esc(x.text)}</p>`).join('')
+  const infractions = c.infractionBullets.map(i => `<div class="bul">- ${esc(i)}</div>`).join('')
+  const damages = c.damages.map(d => `<div class="bul">- ${esc(d)}</div>`).join('')
+  const overlap = c.overlapLine ? `<p class="ov" style="color:#${c.overlapLine.color}">${esc(c.overlapLine.text)}</p>` : ''
+  const investigation = c.investigationParas.map(t => `<p class="just">${esc(t)}</p>`).join('')
+  const seizure = c.seizurePara ? `<p class="just">${esc(c.seizurePara)}</p>` : ''
+  const identity = c.identityPara ? `<p class="just" style="${c.identityPara.bold ? 'font-weight:bold' : ''}">${esc(c.identityPara.text)}</p>` : ''
+  const ministry = c.ministry.map((m, i) => `<div class="${i < 2 ? 'minb' : 'min'}">${esc(m)}</div>`).join('')
+  const summons = c.summonsLines.map(l => `<div class="sline">${esc(l)}</div>`).join('')
+
+  const groups = coordGroups(c)
+  const coordCol = groups.length
+    ? `<div class="p2coords"><div class="p2sub">لائحة إحداثيات المخالفات ( Lambert — EPSG:26191 )</div>${groups.map(g => coordTableHtml(g.title, g.pts)).join('')}</div>`
+    : ''
+  const planCol = p.planSvg
+    ? `<div class="p2plan">${p.planSvg}</div>`
+    : `<p class="p2note">يُرفق هنا التصميم البياني للقطعة المترامى عليها (لم تُرسم أي هندسة بعد).</p>`
+
   const page2 = `
     <section class="sheet">
-      <h2 class="p2title">رسم بياني للقطعة المترامى عليها موضوع المحضر عدد ${esc(c.pvNum)}</h2>
-      ${c.mapImage ? `<div style="text-align:center"><img src="${c.mapImage}" style="max-width:90%;max-height:150mm;object-fit:contain"/></div>` : ''}
-      ${c.coordPoints.length ? `
-        <h3 class="p2sub">لائحة إحداثيات القطعة (Lambert / EPSG:26191)</h3>
-        <table class="coord"><thead><tr><th>Y</th><th>X</th><th>النقطة</th></tr></thead><tbody>${coordRows}</tbody></table>
-        <p class="p2area">المساحة الإجمالية : ${esc(c.areaText)}</p>
-      ` : (!c.mapImage ? `<p class="p2note">يُرفق هنا التصميم البياني (المخطط الطبوغرافي) للقطعة المترامى عليها.</p>` : '')}
+      <div class="p2wrap">${planCol}${coordCol}</div>
+      <p class="p2area">المساحة الإجمالية للقطعة : ${esc(c.areaText)}</p>
     </section>`
 
   return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8">
@@ -460,17 +347,23 @@ function renderHtml(c: ComposedPV): string {
   .desc-v { text-align:center; font-weight:bold; font-size:12pt; margin:0 0 2mm; }
   .midfoot { font-size:7.5pt; color:#555; text-align:justify; margin-top:2mm; }
   .sum-t { text-align:center; font-weight:bold; font-size:12pt; text-decoration:underline; margin:0 0 2.5mm; }
-  .sline { font-size:8.5pt; line-height:1.7; border-bottom:0; margin:0; }
+  .sline { font-size:8.5pt; line-height:1.7; margin:0; }
   .attest { text-align:center; font-weight:bold; font-size:9pt; margin:2mm 0; }
   .sumfoot { font-size:7pt; color:#555; margin-top:2mm; }
   .serie { font-size:8pt; color:#777; margin-top:2mm; }
+  .closing { text-align:justify; font-size:10.5pt; margin-top:2mm; }
   .topbar { display:flex; justify-content:space-between; align-items:center; margin:0 0 1mm; }
   .topbar .ind { font-size:8.5pt; }
-  .p2title { text-align:center; text-decoration:underline; font-size:14pt; margin:4mm 0; }
-  .p2sub { text-align:center; font-size:11pt; margin:4mm 0 2mm; }
-  .coord { margin:0 auto; border-collapse:collapse; width:60%; }
-  .coord th,.coord td { border:1px solid #000; text-align:center; padding:1.2mm 2mm; font-size:10pt; }
-  .coord th { background:#E8F5E9; }
+  /* ── Page 2 ── */
+  .p2wrap { display:flex; gap:4mm; align-items:flex-start; }
+  .p2plan { flex:1 1 auto; text-align:center; }
+  .p2plan svg { max-width:100%; height:auto; }
+  .p2coords { flex:0 0 62mm; max-width:62mm; }
+  .p2sub { text-align:center; font-size:9pt; font-weight:bold; margin:0 0 2mm; }
+  .coord { border-collapse:collapse; width:100%; margin:0 0 3mm; }
+  .coord th,.coord td { border:1px solid #000; text-align:center; padding:0.6mm 1mm; font-size:8pt; }
+  .coord th { background:#F1F5F1; }
+  .coord .cg-title { background:#DCE8DC; font-size:8.5pt; }
   .p2area { text-align:center; font-weight:bold; font-size:11pt; margin-top:3mm; }
   .p2note { text-align:center; color:#777; font-size:11pt; margin-top:8mm; }
 </style></head><body>
@@ -482,9 +375,12 @@ function renderHtml(c: ComposedPV): string {
         ${bodyParas}
         ${infractions}
         ${overlap}
-        <p class="just">${esc(c.damagesIntro)}</p>
+        ${c.damagesIntro ? `<p class="just">${esc(c.damagesIntro)}</p>` : ''}
         ${damages}
-        ${redaction}
+        ${investigation}
+        ${seizure}
+        ${identity}
+        <p class="closing">${esc(c.closingLine)}</p>
         <div class="serie">${esc(c.serie)}</div>
       </td>
       <td class="col c-mid">
@@ -497,7 +393,7 @@ function renderHtml(c: ComposedPV): string {
       <td class="col c-sum">
         <div class="sum-t">${esc(c.summonsTitle)}</div>
         ${summons}
-        <div class="attest">و بـه الإشهـاد</div>
+        <div class="attest">${esc(c.attestation)}</div>
         <div class="sumfoot">${esc(c.summonsFootnote)}</div>
       </td>
     </tr></table>
@@ -507,8 +403,14 @@ function renderHtml(c: ComposedPV): string {
 }
 
 // ══════════════════════════════════════════════════════
-// 4) API PUBLIQUE
+// 3) API PUBLIQUE
 // ══════════════════════════════════════════════════════
+export interface PVRenderData {
+  input: PVComposeInput
+  parcelCoordPoints: PVCoordPoint[]
+  parcelGeojson: any | null
+}
+
 function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
@@ -520,40 +422,34 @@ function saveBlob(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1500)
 }
 
-/** Télécharge le PV au format Word (.docx) — modèle paysage officiel. */
-export async function generatePVDocx(d: PVDocxData): Promise<void> {
-  const c = composePV(d)
-  const blob = await renderDocx(c)
-  saveBlob(blob, `PV_${(d.pvNum || 'nouveau').replace(/\//g, '-')}.docx`)
+const fileBase = (pvNum: string) => `PV_${(pvNum || 'nouveau').replace(/\//g, '-')}`
+
+/** Télécharge le PV au format Word (.docx) — page 1 modèle officiel + page 2 plan. */
+export async function generatePVDocx(d: PVRenderData): Promise<void> {
+  const p = prepare(d.input, d.parcelCoordPoints, d.parcelGeojson)
+  const blob = await renderDocx(p)
+  saveBlob(blob, `${fileBase(d.input.pvNum)}.docx`)
 }
 
-/** Ouvre l'aperçu HTML dans un onglet VISIBLE (pour voir la mise en page à l'écran). */
-export function previewPVHtml(d: PVDocxData): void {
-  const html = renderHtml(composePV(d))
+/** Aperçu HTML dans un onglet visible (mise en page identique au PDF). */
+export function previewPVHtml(d: PVRenderData): void {
+  const html = renderHtml(prepare(d.input, d.parcelCoordPoints, d.parcelGeojson))
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const w = window.open(url, '_blank')
-  if (!w) {
-    // popup bloqué → repli : téléchargement du HTML
-    downloadPVHtml(d)
-    return
-  }
+  if (!w) { downloadPVHtml(d); return }
   setTimeout(() => URL.revokeObjectURL(url), 60000)
 }
 
-/** Télécharge le PV au format .html (ouvrable dans n'importe quel navigateur). */
-export function downloadPVHtml(d: PVDocxData): void {
-  const html = renderHtml(composePV(d))
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-  saveBlob(blob, `PV_${(d.pvNum || 'nouveau').replace(/\//g, '-')}.html`)
+/** Télécharge le PV en .html autonome. */
+export function downloadPVHtml(d: PVRenderData): void {
+  const html = renderHtml(prepare(d.input, d.parcelCoordPoints, d.parcelGeojson))
+  saveBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), `${fileBase(d.input.pvNum)}.html`)
 }
 
-/** Ouvre l'aperçu imprimable (paysage) pour enregistrement en PDF via le navigateur.
- *  iframe caché + Blob URL : non bloqué comme un popup, et l'impression n'est
- *  déclenchée qu'APRÈS le chargement complet (polices + image du plan). */
-export function generatePVPdf(d: PVDocxData): void {
-  const c = composePV(d)
-  const html = renderHtml(c)
+/** Impression paysage → PDF navigateur (iframe caché, après chargement polices). */
+export function generatePVPdf(d: PVRenderData): void {
+  const html = renderHtml(prepare(d.input, d.parcelCoordPoints, d.parcelGeojson))
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
   const url = URL.createObjectURL(blob)
 
@@ -575,7 +471,6 @@ export function generatePVPdf(d: PVDocxData): void {
   iframe.onload = () => {
     const win = iframe.contentWindow
     if (!win) { cleanup(); return }
-    // attendre les polices (si supporté) avant d'imprimer
     const doPrint = () => { try { win.focus(); win.print() } catch {} }
     const fonts: any = (win.document as any).fonts
     if (fonts && typeof fonts.ready?.then === 'function') {
@@ -584,7 +479,6 @@ export function generatePVPdf(d: PVDocxData): void {
       setTimeout(doPrint, 400)
     }
     win.onafterprint = cleanup
-    // filet de sécurité si onafterprint ne se déclenche pas
     setTimeout(cleanup, 60000)
   }
 
