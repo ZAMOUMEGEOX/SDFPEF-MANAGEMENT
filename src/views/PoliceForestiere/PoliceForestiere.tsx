@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Shield, Search, FilePlus2, ChevronLeft, Check, FileCode2, Map, Scale, FileText, Gavel, MapPin, Crosshair, Layers, Pencil, Trash2, Download, SlidersHorizontal, X, ArrowUpDown, CheckSquare, Square } from 'lucide-react';
+import { Shield, Search, FilePlus2, ChevronLeft, Check, FileCode2, Map, Scale, FileText, Gavel, MapPin, Crosshair, Layers, Pencil, Trash2, Download, SlidersHorizontal, X, ArrowUpDown, CheckSquare, Square, Printer, Eye } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { loadInfractions, updateInfractionStatut, updateInfraction, deleteInfraction, formatPVNumber, toNum, type InfractionRecord, type InfractionKPIs } from '@/lib/pv';
-import { generatePVDocx, type PVDocxData } from '@/lib/pvDocx';
+import { generatePVDocx, generatePVPdf, previewPVHtml, type PVDocxData } from '@/lib/pvDocx';
 import { exportChevauchementDocx } from '@/lib/forestDocx';
 import {
   requestParcelPickForPV, onParcelDelivered, consumePendingParcel, savePVParcel,
@@ -88,6 +88,9 @@ interface PVFormData {
   birthPlace: string; cin: string; dob: string; profession: string
   maritalStatus: string; address: string; outsideMaroc: boolean
   legalDescription: string
+  // ── Narration (respect du modèle officiel) ──
+  heureText: string; patrouilleNum: string; patrouilleDate: string
+  chefCentre: string; investigationText: string
   // ── Parcelle capturée depuis la carte Domaine Forestier ──
   parcelGeojson: any | null
   parcelAreaM2: number
@@ -112,6 +115,7 @@ const EMPTY_FORM: PVFormData = {
   birthPlace: '', cin: '', dob: '', profession: '',
   maritalStatus: 'متزوج', address: '', outsideMaroc: false,
   legalDescription: '',
+  heureText: '', patrouilleNum: '', patrouilleDate: '', chefCentre: '', investigationText: '',
   parcelGeojson: null, parcelAreaM2: 0, parcelCoordPoints: [], parcelOverlap: null, parcelProvince: null,
 }
 
@@ -141,6 +145,7 @@ function recordToForm(rec: InfractionRecord): PVFormData {
     dob: rec.contrevenant_ddn || '', profession: rec.contrevenant_profession || '',
     maritalStatus: rec.contrevenant_situation || 'متزوج', address: rec.contrevenant_adresse || '',
     outsideMaroc: !!rec.contrevenant_hors_maroc, legalDescription: rec.description_juridique || '',
+    heureText: '', patrouilleNum: '', patrouilleDate: '', chefCentre: '', investigationText: '',
     parcelGeojson: null, parcelAreaM2: 0, parcelCoordPoints: [], parcelOverlap: null, parcelProvince: null,
   };
 }
@@ -516,6 +521,10 @@ function PVManagement({ pvData, kpis, isLoading, onRefresh, onEdit }: {
                             className="p-2 text-stone-400 hover:text-blue-700 hover:bg-blue-50 rounded-lg border border-stone-200 transition-colors">
                             <FileCode2 className="size-4" />
                           </button>
+                          <button title="معاينة / تحميل PDF" onClick={() => generatePdfFromRecord(pv)}
+                            className="p-2 text-stone-400 hover:text-red-700 hover:bg-red-50 rounded-lg border border-stone-200 transition-colors">
+                            <Printer className="size-4" />
+                          </button>
                           <button title="حذف" onClick={() => removeOne(pv)}
                             className="p-2 text-stone-400 hover:text-red-700 hover:bg-red-50 rounded-lg border border-stone-200 transition-colors">
                             <Trash2 className="size-4" />
@@ -586,8 +595,8 @@ function exportListCSV(rows: InfractionRecord[]) {
 // ══════════════════════════════════════════════════════
 // GENERATE DOCX FROM SAVED RECORD (tous les champs préservés)
 // ══════════════════════════════════════════════════════
-function generateDocxFromRecord(pv: InfractionRecord) {
-  const data: PVDocxData = {
+function recordToDocxData(pv: InfractionRecord): PVDocxData {
+  return {
     pvNum: formatPVNumber(pv),
     date: pv.date_redaction || '',
     heure: pv.heure_constat || '',
@@ -623,7 +632,14 @@ function generateDocxFromRecord(pv: InfractionRecord) {
     outsideMaroc: !!pv.contrevenant_hors_maroc,
     legalDescription: pv.description_juridique || '',
   }
-  generatePVDocx(data)
+}
+
+function generateDocxFromRecord(pv: InfractionRecord) {
+  generatePVDocx(recordToDocxData(pv))
+}
+
+function generatePdfFromRecord(pv: InfractionRecord) {
+  generatePVPdf(recordToDocxData(pv))
 }
 
 // ══════════════════════════════════════════════════════
@@ -731,6 +747,12 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
     province: form.province,
     coordX: form.coordX || (mapCoords ? mapCoords.lng.toFixed(6) : ''),
     coordY: form.coordY || (mapCoords ? mapCoords.lat.toFixed(6) : ''),
+    heureText: form.heureText,
+    patrouilleNum: form.patrouilleNum,
+    patrouilleDate: form.patrouilleDate,
+    chefCentre: form.chefCentre,
+    investigationText: form.investigationText,
+    redactionLieu: form.agent1.residence,
     infractions: form.infractions,
     ha: form.ha,
     are: form.are,
@@ -866,6 +888,9 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
     const ok = await savePV();
     if (ok) { setForm(EMPTY_FORM); setCurrentStep(1); onSaved(); onClose(); }
   };
+
+  const handlePreviewPdf = () => generatePVPdf(buildDocxData());
+  const handlePreviewHtml = () => previewPVHtml(buildDocxData());
 
   const LocationPicker = () => {
     useMapEvents({
@@ -1203,6 +1228,24 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
               </div>
             </div>
 
+            {/* Narration du rapport (fidélité au modèle officiel) */}
+            <div className="space-y-4 bg-white p-6 border border-stone-200 rounded-xl shadow-sm">
+              <h4 className="text-sm font-bold text-stone-700">تفاصيل التقرير (اختيارية — لإكمال نص المحضر)</h4>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <FormInputLight label="الساعة (نصاً)" type="text" placeholder="مثال: الثالثة زوالا" value={form.heureText} onChange={(e: any) => set('heureText', e.target.value)} />
+                <FormInputLight label="رقم قرار التمشيط" type="text" placeholder="مثال: 100" value={form.patrouilleNum} onChange={(e: any) => set('patrouilleNum', e.target.value)} />
+                <FormInputLight label="تاريخ قرار التمشيط" type="date" value={form.patrouilleDate} onChange={(e: any) => set('patrouilleDate', e.target.value)} />
+              </div>
+              <FormInputLight label="المرافق في المعاينة (رئيس المركز...)" type="text" placeholder="مثال: رئيس مركز حماية الغابات للمضيق-الفنيدق" value={form.chefCentre} onChange={(e: any) => set('chefCentre', e.target.value)} />
+              <div className="space-y-2 text-right">
+                <label className="text-xs font-bold text-stone-600">سرد البحث للتوصل لهوية المخالف</label>
+                <textarea rows={4} dir="rtl" value={form.investigationText} onChange={e => set('investigationText', e.target.value)}
+                  placeholder="فتحنا بحثا من أجل التوصل لهوية المخالف..."
+                  className="w-full bg-stone-50 border border-stone-200 rounded-xl p-4 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-stone-800 outline-none resize-none placeholder:text-stone-400"
+                />
+              </div>
+            </div>
+
             {/* Recap */}
             <div className="p-6 bg-stone-50 border border-stone-200 rounded-xl">
               <h4 className="text-sm font-bold text-stone-700 mb-4">ملخص المحضر</h4>
@@ -1226,6 +1269,16 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
                 className="flex-1 py-4 bg-white text-emerald-700 border border-emerald-200 shadow-sm rounded-xl font-bold hover:bg-emerald-50 transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
               >
                 <Check className="size-5" /> {saving ? 'جاري الحفظ...' : (isEdit ? 'حفظ التعديلات' : 'حفظ في النظام')}
+              </button>
+              <button type="button" onClick={handlePreviewHtml} disabled={saving}
+                className="flex-1 py-4 bg-white text-stone-700 border border-stone-200 shadow-sm rounded-xl font-bold hover:bg-stone-50 transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
+              >
+                <Eye className="size-5" /> معاينة HTML
+              </button>
+              <button type="button" onClick={handlePreviewPdf} disabled={saving}
+                className="flex-1 py-4 bg-white text-red-700 border border-red-200 shadow-sm rounded-xl font-bold hover:bg-red-50 transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
+              >
+                <Printer className="size-5" /> معاينة / تحميل PDF
               </button>
               <button type="button" onClick={handleSaveAndGenerate} disabled={saving}
                 className="flex-1 py-4 bg-emerald-800 text-white rounded-xl font-bold shadow-md shadow-emerald-900/10 hover:bg-emerald-900 transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
