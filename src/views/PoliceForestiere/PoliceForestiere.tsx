@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Shield, Search, FilePlus2, ChevronLeft, Check, FileCode2, Map, Scale, FileText, Gavel, MapPin, Crosshair, Layers, Pencil, Trash2, Download, SlidersHorizontal, X, ArrowUpDown, CheckSquare, Square, Printer, Eye, Plus, Wand2, Stamp, UserX, ListPlus } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
@@ -6,7 +6,7 @@ import 'leaflet/dist/leaflet.css';
 import { loadInfractions, updateInfractionStatut, updateInfraction, deleteInfraction, formatPVNumber, toNum, type InfractionRecord, type InfractionKPIs, type PVNarrativeJson } from '@/lib/pv';
 import {
   FEATURE_PRESETS, LEGAL_SUGGESTIONS, HEURE_SUGGESTIONS, DELIM_OPTIONS, INVESTIGATION_STEP_LABELS,
-  renderInvestigationStep, suggestLegalDescription, featureAreaText,
+  renderInvestigationStep, suggestLegalDescription, suggestLegalArticles, featureAreaText,
   type PVFeature, type PVSymbol, type InvestigationStep, type InvestigationStepType,
   type PVSeizure, type IdentityMode, type ConstatContextType, type DelimStatus, type PVComposeInput,
 } from '@/lib/pvModel';
@@ -14,8 +14,8 @@ import { generatePVDocx, generatePVPdf, previewPVHtml, type PVRenderData } from 
 import { exportChevauchementDocx } from '@/lib/forestDocx';
 import {
   requestParcelPickForPV, requestParcelPickForFeature, onParcelDelivered, consumePendingParcel,
-  consumeFeatureTarget, savePVParcel, extractCoordPoints, areaToHaAreCa, showPVParcelOnMap,
-  wgs84ToLambert, type DeliveredParcel,
+  consumeFeatureTarget, consumeReturnToPV, hasPendingParcel, savePVParcel, extractCoordPoints,
+  areaToHaAreCa, showPVParcelOnMap, wgs84ToLambert, type DeliveredParcel,
 } from '@/lib/pvParcelBridge';
 
 const customIcon = new L.Icon({
@@ -205,11 +205,25 @@ function recordToForm(rec: InfractionRecord): PVFormData {
 }
 
 // ══════════════════════════════════════════════════════
+// BROUILLON PERSISTANT — survit à la navigation vers la carte du Domaine
+// Forestier. Chaque frappe est sauvegardée ; au retour (drapeau posé par
+// pvParcelBridge), le PV est ROUVERT automatiquement à la même étape.
+// ══════════════════════════════════════════════════════
+const PV_DRAFT_KEY = 'anef_pv_draft'
+interface PVDraft { form: PVFormData; step: number; editId: string | null; statut: string | null }
+function saveDraft(d: PVDraft) { try { sessionStorage.setItem(PV_DRAFT_KEY, JSON.stringify(d)) } catch {} }
+function loadDraft(): PVDraft | null { try { const r = sessionStorage.getItem(PV_DRAFT_KEY); return r ? JSON.parse(r) as PVDraft : null } catch { return null } }
+function clearDraft() { try { sessionStorage.removeItem(PV_DRAFT_KEY) } catch {} }
+function hasDraft(): boolean { try { return sessionStorage.getItem(PV_DRAFT_KEY) != null } catch { return false } }
+
+// ══════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ══════════════════════════════════════════════════════
 export function PoliceForestiere() {
   const [showForm, setShowForm] = useState(false);
+  const [resumeDraft, setResumeDraft] = useState(false);
   const [editRecord, setEditRecord] = useState<InfractionRecord | null>(null);
+  const [draftAvailable, setDraftAvailable] = useState(false);
   const [pvData, setPvData] = useState<InfractionRecord[]>([]);
   const [kpis, setKpis] = useState<InfractionKPIs>({ total: 0, surface: 0, parquet: 0, mois: 0 });
   const [isLoading, setIsLoading] = useState(true);
@@ -222,11 +236,23 @@ export function PoliceForestiere() {
     setIsLoading(false);
   };
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => {
+    fetchData();
+    setDraftAvailable(hasDraft());
+    // Retour depuis la carte (drapeau posé au départ) OU livraison en attente
+    // → ROUVRIR automatiquement le brouillon du PV, à la même étape, avec la
+    //   parcelle dessinée. Plus AUCUNE perte en passant par le Domaine Forestier.
+    if ((consumeReturnToPV() || hasPendingParcel()) && hasDraft()) {
+      setEditRecord(null);
+      setResumeDraft(true);
+      setShowForm(true);
+    }
+  }, []);
 
-  const openNew = () => { setEditRecord(null); setShowForm(true); };
-  const openEdit = (rec: InfractionRecord) => { setEditRecord(rec); setShowForm(true); };
-  const closeForm = () => { setShowForm(false); setEditRecord(null); };
+  const openNew = () => { clearDraft(); setDraftAvailable(false); setEditRecord(null); setResumeDraft(false); setShowForm(true); };
+  const openEdit = (rec: InfractionRecord) => { clearDraft(); setDraftAvailable(false); setEditRecord(rec); setResumeDraft(false); setShowForm(true); };
+  const openDraft = () => { setEditRecord(null); setResumeDraft(true); setShowForm(true); };
+  const closeForm = () => { setShowForm(false); setEditRecord(null); setResumeDraft(false); setDraftAvailable(hasDraft()); };
 
   return (
     <div className="p-4 md:p-8 space-y-4 md:space-y-6">
@@ -248,8 +274,18 @@ export function PoliceForestiere() {
         )}
       </div>
 
+      {!showForm && draftAvailable && (
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl" dir="rtl">
+          <span className="text-sm text-amber-800 font-bold">لديك مسودة محضر غير مكتملة محفوظة تلقائيا.</span>
+          <div className="flex gap-2">
+            <button onClick={openDraft} className="px-4 py-2 bg-amber-600 text-white rounded-lg text-xs font-bold hover:bg-amber-700 transition-colors">متابعة المسودة</button>
+            <button onClick={() => { clearDraft(); setDraftAvailable(false); }} className="px-4 py-2 bg-white border border-amber-200 text-amber-700 rounded-lg text-xs font-bold hover:bg-amber-100 transition-colors">حذفها</button>
+          </div>
+        </div>
+      )}
+
       {showForm
-        ? <PVForm onClose={closeForm} onSaved={fetchData} initial={editRecord} />
+        ? <PVForm onClose={closeForm} onSaved={fetchData} initial={editRecord} resume={resumeDraft} />
         : <PVManagement pvData={pvData} kpis={kpis} isLoading={isLoading} onRefresh={fetchData} onEdit={openEdit} />
       }
     </div>
@@ -722,10 +758,16 @@ function buildRenderDataFromForm(form: PVFormData, pvNum: string): PVRenderData 
 // ══════════════════════════════════════════════════════
 // PV FORM (8 STEPS)
 // ══════════════════════════════════════════════════════
-function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: () => void; initial?: InfractionRecord | null }) {
-  const isEdit = !!initial?.id;
-  const [currentStep, setCurrentStep] = useState(1);
-  const [form, setForm] = useState<PVFormData>(() => initial ? recordToForm(initial) : EMPTY_FORM);
+function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; onSaved: () => void; initial?: InfractionRecord | null; resume?: boolean }) {
+  // — Reprise de brouillon (retour de la carte / bandeau « متابعة المسودة ») —
+  const draftRef = useRef<PVDraft | null>(resume ? loadDraft() : null);
+  const editId = draftRef.current?.editId ?? initial?.id ?? null;
+  const baseStatut = draftRef.current?.statut ?? initial?.statut ?? null;
+  const isEdit = !!editId;
+  const [currentStep, setCurrentStep] = useState(draftRef.current?.step ?? 1);
+  const [form, setForm] = useState<PVFormData>(() =>
+    draftRef.current?.form ?? (initial ? recordToForm(initial) : EMPTY_FORM)
+  );
   const [mapCoords, setMapCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -749,6 +791,21 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
     setForm(f => ({ ...f, [`agent${n}`]: { ...f[`agent${n}`], [field]: val } }));
 
   const pvNum = `${form.pvNum}/${form.pvYear}/${form.brigade}`;
+
+  // ── Brouillon persistant : CHAQUE modification est sauvegardée immédiatement.
+  //    Naviguer vers la carte du Domaine Forestier ne perd plus RIEN.
+  useEffect(() => {
+    saveDraft({ form, step: currentStep, editId, statut: baseStatut });
+  }, [form, currentStep, editId, baseStatut]);
+
+  // ── وصف الجنحة : تعبئة تلقائية بالترتيب القانوني عند بلوغ خطوة الإنهاء إن كان فارغا
+  useEffect(() => {
+    if (currentStep === 8 && !form.legalDescription.trim() && form.features.length) {
+      const s = suggestLegalDescription(form.features);
+      if (s) setForm(f => ({ ...f, legalDescription: s }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStep]);
 
   // ── Réception d'une géométrie depuis la carte Domaine Forestier ──
   //    Routage : entité ciblée (featureTarget) sinon parcelle globale.
@@ -894,7 +951,7 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
     contrevenant_hors_maroc: form.outsideMaroc,
     identity_mode: form.identityMode,
     description_juridique: form.legalDescription,
-    statut: initial?.statut || 'nouveau',
+    statut: baseStatut || 'nouveau',
     // ── persistance intégrale (jsonb) ──
     narrative: {
       heureText: form.heureText,
@@ -926,10 +983,10 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
     const payload = buildPayload();
     try {
       let pvId: string | null = null;
-      if (isEdit && initial) {
-        const { success, error } = await updateInfraction(initial.id, payload);
+      if (isEdit && editId) {
+        const { success, error } = await updateInfraction(editId, payload);
         if (!success) { setSaveError(error || 'Erreur lors de la mise à jour'); return null; }
-        pvId = initial.id;
+        pvId = editId;
       } else {
         const res = await fetch('/api/save-pv', {
           method: 'POST',
@@ -957,6 +1014,7 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
           overlap: form.parcelOverlap,
         });
       }
+      clearDraft(); // succès → le brouillon n'a plus lieu d'être
       return pvId ?? 'ok';
     } catch (e) {
       setSaveError('Erreur de connexion');
@@ -968,7 +1026,7 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
 
   const handleSaveOnly = async () => {
     const ok = await savePV();
-    if (ok) { setForm(EMPTY_FORM); setCurrentStep(1); onSaved(); onClose(); }
+    if (ok) { onSaved(); onClose(); }
   };
 
   // ✔ ORDRE CORRIGÉ : sauvegarde D'ABORD, export ENSUITE (jamais de docx orphelin)
@@ -976,7 +1034,7 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
     const ok = await savePV();
     if (!ok) return;
     await generatePVDocx(buildRenderData());
-    setForm(EMPTY_FORM); setCurrentStep(1); onSaved(); onClose();
+    onSaved(); onClose();
   };
 
   const handlePreviewPdf = () => generatePVPdf(buildRenderData());
@@ -1040,7 +1098,7 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
             {isEdit && (
               <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-                <Pencil className="size-4" /> وضع التعديل: أنت تُحرّر محضراً موجوداً ({initial ? formatPVNumber(initial) : ''}).
+                <Pencil className="size-4" /> وضع التعديل: أنت تُحرّر محضراً موجوداً ({initial ? formatPVNumber(initial) : pvNum}).
               </div>
             )}
             <h3 className="text-lg font-serif italic text-emerald-900 mb-6">رقم المحضر والتواريخ</h3>
@@ -1201,6 +1259,7 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
                   <Crosshair className="size-4" /> رسم القطعة الإجمالية
                 </button>
               </div>
+              <p className="text-[11px] text-emerald-700">✓ تُحفظ مسودة المحضر تلقائيا — لن يضيع أي معطى عند الانتقال إلى الخريطة والعودة.</p>
 
               {form.parcelGeojson && (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2">
@@ -1607,6 +1666,11 @@ function PVForm({ onClose, onSaved, initial }: { onClose: () => void; onSaved: (
                   </button>
                 ))}
               </div>
+              {form.features.length > 0 && suggestLegalArticles(form.features) && (
+                <p className="text-[11px] text-stone-500 border-r-2 border-stone-300 pr-2 mt-2">
+                  {suggestLegalArticles(form.features)} — للاستئناس داخل الواجهة فقط، لا يُدرج في المحضر.
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-white p-6 border border-stone-200 rounded-xl shadow-sm">

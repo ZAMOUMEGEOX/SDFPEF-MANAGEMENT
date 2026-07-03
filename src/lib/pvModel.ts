@@ -2,8 +2,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // pvModel.ts — Modèle de données + composition narrative ARABE du PV forestier
 // (تقرير الجنحة). Source unique de vérité : toute la logique de rédaction est
-// ICI (dates en toutes lettres, paragraphes conditionnels, clôture حرر/حرر وختم,
-// génération du وصف الجنحة selon la typologie du Dahir du 10/10/1917).
+// ICI (dates en toutes lettres, paragraphes conditionnels, clôture حرر/حرر وختم).
 // pvDocx.ts ne fait QUE la mise en page (docx + html) à partir de ce module.
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -279,8 +278,8 @@ export function suggestLegalDescription(features: PVFeature[]): string {
   return `الترامي على الملك الغابوي ب${head} و${last}`
 }
 
-/** Référence légale ESTIMATIVE (aide interne, NE PAS insérer dans le PV :
- *  les modèles officiels ne citent pas les articles dans وصف الجنحة). */
+/** Référence légale ESTIMATIVE (aide interne à l'écran, NE PAS insérer dans le
+ *  PV : les modèles officiels ne citent pas les articles dans وصف الجنحة). */
 export function suggestLegalArticles(features: PVFeature[]): string {
   const arts: string[] = []
   matchedCanonParts(features).forEach(c => { if (!arts.includes(c.article)) arts.push(c.article) })

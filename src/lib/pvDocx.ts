@@ -1,13 +1,15 @@
 // src/lib/pvDocx.ts
 // ════════════════════════════════════════════════════════════════════════════
-// pvDocx.ts — Mise en page du « تقرير الجنحة » — modèle officiel ANEF
-//   • Page 1 : A4 PAYSAGE, 3 colonnes. ORDRE PHYSIQUE EXPLICITE gauche→droite :
-//       [ corps du rapport | ديباجة + n° + وصف الجنحة | إعلام واستدعاء ]
-//     → إعلام واستدعاء à DROITE, corps à GAUCHE, comme le modèle officiel.
-//     ⚠ On n'utilise PLUS visuallyRightToLeft (bidiVisual) : certaines versions
-//     de Word/LibreOffice l'ignorent et MIROITENT les colonnes. L'ordre physique
-//     est déterministe partout. Les paragraphes restent RTL individuellement.
-//   • Page 2 : plan (pvPlan.ts) à droite + tables de coordonnées PAR ENTITÉ à gauche.
+// pvDocx.ts — Mise en page du « تقرير الجنحة » (PV forestier) — modèle officiel ANEF
+//   • Page 1 : A4 PAYSAGE, 3 colonnes RTL
+//       [ corps du rapport | en-tête + n° + وصف الجنحة | إعلام واستدعاء ]
+//   • Page 2 : « التصميم البياني » professionnel : plan (pvPlan.ts) + tables de
+//       coordonnées PAR ENTITÉ (une parcelle peut porter plusieurs infractions).
+//
+// La composition du contenu vit dans pvModel.ts (composePV). Ici : rendu pur.
+//   - renderDocx() → .docx natif RTL (lib docx)      → generatePVDocx()
+//   - renderHtml() → HTML paysage imprimable          → previewPVHtml()/generatePVPdf()
+// Les deux moteurs consomment le MÊME ComposedPV → sorties identiques.
 // ════════════════════════════════════════════════════════════════════════════
 import {
   Document, Packer, Paragraph, TextRun, AlignmentType, Table, TableRow, TableCell,
@@ -77,7 +79,6 @@ const par = (children: TextRun[], o: Partial<{ align: any; after: number; before
 const line = (text: string, o: Partial<{ bold: boolean; size: number; align: any; color: string; underline: boolean; after: number }> = {}) =>
   par([run(text, o)], { align: o.align, after: o.after })
 
-/** Boîte du n° PV. Ordre physique : [صحيفة دفتر تقييد الجنحة (gauche) | رقم سجل التقارير (droite)] */
 function numberBox(c: ComposedPV): Table {
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
@@ -143,8 +144,6 @@ function summonsColumn(c: ComposedPV): Paragraph[] {
   return out
 }
 
-/** Page 1 — ORDRE PHYSIQUE gauche→droite : [corps | milieu | استدعاء].
- *  Rendu identique dans Word, LibreOffice et Google Docs (pas de bidiVisual). */
 function page1Table(c: ComposedPV): Table {
   const cell = (children: (Paragraph | Table)[], leftBorder: boolean) =>
     new TableCell({
@@ -155,6 +154,9 @@ function page1Table(c: ComposedPV): Table {
     })
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
+    // Ordre PHYSIQUE gauche→droite (déterministe dans Word/LibreOffice, sans
+    // bidiVisual) : [corps du rapport | ديباجة + n° + وصف | إعلام واستدعاء]
+    // → إعلام واستدعاء à DROITE et le corps à GAUCHE, comme le modèle officiel.
     columnWidths: [7200, 4000, 4200],
     borders: { top: THIN, bottom: THIN, left: THIN, right: THIN, insideHorizontal: NO, insideVertical: NO },
     rows: [
@@ -169,7 +171,7 @@ function page1Table(c: ComposedPV): Table {
   })
 }
 
-/** Table de coordonnées d'un groupe. Ordre physique [Y | X | Pts] → Pts à droite. */
+/** Table de coordonnées d'un groupe (en-tête = nom de l'entité). */
 function coordTableDocx(title: string, pts: PVCoordPoint[]): Table {
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
@@ -242,7 +244,7 @@ async function page2Design(p: PreparedPV): Promise<(Paragraph | Table)[]> {
     if (i < groups.length - 1) coordCell.push(new Paragraph({ text: '', spacing: { after: 80 } }))
   })
 
-  // Ordre physique : [coords (gauche) | plan (droite)] — comme le modèle officiel
+  // Ordre PHYSIQUE gauche→droite : [coords | plan] → plan à DROITE (modèle 08.03)
   out.push(new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
     columnWidths: [5400, 10400],
@@ -318,8 +320,6 @@ function renderHtml(p: PreparedPV): string {
       <p class="p2area">المساحة الإجمالية للقطعة : ${esc(c.areaText)}</p>
     </section>`
 
-  // ⚠ Ordre des <td> : [c-sum, c-mid, c-body]. Avec dir=rtl, la 1ère cellule se
-  // place à DROITE → إعلام واستدعاء à droite, corps du rapport à gauche (= modèle).
   return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8">
 <title>تقرير الجنحة ${esc(c.pvNum)}</title>
 <style>
