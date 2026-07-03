@@ -666,9 +666,24 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     const consume = () => {
       try {
         const raw = sessionStorage.getItem('anef_show_parcel');
-        if (!raw) return;
-        sessionStorage.removeItem('anef_show_parcel');
-        showLinkedParcel(JSON.parse(raw));
+        if (raw) {
+          sessionStorage.removeItem('anef_show_parcel');
+          showLinkedParcel(JSON.parse(raw));
+        }
+      } catch {}
+      // مركز مخالفة قادم من محضر الشرطة الغابوية → تحليق مباشر دون بحث يدوي
+      try {
+        const fly = sessionStorage.getItem('anef_map_flyto');
+        if (fly) {
+          sessionStorage.removeItem('anef_map_flyto');
+          const { lat, lng } = JSON.parse(fly);
+          if (Number.isFinite(lat) && Number.isFinite(lng)) {
+            const d = 0.0012; // ≈ 120 م حول المركز
+            const bounds = L.latLngBounds([lat - d, lng - d], [lat + d, lng + d]);
+            // مهلة قصيرة ريثما يركَّب مستمع flyToBounds داخل الخريطة
+            setTimeout(() => window.dispatchEvent(new CustomEvent('flyToBounds', { detail: bounds })), 800);
+          }
+        }
       } catch {}
     };
     consume();
@@ -731,12 +746,22 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       try { (window as any).__anefParcelPicking = false; } catch {}
       try { sessionStorage.setItem('anef_parcel_pending', JSON.stringify(location)); } catch {}
       window.dispatchEvent(new CustomEvent('parcel:delivered', { detail: location }));
-      window.dispatchEvent(new CustomEvent('anef:return-from-map'));
+      // ── توجيه العودة حسب نوع الهدف ──
+      //   • محضر (kind === 'pv')  → قسم الشرطة الغابوية مباشرة (يُعاد فتح المسودة تلقائيا)
+      //   • ملف منازعات          → السلوك السابق (anef:return-from-map → contentieux)
+      if (target?.kind === 'pv') {
+        window.dispatchEvent(new CustomEvent('anef:open-police'));
+        window.dispatchEvent(new CustomEvent('anef:return-from-map', { detail: { section: 'police' } }));
+      } else {
+        window.dispatchEvent(new CustomEvent('anef:return-from-map'));
+      }
       setPickingForCase(false);
       addToast({
         type: 'success',
-        title: parcelId ? 'سُجِّلت القطعة وأُرفقت بالملف ✓' : 'أُرفقت القطعة بالملف ✓',
-        msg: parcelId ? 'محفوظة في قاعدة الملك الغابوي ومربوطة بالملف' : 'عُد إلى قسم المنازعات لإكمال الملف',
+        title: parcelId ? 'سُجِّلت القطعة وأُرفقت ✓' : 'أُرفقت القطعة ✓',
+        msg: target?.kind === 'pv'
+          ? 'ستُستكمل تلقائيا داخل محضر الشرطة الغابوية'
+          : (parcelId ? 'محفوظة في قاعدة الملك الغابوي ومربوطة بالملف' : 'عُد إلى قسم المنازعات لإكمال الملف'),
       });
     } catch (e) { addToast({ type: 'error', title: 'تعذّر الإرفاق', msg: String((e as Error)?.message || e) }); }
   };

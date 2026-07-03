@@ -64,7 +64,8 @@ export interface InfractionRecord {
   surface_hectares: number | null
   surface_ares: number | null
   surface_centiares: number | null
-  degats: Array<{ type: string; quantite: string; equivalent: string }> | null
+  // كل ضرر جملة نهائية {text}؛ السجلات القديمة {type,quantite,equivalent} مقبولة للتوافق
+  degats: Array<{ text?: string; type?: string; quantite?: string; equivalent?: string }> | null
   contrevenant_nom: string | null
   contrevenant_prenom: string | null
   contrevenant_nasab: string | null

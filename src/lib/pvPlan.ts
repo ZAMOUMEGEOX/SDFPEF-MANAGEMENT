@@ -257,19 +257,25 @@ export function buildPlanSvg(input: PlanInput): PlanResult | null {
     <text x="${(barX + barPx + 26).toFixed(1)}" y="${barY + 7}" text-anchor="middle" font-size="12">متر</text>
   </g>`
 
-  // — encadré des surfaces (haut-droite) : largeur DYNAMIQUE selon la plus
-  //   longue ligne pour que rien ne déborde du cadre —
+  // — إطار «المساحات» : صندوق معنون أعلى اليمين تحت العنوان مباشرة —
+  //   جذر مشكلة الخروج عن الإطار: canvas لا يدعم direction/rtl مع text-anchor=end
+  //   → الحل الحتمي: توسيط كل سطر داخل عرض محسوب من أطول سطر (بلا direction).
   let areaBox = ''
   if (input.areaSummaryLines.length) {
+    const AR_CHAR = 8.6           // عرض تقريبي لحرف عربي غليظ بحجم 12
     const lineH = 19
     const maxLen = Math.max(...input.areaSummaryLines.map(l => l.length))
-    const boxW = Math.min(Math.round(W * 0.42), Math.max(240, maxLen * 7.6 + 28))
-    const boxH = input.areaSummaryLines.length * lineH + 16
-    const bx = W - M - innerPad - boxW, by = M + 56
+    const boxW = Math.min(Math.round(W * 0.46), Math.max(250, Math.round(maxLen * AR_CHAR) + 36))
+    const headH = 24
+    const boxH = headH + input.areaSummaryLines.length * lineH + 12
+    const bx = W - M - innerPad - boxW, by = M + 46
+    const cx = bx + boxW / 2
     areaBox =
-      `<rect x="${bx}" y="${by}" width="${boxW}" height="${boxH}" fill="#ffffff" fill-opacity="0.92" stroke="#111" stroke-width="1.4"/>` +
+      `<rect x="${bx}" y="${by}" width="${boxW}" height="${boxH}" fill="#ffffff" fill-opacity="0.95" stroke="#111" stroke-width="1.4"/>` +
+      `<text x="${cx}" y="${by + 17}" text-anchor="middle" font-size="13.5" font-weight="bold" font-family="Arial" text-decoration="underline">المساحات</text>` +
+      `<line x1="${bx}" y1="${by + headH}" x2="${bx + boxW}" y2="${by + headH}" stroke="#111" stroke-width="0.8"/>` +
       input.areaSummaryLines.map((l, i) =>
-        `<text x="${bx + boxW - 10}" y="${by + 16 + i * lineH}" text-anchor="end" direction="rtl" font-size="12.5" font-family="Arial" font-weight="bold">${escXml(l)}</text>`
+        `<text x="${cx}" y="${by + headH + 14 + i * lineH}" text-anchor="middle" font-size="12" font-family="Arial" font-weight="bold">${escXml(l)}</text>`
       ).join('')
   }
 
@@ -281,20 +287,22 @@ export function buildPlanSvg(input: PlanInput): PlanResult | null {
       swatch: (x: number, y: number) => legendSwatch(x, y, `pv-pat-${i}`, f.symbol),
     })),
   ]
-  // — largeur DYNAMIQUE : le swatch (26px) reste à l'intérieur du cadre et le
-  //   libellé le plus long détermine la largeur (fin du débordement observé) —
+  // — المفتاح: المربع داخل الإطار يسارا والنص مُوسَّط في المنطقة المتبقية —
+  const AR_CHAR_LEG = 8.2
   const legLineH = 22
   const maxLegLen = Math.max(...legendEntries.map(e => e.label.length))
-  const legW = Math.min(340, Math.max(200, maxLegLen * 7.4 + 64))
+  const SWATCH_ZONE = 26 + 18            // المربع + فراغ
+  const legW = Math.min(Math.round(W * 0.42), Math.max(210, Math.round(maxLegLen * AR_CHAR_LEG) + SWATCH_ZONE + 24))
   const legH = legendEntries.length * legLineH + 34
   const lx = W - M - innerPad - legW, ly = H - M - innerPad - legH
+  const textCx = lx + SWATCH_ZONE + (legW - SWATCH_ZONE - 12) / 2
   const legend =
-    `<rect x="${lx}" y="${ly}" width="${legW}" height="${legH}" fill="#fff" fill-opacity="0.95" stroke="#111" stroke-width="1.4"/>` +
-    `<text x="${lx + legW - 10}" y="${ly + 20}" text-anchor="end" direction="rtl" font-size="14" font-weight="bold" font-family="Arial">المفتاح</text>` +
+    `<rect x="${lx}" y="${ly}" width="${legW}" height="${legH}" fill="#fff" fill-opacity="0.96" stroke="#111" stroke-width="1.4"/>` +
+    `<text x="${lx + legW / 2}" y="${ly + 20}" text-anchor="middle" font-size="14" font-weight="bold" font-family="Arial" text-decoration="underline">المفتاح</text>` +
     legendEntries.map((e, i) => {
       const y = ly + 32 + i * legLineH
       return e.swatch(lx + 8, y) +
-        `<text x="${lx + legW - 10}" y="${y + 11}" text-anchor="end" direction="rtl" font-size="12" font-family="Arial">${escXml(e.label)}</text>`
+        `<text x="${textCx}" y="${y + 11}" text-anchor="middle" font-size="12" font-family="Arial">${escXml(e.label)}</text>`
     }).join('')
 
   const title = `رسم بياني للقطعة المترامى عليها موضوع المحضر عدد ${input.pvNum}`
@@ -303,7 +311,7 @@ export function buildPlanSvg(input: PlanInput): PlanResult | null {
   <defs>${defs.join('')}</defs>
   <rect x="6" y="6" width="${W - 12}" height="${H - 12}" fill="none" stroke="#111" stroke-width="2.2"/>
   <rect x="${M}" y="${M}" width="${W - 2 * M}" height="${H - 2 * M}" fill="none" stroke="#111" stroke-width="1.2"/>
-  <text x="${W / 2}" y="${M + 30}" text-anchor="middle" direction="rtl" font-size="19" font-weight="bold" font-family="Arial" text-decoration="underline">${escXml(title)}</text>
+  <text x="${W / 2}" y="${M + 30}" text-anchor="middle" font-size="19" font-weight="bold" font-family="Arial" text-decoration="underline">${escXml(title)}</text>
   ${gridLines.join('')}${gridLabels.join('')}
   ${featPaths.join('')}
   ${parcelPaths}

@@ -7,6 +7,9 @@ import { loadInfractions, updateInfractionStatut, updateInfraction, deleteInfrac
 import {
   FEATURE_PRESETS, LEGAL_SUGGESTIONS, HEURE_SUGGESTIONS, DELIM_OPTIONS, INVESTIGATION_STEP_LABELS,
   INFRACTION_CATALOG, CATALOG_CATEGORIES, TRANSACTION_RULES_NOTE,
+  TOP_INFRACTIONS_NORD, DAMAGE_KIND_LABELS, LOAD_UNITS, SPECIES_SUGGESTIONS,
+  renderDamage, trucksFromM3,
+  type QuickInfraction, type DamageDraft, type DamageKind,
   renderInvestigationStep, suggestLegalDescription, suggestLegalArticles, featureAreaText,
   type PVFeature, type PVSymbol, type InvestigationStep, type InvestigationStepType,
   type PVSeizure, type IdentityMode, type ConstatContextType, type DelimStatus, type PVComposeInput,
@@ -182,7 +185,7 @@ interface PVFormData {
   ha: string; are: string; ca: string; areaOverride: string
   features: PVFeature[]
   // Étape 6 — dégâts
-  degats: Array<{ type: string; quantite: string; equivalent: string }>
+  degats: DamageDraft[]
   // Étape 7 — enquête + saisie + identité
   investigationSteps: InvestigationStep[]
   seizureEnabled: boolean
@@ -224,7 +227,7 @@ const EMPTY_FORM: PVFormData = {
   contextType: 'ratissage', contextNum: '', contextDate: '', contextText: '',
   ha: '0', are: '0', ca: '0', areaOverride: '',
   features: [],
-  degats: [{ type: '', quantite: '', equivalent: '' }],
+  degats: [],
   investigationSteps: [],
   seizureEnabled: false,
   seizure: EMPTY_SEIZURE,
@@ -268,7 +271,13 @@ function recordToForm(rec: InfractionRecord): PVFormData {
     ha: String(toNum(rec.surface_hectares)), are: String(toNum(rec.surface_ares)), ca: String(toNum(rec.surface_centiares)),
     areaOverride: n?.areaOverride || '',
     features: rec.features || [],
-    degats: (rec.degats && rec.degats.length) ? rec.degats : [{ type: '', quantite: '', equivalent: '' }],
+    // السجلات القديمة {type,quantite,equivalent} → نص حر جاهز؛ الجديدة {text} كما هي
+    degats: (rec.degats || []).map((g: any, i: number) => ({
+      id: `dg_${i}`, kind: 'libre' as DamageKind,
+      text: g?.text?.trim()
+        ? g.text.trim()
+        : [g?.quantite, g?.type && `من ${g.type}`, g?.equivalent && `أي ما يعادل حوالي ${g.equivalent}`].filter(Boolean).join(' '),
+    })).filter(d => d.text),
     investigationSteps: n?.investigationSteps || [],
     seizureEnabled: !!(n?.seizure && n.seizure.items?.some(i => i.label)),
     seizure: n?.seizure || EMPTY_SEIZURE,
@@ -816,7 +825,7 @@ function buildRenderDataFromForm(form: PVFormData, pvNum: string): PVRenderData 
     ha: form.ha, are: form.are, ca: form.ca,
     areaOverride: form.areaOverride,
     features: form.features,
-    degats: form.degats,
+    degats: form.degats.map(d => ({ text: renderDamage(d) })).filter(d => d.text && !d.text.includes('...')),
     investigationSteps: form.investigationSteps,
     seizure: form.seizureEnabled ? form.seizure : null,
     identityMode: form.identityMode,
@@ -972,6 +981,17 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
   const removeFeature = (id: string) =>
     setForm(f => ({ ...f, features: f.features.filter(ft => ft.id !== id) }));
 
+  // إضافة سريعة من قائمة الجنح الأكثر تكرارا بالشمال
+  const addQuick = (q: QuickInfraction) =>
+    setForm(f => ({
+      ...f,
+      features: [...f.features, {
+        id: uid(), label: q.label, details: q.details, symbol: { ...q.symbol },
+        geojson: null, coordPoints: [], areaM2: 0, showOnPlan: true, showCoordsTable: true,
+        article: q.article, transaction: q.transaction, catalogId: q.catalogId,
+      }],
+    }));
+
   // إضافة مخالفة من الكتالوج القانوني (ظهير 1917 + الدورية 4787)
   const addFromCatalog = (it: InfractionCatalogItem) =>
     setForm(f => ({
@@ -991,12 +1011,14 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
     setFeature(ft.id, { details });
   };
 
-  // ── Dégâts ──
-  const addDegat = () => setForm(f => ({ ...f, degats: [...f.degats, { type: '', quantite: '', equivalent: '' }] }));
-  const setDegat = (idx: number, field: string, val: string) => setForm(f => ({
-    ...f, degats: f.degats.map((d, i) => i === idx ? { ...d, [field]: val } : d)
+  // ── Dégâts (مهيكلة حسب النوع) ──
+  const addDamage = (kind: DamageKind) => setForm(f => ({
+    ...f, degats: [...f.degats, { id: uid(), kind, girth: 'sup', loadUnit: LOAD_UNITS[0], text: '' } as DamageDraft],
   }));
-  const removeDegat = (idx: number) => setForm(f => ({ ...f, degats: f.degats.filter((_, i) => i !== idx) }));
+  const setDamage = (id: string, patch: Partial<DamageDraft>) => setForm(f => ({
+    ...f, degats: f.degats.map(d => d.id === id ? { ...d, ...patch } : d),
+  }));
+  const removeDamage = (id: string) => setForm(f => ({ ...f, degats: f.degats.filter(d => d.id !== id) }));
 
   // ── Étapes d'enquête ──
   const addStep = (type: InvestigationStepType) =>
@@ -1047,7 +1069,7 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
     surface_hectares: toNum(form.ha),
     surface_ares: toNum(form.are),
     surface_centiares: toNum(form.ca),
-    degats: form.degats,
+    degats: form.degats.map(d => ({ text: renderDamage(d) })).filter(d => d.text),
     contrevenant_prenom: form.firstName,
     contrevenant_nom: form.lastName,
     contrevenant_nasab: form.filiation,
@@ -1462,12 +1484,20 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                 <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 ${form.accompanimentEnabled ? 'bg-emerald-600 border-emerald-600' : 'border-stone-300'}`}>
                   {form.accompanimentEnabled && <Check className="size-3 text-white" />}
                 </div>
-                <span className="text-sm font-bold text-stone-700">هل كان معكم مرافق في المعاينة؟ (رئيس المركز لا يحضر دائماً)</span>
+                <span className="text-sm font-bold text-stone-700">هل كان معكم مرافق في المعاينة؟</span>
               </label>
               {form.accompanimentEnabled && (
-                <FormInputLight label="صفة/اسم المرافق كما سيُكتب في المحضر" type="text"
-                  placeholder="رئيس مركز حماية الغابات للمضيق الفنيدق"
-                  value={form.accompaniment} onChange={(e: any) => set('accompaniment', e.target.value)} />
+                <>
+                  <FormInputLight label="صفة/اسم المرافق كما سيُكتب في المحضر" type="text"
+                    placeholder="رئيس مركز حماية الغابات للمضيق الفنيدق"
+                    value={form.accompaniment} onChange={(e: any) => set('accompaniment', e.target.value)} />
+                  <div className="flex flex-wrap gap-1.5">
+                    {['رئيس مركز حماية الغابات للمضيق الفنيدق', 'رئيس مركز التنمية الغابوية', 'أعوان القوة المساعدة', 'ممثل السلطة المحلية', 'أعوان الدرك الملكي'].map(a => (
+                      <button key={a} type="button" onClick={() => set('accompaniment', a)}
+                        className="px-2 py-1 bg-stone-100 border border-stone-200 text-stone-600 text-[11px] rounded-lg hover:bg-emerald-50 hover:text-emerald-700 transition-colors">{a}</button>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
 
@@ -1516,6 +1546,19 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
               </div>
               <div className="mt-4">
                 <FormInputLight label="صيغة المساحة في النص (اختياري — يعوّض التوليد الآلي)" type="text" placeholder="مثال: 05 هكتار 64 آر 90 سنتيار / 4448 متر مربع" value={form.areaOverride} onChange={(e: any) => set('areaOverride', e.target.value)} />
+              </div>
+            </div>
+
+            {/* ⚡ الأكثر تكرارا بالشمال — إضافة بنقرة واحدة */}
+            <div className="p-4 bg-emerald-700 rounded-xl shadow-sm">
+              <h4 className="text-xs font-bold text-emerald-100 mb-3">⚡ الأكثر تكرارا بالشمال — إضافة بنقرة واحدة</h4>
+              <div className="flex flex-wrap gap-2">
+                {TOP_INFRACTIONS_NORD.map(q => (
+                  <button key={q.label} type="button" onClick={() => addQuick(q)}
+                    className="px-3.5 py-2 bg-white text-emerald-900 text-xs font-bold rounded-lg hover:bg-emerald-50 transition-colors shadow-sm">
+                    + {q.label}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -1621,28 +1664,113 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
           </div>
         )}
 
-        {/* ══ STEP 6 — الأضرار ══ */}
+        {/* ══ STEP 6 — الأضرار (مهيكلة حسب النوع بقوالب الجمل الرسمية) ══ */}
         {currentStep === 6 && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <h3 className="text-lg font-serif italic text-emerald-900 mb-6">تقدير الأضرار</h3>
+            <h3 className="text-lg font-serif italic text-emerald-900 mb-2">تقدير الأضرار</h3>
+            <p className="text-xs text-stone-500">اختر نوع الضرر فتظهر خاناته الدقيقة، وتُولَّد الجملة الرسمية تلقائيا مع معاينتها.</p>
+
+            <div className="p-4 bg-white border border-stone-200 rounded-xl shadow-sm">
+              <h4 className="text-xs font-bold text-stone-500 mb-3">إضافة ضرر حسب نوعه</h4>
+              <div className="flex flex-wrap gap-2">
+                {(Object.keys(DAMAGE_KIND_LABELS) as DamageKind[]).map(k => (
+                  <button key={k} type="button" onClick={() => addDamage(k)}
+                    className="px-3 py-1.5 bg-stone-100 border border-stone-200 text-stone-700 text-xs font-bold rounded-lg hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200 transition-colors">
+                    + {DAMAGE_KIND_LABELS[k]}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {form.degats.length === 0 && (
+              <div className="text-center py-8 text-stone-400 text-sm border-2 border-dashed border-stone-200 rounded-xl">لم يُضف أي ضرر بعد</div>
+            )}
+
             {form.degats.map((d, idx) => (
-              <div key={idx} className="p-6 bg-white border border-stone-200 rounded-xl space-y-6 shadow-sm">
+              <div key={d.id} className="p-5 bg-white border border-stone-200 rounded-xl space-y-4 shadow-sm">
                 <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-bold text-stone-500">الضرر {idx + 1}</h4>
-                  {form.degats.length > 1 && (
-                    <button type="button" onClick={() => removeDegat(idx)} className="p-1.5 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="size-4" /></button>
-                  )}
+                  <h4 className="text-sm font-bold text-emerald-900">{idx + 1}. {DAMAGE_KIND_LABELS[d.kind]}</h4>
+                  <button type="button" onClick={() => removeDamage(d.id)} className="p-1.5 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="size-4" /></button>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <FormInputLight label="الكمية" type="text" placeholder="4000 متر مكعب" value={d.quantite} onChange={(e: any) => setDegat(idx, 'quantite', e.target.value)} />
-                  <FormInputLight label="نوع الضرر" type="text" placeholder="الأتربة المستخرجة / عود التنقفة / دابة من الأعشاب" value={d.type} onChange={(e: any) => setDegat(idx, 'type', e.target.value)} />
-                  <FormInputLight label="المعادل" type="text" placeholder="133 حمولة شاحنة" value={d.equivalent} onChange={(e: any) => setDegat(idx, 'equivalent', e.target.value)} />
+
+                {d.kind === 'atterb' && (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                    <FormInputLight label="الحجم (متر مكعب)" type="number" placeholder="2000" value={d.m3 || ''} onChange={(e: any) => setDamage(d.id, { m3: e.target.value })} />
+                    <FormInputLight label="حمولات الشاحنة" type="number" placeholder="67" value={d.trucks || ''} onChange={(e: any) => setDamage(d.id, { trucks: e.target.value })} />
+                    <button type="button" onClick={() => setDamage(d.id, { trucks: trucksFromM3(d.m3 || '') })} disabled={!d.m3}
+                      className="flex items-center justify-center gap-1.5 px-3 py-3 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold rounded-xl hover:bg-emerald-100 transition-colors disabled:opacity-40">
+                      <Wand2 className="size-3.5" /> حساب آلي (÷ 30 م³/شاحنة)
+                    </button>
+                  </div>
+                )}
+
+                {d.kind === 'herbe' && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <FormInputLight label="عدد الحمولات" type="number" placeholder="05" value={d.loads || ''} onChange={(e: any) => setDamage(d.id, { loads: e.target.value })} />
+                    <div className="space-y-2 text-right">
+                      <label className="text-xs font-bold text-stone-600">نوع الحمولة</label>
+                      <select dir="rtl" value={d.loadUnit || LOAD_UNITS[0]} onChange={e => setDamage(d.id, { loadUnit: e.target.value })}
+                        className="w-full bg-white border border-stone-200 rounded-xl px-4 py-3 text-sm outline-none focus:border-emerald-500 appearance-none shadow-sm">
+                        {LOAD_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {d.kind === 'bois' && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <FormInputLight label="الكمية (ستير)" type="number" placeholder="02" value={d.steres || ''} onChange={(e: any) => setDamage(d.id, { steres: e.target.value })} />
+                  </div>
+                )}
+
+                {d.kind === 'coupe' && (
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <FormInputLight label="عدد الأشجار" type="number" placeholder="10" value={d.nbTrees || ''} onChange={(e: any) => setDamage(d.id, { nbTrees: e.target.value })} />
+                      <div className="space-y-2 text-right">
+                        <label className="text-xs font-bold text-stone-600">النوع</label>
+                        <input type="text" dir="rtl" list={`species-${d.id}`} value={d.species || ''} onChange={e => setDamage(d.id, { species: e.target.value })}
+                          placeholder="الصنوبر" className="w-full bg-white border border-stone-200 rounded-xl px-4 py-3 text-sm outline-none focus:border-emerald-500 shadow-sm" />
+                        <datalist id={`species-${d.id}`}>{SPECIES_SUGGESTIONS.map(sp => <option key={sp} value={sp} />)}</datalist>
+                      </div>
+                      <div className="space-y-2 text-right">
+                        <label className="text-xs font-bold text-stone-600">محيط الدائرة على علو متر من سطح الأرض</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          {([['sup', 'يفوق 2 دسم'], ['inf', 'لا يتجاوز 2 دسم']] as Array<['sup' | 'inf', string]>).map(([v, l]) => (
+                            <button key={v} type="button" onClick={() => setDamage(d.id, { girth: v })}
+                              className={`px-2 py-3 rounded-xl border text-xs font-bold transition-colors ${d.girth === v ? 'bg-emerald-50 border-emerald-300 text-emerald-800' : 'bg-white border-stone-200 text-stone-600'}`}>
+                              {l}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <FormInputLight label="معادل عود الصناعة (م³)" type="number" placeholder="30" value={d.m3Industrie || ''} onChange={(e: any) => setDamage(d.id, { m3Industrie: e.target.value })} />
+                      <FormInputLight label="معادل عود التدفئة (ستير)" type="number" placeholder="10" value={d.steresChauffe || ''} onChange={(e: any) => setDamage(d.id, { steresChauffe: e.target.value })} />
+                    </div>
+                  </>
+                )}
+
+                {d.kind === 'libre' && (
+                  <textarea rows={2} dir="rtl" value={d.text || ''} onChange={e => setDamage(d.id, { text: e.target.value })}
+                    placeholder="اكتب جملة الضرر كما ستظهر في المحضر"
+                    className="w-full bg-stone-50 border border-stone-200 rounded-xl p-3 text-sm outline-none focus:border-emerald-500 resize-none" />
+                )}
+
+                <div className="flex items-start justify-between gap-3">
+                  <p className="flex-1 text-[11px] text-stone-600 leading-relaxed border-r-2 border-emerald-300 pr-2">
+                    <span className="font-bold">معاينة الجملة: </span>{renderDamage(d) || '—'}
+                  </p>
+                  {d.kind !== 'libre' && (
+                    <button type="button" onClick={() => setDamage(d.id, { kind: 'libre', text: renderDamage(d) })}
+                      className="flex-shrink-0 px-2.5 py-1.5 bg-stone-100 border border-stone-200 text-stone-600 text-[10px] font-bold rounded-lg hover:bg-stone-200 transition-colors">
+                      تحويل لنص حر للتعديل
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
-            <button type="button" onClick={addDegat} className="w-full py-4 border-2 border-dashed border-stone-200 text-stone-500 hover:border-emerald-300 hover:text-emerald-700 hover:bg-emerald-50/50 rounded-xl transition-colors font-bold text-sm bg-stone-50/50">
-              + إضافة ضرر آخر
-            </button>
           </div>
         )}
 
@@ -1815,8 +1943,16 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                   <FormInputLight label="اسم الأم" type="text" placeholder="اسم الأم الكامل" value={form.motherName} onChange={(e: any) => set('motherName', e.target.value)} />
                   <FormInputLight label="مكان الازدياد" type="text" placeholder="بتطوان / في هولندا أمستردام" value={form.birthPlace} onChange={(e: any) => set('birthPlace', e.target.value)} />
                   <FormInputLight label="رقم بطاقة التعريف" type="text" placeholder="L489342" value={form.cin} onChange={(e: any) => set('cin', e.target.value)} />
-                  <FormInputLight label="تاريخ الازدياد" type="date" value={form.dob} onChange={(e: any) => set('dob', e.target.value)} />
-                  <FormInputLight label="المهنة" type="text" placeholder="فلاح / مسير شركة" value={form.profession} onChange={(e: any) => set('profession', e.target.value)} />
+                  <DateSelect label="تاريخ الازدياد" value={form.dob} onChange={iso => set('dob', iso)} />
+                  <div className="space-y-2 text-right w-full">
+                    <FormInputLight label="المهنة" type="text" placeholder="فلاح / مسير شركة" value={form.profession} onChange={(e: any) => set('profession', e.target.value)} />
+                    <div className="flex flex-wrap gap-1.5">
+                      {['فلاح', 'بناء', 'تاجر', 'عامل', 'مسير شركة', 'بدون مهنة', 'متقاعد'].map(pr => (
+                        <button key={pr} type="button" onClick={() => set('profession', pr)}
+                          className="px-2 py-1 bg-stone-100 border border-stone-200 text-stone-600 text-[11px] rounded-lg hover:bg-emerald-50 hover:text-emerald-700 transition-colors">{pr}</button>
+                      ))}
+                    </div>
+                  </div>
                   <FormInputLight label="الأبناء (اختياري)" type="text" placeholder="وله ابناء حسب تصريحه" value={form.enfants} onChange={(e: any) => set('enfants', e.target.value)} />
                 </div>
                 <div className="p-6 bg-stone-50 border border-stone-200 rounded-xl space-y-6">
@@ -2103,6 +2239,54 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between items-center py-2 border-b border-stone-100 last:border-0">
       <span className="text-stone-500 font-medium">{label}</span>
       <span className="text-stone-800 font-mono font-medium">{value || '—'}</span>
+    </div>
+  );
+}
+
+
+/** منتقي تاريخ ثلاثي (سنة تنازلية من الحاضر إلى 1930 ، ثم الشهر ، ثم اليوم) —
+ *  أسرع بكثير من input type=date لمواليد الأربعينات والخمسينات.
+ *  يقرأ/يكتب ISO yyyy-mm-dd ويضبط اليوم تلقائيا على حدود الشهر المختار. */
+function DateSelect({ label, value, onChange, fromYear = 1930 }: {
+  label: string; value: string; onChange: (iso: string) => void; fromYear?: number;
+}) {
+  const parse = (v: string) => {
+    const [a, b, c] = (v || '').split('-').map(n => parseInt(n, 10));
+    return { y: a || 0, m: b || 0, d: c || 0 };
+  };
+  const [st, setSt] = useState(parse(value));
+  useEffect(() => { setSt(parse(value)); }, [value]);
+
+  const nowY = new Date().getFullYear();
+  const years: number[] = []; for (let yy = nowY; yy >= fromYear; yy--) years.push(yy);
+  const months = ['يناير', 'فبراير', 'مارس', 'أبريل', 'ماي', 'يونيو', 'يوليوز', 'غشت', 'شتنبر', 'أكتوبر', 'نونبر', 'دجنبر'];
+  const maxDay = st.y && st.m ? new Date(st.y, st.m, 0).getDate() : 31;
+
+  const upd = (patch: Partial<{ y: number; m: number; d: number }>) => {
+    const n = { ...st, ...patch };
+    if (n.y && n.m) { const mx = new Date(n.y, n.m, 0).getDate(); if (n.d > mx) n.d = mx; }
+    setSt(n);
+    if (n.y && n.m && n.d) onChange(`${n.y}-${String(n.m).padStart(2, '0')}-${String(n.d).padStart(2, '0')}`);
+  };
+
+  const cls = 'w-full bg-white border border-stone-200 rounded-xl px-2 py-3 text-sm outline-none focus:border-emerald-500 appearance-none shadow-sm text-center';
+  return (
+    <div className="space-y-2 text-right w-full">
+      <label className="text-xs font-bold text-stone-600">{label}</label>
+      <div className="grid grid-cols-3 gap-2" dir="rtl">
+        <select dir="rtl" className={cls} value={st.y || ''} onChange={e => upd({ y: parseInt(e.target.value, 10) || 0 })}>
+          <option value="">السنة</option>
+          {years.map(yy => <option key={yy} value={yy}>{yy}</option>)}
+        </select>
+        <select dir="rtl" className={cls} value={st.m || ''} onChange={e => upd({ m: parseInt(e.target.value, 10) || 0 })}>
+          <option value="">الشهر</option>
+          {months.map((mn, i) => <option key={mn} value={i + 1}>{mn}</option>)}
+        </select>
+        <select dir="rtl" className={cls} value={st.d || ''} onChange={e => upd({ d: parseInt(e.target.value, 10) || 0 })}>
+          <option value="">اليوم</option>
+          {Array.from({ length: maxDay }, (_, i) => i + 1).map(dd => <option key={dd} value={dd}>{dd}</option>)}
+        </select>
+      </div>
     </div>
   );
 }
