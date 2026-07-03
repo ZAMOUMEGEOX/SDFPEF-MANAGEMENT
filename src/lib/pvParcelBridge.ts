@@ -59,10 +59,27 @@ export function wgs84ToLambert(lat: number, lng: number): { x: number; y: number
   return { x, y }
 }
 
+/** Lambert → WGS84 (pour centrer la carte du Domaine Forestier sur le lieu). */
+export function lambertToWgs84(x: number, y: number): { lat: number; lng: number } {
+  const [lng, lat] = proj4('EPSG:26191', 'EPSG:4326', [x, y]) as [number, number]
+  return { lat, lng }
+}
+
+/** Centre demandé pour la carte : DomaineForestier le lit au montage et fait
+ *  flyTo dessus (voir snippet d'intégration). */
+export interface MapFlyTo { lat: number; lng: number; zoom?: number }
+function setFlyTo(center?: MapFlyTo) {
+  try {
+    if (center) sessionStorage.setItem('anef_map_flyto', JSON.stringify({ zoom: 17, ...center }))
+    else sessionStorage.removeItem('anef_map_flyto')
+  } catch {}
+}
+
 /** Demande à la carte le dessin de la PARCELLE GLOBALE du PV.
  *  id volontairement vide : l'écriture domaine.parcels se fera après save. */
-export function requestParcelPickForPV(ref: string): void {
+export function requestParcelPickForPV(ref: string, center?: MapFlyTo): void {
   try {
+    setFlyTo(center)
     sessionStorage.removeItem(FEATURE_TARGET_KEY) // livraison destinée à la parcelle globale
     sessionStorage.setItem(RETURN_KEY, '1')       // au retour → rouvrir le brouillon PV
     sessionStorage.setItem('anef_parcel_target', JSON.stringify({ kind: 'pv' as const, id: '', ref }))
@@ -74,8 +91,9 @@ export function requestParcelPickForPV(ref: string): void {
 
 /** Demande à la carte le dessin de la géométrie d'UNE ENTITÉ (infraction).
  *  La carte suit le protocole inchangé ; le PV route la livraison via featureId. */
-export function requestParcelPickForFeature(ref: string, featureId: string, featureLabel: string): void {
+export function requestParcelPickForFeature(ref: string, featureId: string, featureLabel: string, center?: MapFlyTo): void {
   try {
+    setFlyTo(center)
     sessionStorage.setItem(FEATURE_TARGET_KEY, featureId)
     sessionStorage.setItem(RETURN_KEY, '1')
     sessionStorage.setItem('anef_parcel_target', JSON.stringify({ kind: 'pv' as const, id: '', ref: `${ref} — ${featureLabel}` }))
@@ -211,4 +229,21 @@ export function areaToHaAreCa(areaM2: number): { ha: string; are: string; ca: st
   const are = Math.floor((a % 10000) / 100)
   const ca = Math.round(a % 100)
   return { ha: String(ha), are: String(are).padStart(2, '0'), ca: String(ca).padStart(2, '0') }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Routage retour : dès qu'une parcelle destinée à un PV est livrée, on émet
+// 'anef:open-police' (différé d'un tick pour passer APRÈS toute navigation
+// que ferait la carte). Le shell doit mapper cet événement sur la section
+// Police Forestière — une seule ligne, snippet fourni.
+// ─────────────────────────────────────────────────────────────
+if (typeof window !== 'undefined' && !(window as any).__anefPvBridgeInit) {
+  ;(window as any).__anefPvBridgeInit = true
+  window.addEventListener('parcel:delivered', () => {
+    try {
+      if (sessionStorage.getItem(RETURN_KEY)) {
+        setTimeout(() => window.dispatchEvent(new CustomEvent('anef:open-police')), 0)
+      }
+    } catch {}
+  })
 }

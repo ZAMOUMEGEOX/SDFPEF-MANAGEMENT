@@ -31,14 +31,19 @@ export interface PVFeature {
   areaM2: number                // 0 si inconnu
   showOnPlan: boolean           // apparaît sur le plan + légende
   showCoordsTable: boolean      // sa table de coordonnées apparaît en page 2
+  // — métadonnées légales (catalogue Dahir 10/10/1917 + circulaire 4787) —
+  article?: string              // « 34 » / « 46-47-55 »
+  transaction?: string          // « 60% بعد إخلاء المكان » / « غير قابلة للتصالح »
+  catalogId?: string
 }
 
 export type InvestigationStepType =
   | 'transfert_domicile'    // انتقال إلى محل السكن بعد إخبارية
-  | 'rencontre_declaration' // التقاء بشخص + تصريحه
+  | 'rencontre_declaration' // التقاء بالمخالف + تصريحه
   | 'presentation_spontanee'// تقدم المعني من تلقاء نفسه بعين المكان
   | 'coordination_surete'   // التنسيق مع مصالح الأمن للهوية الكاملة
-  | 'avertissement'         // إخباره بأن ما قام به مخالف للقوانين الغابوية
+  | 'coordination_autorite' // التنسيق مع السلطة المحلية (قائد/شيخ/مقدم)
+  | 'avertissement'         // التصريح للمخالف بالمخالفة وإنذاره
   | 'source_information'    // مصدرنا الإخباري أفاد بأن...
   | 'libre'                 // فقرة حرة
 
@@ -243,6 +248,80 @@ export const LEGAL_SUGGESTIONS = [
   'صيد وحيازة طيور محمية بواسطة أدوات وآلات ممنوعة داخل محمية وحيازتها والاتجار فيها',
 ]
 
+
+// ──────────────────────────────────────────────────────
+// 4-ter) CATALOGUE DES INFRACTIONS — ظهير 10/10/1917 + الدورية 4787
+//   كل عنصر يحمل: الفصل، الوصف، الغرامة، الحبس، عقوبات أخرى، ومعيار التصالح.
+//   يُستعمل في خطوة «المخالفات» لإضافة مخالفة موثقة قانونيا بنقرة واحدة.
+// ──────────────────────────────────────────────────────
+export interface InfractionCatalogItem {
+  id: string
+  article: string
+  category: string
+  label: string
+  fine: string
+  prison: string
+  extra: string
+  transaction: string        // « 40% » / « 60% بعد إخلاء المكان » / « غير قابلة للتصالح »
+  transactionable: boolean
+  details: string            // نص السطر المقترح في المحضر
+  symbol: PVSymbol
+}
+
+const CAT_EXPLOIT = 'الاستغلال الغابوي'
+const CAT_TRAMI = 'النقل والجني والترامي'
+const CAT_COUPE = 'قطع الأشجار وإتلافها'
+const CAT_LIEGE = 'الفلين والرعي والمطارق'
+const CAT_FEU = 'النار والحريق'
+
+export const INFRACTION_CATALOG: InfractionCatalogItem[] = [
+  // ── 1) الاستغلال الغابوي (الفصول 11–15) — كلها غير قابلة للتصالح ──
+  { id: 'a11', article: '11', category: CAT_EXPLOIT, label: 'تغيير في وضع حصة الاستغلال (زيادة أشجار أو مواد أو محصولات)', fine: 'تساوي الغرامة العادية + تعويض ضعف قيمة المواد', prison: '3 إلى 15 يوما', extra: 'حجز المحصولات لأداء الغرامة والتعويضات', transaction: 'غير قابلة للتصالح', transactionable: false, details: 'تغيير في وضع حصة الاستغلال بزيادة أشجار/مواد غير مشمولة بالصفقة', symbol: { kind: 'hatch', color: '#7c3aed' } },
+  { id: 'a12', article: '12', category: CAT_EXPLOIT, label: 'الشروع في الاستغلال بدون ترخيص', fine: 'تفوق الغرامة العادية + تعويض ضعفي قيمة الشجرة حسب ثمن السمسرة', prison: '3 إلى 15 يوما', extra: 'فسخ العقدة مع مصادرة الضمانة', transaction: 'غير قابلة للتصالح', transactionable: false, details: 'الشروع في الاستغلال الغابوي بدون ترخيص', symbol: { kind: 'hatch', color: '#7c3aed' } },
+  { id: 'a13', article: '13', category: CAT_EXPLOIT, label: 'استغلال المدخرات أو الأشجار المحتفظ بها', fine: 'تساوي أو تفوق الغرامة العادية + ضعف قيمة المواد', prison: '3 إلى 15 يوما', extra: 'فسخ العقدة مع مصادرة الضمانة', transaction: 'غير قابلة للتصالح', transactionable: false, details: 'استغلال المدخرات أو الأشجار المحتفظ بها', symbol: { kind: 'hatch', color: '#7c3aed' } },
+  { id: 'a14', article: '14', category: CAT_EXPLOIT, label: 'عدم احترام بنود دفتر التحملات أو عقد البيع بالتراضي', fine: '400 - 4800 درهم', prison: '—', extra: '—', transaction: 'غير قابلة للتصالح', transactionable: false, details: 'عدم احترام بنود دفتر التحملات العامة والخاصة أو عقد البيع بالتراضي', symbol: { kind: 'hatch', color: '#7c3aed' } },
+  { id: 'a15', article: '15', category: CAT_EXPLOIT, label: 'استخراج المنتجات أو التفحيم قبل التعداد أو أداء الثمن', fine: '400 - 4800 درهم + عقوبات الفصلين 32 و36', prison: '—', extra: '—', transaction: 'غير قابلة للتصالح', transactionable: false, details: 'استخراج المنتجات أو التفحيم قبل التعداد أو أداء الثمن خرقا لدفتر التحملات', symbol: { kind: 'hatch', color: '#7c3aed' } },
+  // ── 2) النقل والجني والترامي ──
+  { id: 'a32', article: '32', category: CAT_TRAMI, label: 'استخراج ونقل مواد غابوية بدون إذن', fine: '10-20 د/حمولة رجل ؛ 24-60 د/بهيمة ؛ 40-120 د/عربة ؛ 300-2400 د/سيارة', prison: '5 إلى 8 أيام عند العود', extra: 'مصادرة الوسائل المستعملة ؛ التعويض ضعفين/ثلاثة عند التشديد (عود، ليل، محمية)', transaction: '40%', transactionable: true, details: 'استخراج ونقل مواد غابوية بدون إذن بواسطة ...', symbol: { kind: 'crosshatch', color: '#475569' } },
+  { id: 'a33', article: '33', category: CAT_TRAMI, label: 'جني ونقل وبيع غلة البلوط بدون ترخيص', fine: '10-20 د/حمولة رجل ؛ 40-240 د/دابة ؛ 60-360 د/عربة ؛ 300-4800 د/سيارة', prison: '5 إلى 8 أيام مع التشديد', extra: 'مصادرة المحصول', transaction: '40%', transactionable: true, details: 'جني ونقل غلة البلوط بدون ترخيص خرقا للقرار الوزيري 04/09/1918', symbol: { kind: 'dots', color: '#a16207' } },
+  { id: 'a33b', article: '33 مكرر', category: CAT_TRAMI, label: 'جني البلوط من قطعة في طور التخليف', fine: 'نفس عقوبات الفصل 33', prison: '8 أيام إلى شهرين', extra: 'مصادرة المحصول', transaction: '70%', transactionable: true, details: 'جني غلة البلوط من قطعة في طور التخليف', symbol: { kind: 'dots', color: '#a16207' } },
+  { id: 'a34l', article: '34', category: CAT_TRAMI, label: 'حرث أو زرع أو غرس داخل الملك الغابوي', fine: '400 - 2400 درهم/هكتار (العود: 1000 - 4800)', prison: '8 أيام إلى شهرين', extra: 'مصادرة الأدوات ؛ إرفاق المحضر بتصميم للقطعة ؛ العود: غير قابلة للتصالح', transaction: '60% بعد إخلاء المكان', transactionable: true, details: 'الحرث/الزرع/الغرس داخل الملك الغابوي على مساحة حوالي ...', symbol: { kind: 'veg', color: '#16a34a' } },
+  { id: 'a34t', article: '34', category: CAT_TRAMI, label: 'تعشيب', fine: '400 - 2400 درهم/هكتار (العود: 1000 - 4800)', prison: '8 أيام إلى شهرين', extra: 'مصادرة الأدوات ؛ العود: غير قابلة للتصالح', transaction: '60% بعد إخلاء المكان', transactionable: true, details: 'التعشيب على مساحة حوالي ... متر مربع', symbol: { kind: 'solid', color: '#a3e635' } },
+  { id: 'a34tc', article: '34', category: CAT_TRAMI, label: 'تعشيب متبوع مباشرة بحرث أو زرع أو غرس', fine: '400 - 2400 درهم/هكتار (العود: 1000 - 4800)', prison: '8 أيام إلى شهرين', extra: 'مصادرة الأدوات ؛ العود: غير قابلة للتصالح', transaction: '70% بعد إخلاء المكان', transactionable: true, details: 'التعشيب المتبوع مباشرة بالحرث/الزرع/الغرس على مساحة حوالي ...', symbol: { kind: 'veg', color: '#65a30d' } },
+  // ── 3) التواجد المشبوه وقطع الأشجار ──
+  { id: 'a35n', article: '35', category: CAT_COUPE, label: 'التواجد ليلا داخل الغابة بآلات قطع الفرشي أو الدباغ', fine: '24 - 240 درهم', prison: '—', extra: 'مصادرة الأدوات', transaction: '30%', transactionable: true, details: 'التواجد ليلا داخل الغابة في غير المسالك المعتادة حاملا آلات قطع', symbol: { kind: 'outline', color: '#0ea5e9' } },
+  { id: 'a35r', article: '35', category: CAT_COUPE, label: 'التواجد داخل قطع إعادة التشجير أو تثبيت الكثبان', fine: '12 - 120 درهم', prison: '—', extra: 'تعويض المغروسات الضائعة أو مصاريف التثبيت', transaction: '60%', transactionable: true, details: 'التواجد داخل قطع أشغال إعادة التشجير/تثبيت الكثبان الرملية', symbol: { kind: 'outline', color: '#0ea5e9' } },
+  { id: 'a36c', article: '36', category: CAT_COUPE, label: 'قطع أو قلع أشجار (محيطها فوق 2 دسم)', fine: '12 - 1200 درهم/شجرة (قابلة للرفع لقيمة الشجرة)', prison: '—', extra: 'إرجاع المواد أو قيمتها ؛ التعويض ضعفين/ثلاثة عند التشديد', transaction: '60%', transactionable: true, details: 'قطع/قلع ... شجرة من نوع ...', symbol: { kind: 'crosshatch', color: '#166534' } },
+  { id: 'a36b', article: '36', category: CAT_COUPE, label: 'أخذ خشب معد أو منشور أو فحم', fine: '120 - 1200 درهم/ستير أو م³ أو قنطار فحم', prison: '—', extra: 'زيادة على عقوبات الفصل 14 إن اقتضى الحال', transaction: '50%', transactionable: true, details: 'أخذ خشب معد/منشور أو مواد مستخرجة منه بكمية ...', symbol: { kind: 'crosshatch', color: '#166534' } },
+  { id: 'a37j', article: '37', category: CAT_COUPE, label: 'قطع أشجار مغروسة عمرها 10 سنوات فأقل', fine: '12 - 1200 درهم/شجرة', prison: '6 أيام إلى شهرين', extra: 'إرجاع المواد أو قيمتها', transaction: '40%', transactionable: true, details: 'قطع ... شجرة مغروسة عمرها أقل من 10 سنوات', symbol: { kind: 'veg', color: '#15803d' } },
+  { id: 'a37n', article: '37', category: CAT_COUPE, label: 'قطع أشجار وشتائل طبيعية', fine: '12 - 120 درهم/شجرة', prison: '6 أيام إلى شهرين', extra: 'إرجاع المواد أو قيمتها', transaction: '50%', transactionable: true, details: 'قطع وحمل العود الحي من نوع ... على مساحة حوالي ...', symbol: { kind: 'solid', color: '#a3e635' } },
+  { id: 'a37d', article: '37', category: CAT_COUPE, label: 'أضرار بليغة، تقشير، قطع أغصان غليظة', fine: 'نفس عقوبة قطع الأشجار', prison: '6 أيام إلى شهرين', extra: 'إرجاع المواد أو قيمتها', transaction: '50%', transactionable: true, details: 'إلحاق أضرار بليغة بالأشجار (تقشير/قطع أغصان غليظة)', symbol: { kind: 'crosshatch', color: '#166534' } },
+  // ── 4) الفلين والرعي والمطارق ──
+  { id: 'a38m', article: '38', category: CAT_LIEGE, label: 'استخراج الفلين النمسي والدباغ أو نقلهما أو حيازتهما', fine: '360 - 1200 درهم/قنطار', prison: 'ممكن 8 أيام إلى شهرين', extra: 'حجز المواد والوسائل ؛ العود: أقصى المبالغ', transaction: '40%', transactionable: true, details: 'استخراج/نقل/حيازة الفلين النمسي والدباغ بكمية ...', symbol: { kind: 'dots', color: '#92400e' } },
+  { id: 'a38h', article: '38', category: CAT_LIEGE, label: 'استخراج الفلين الحلوفي', fine: '2.4 - 120 درهم/قنطار (+ الفصل 37 عند إضرار الأشجار)', prison: 'ممكن 8 أيام إلى شهرين', extra: 'حجز المواد والوسائل', transaction: '30%', transactionable: true, details: 'استخراج الفلين الحلوفي بكمية ...', symbol: { kind: 'dots', color: '#92400e' } },
+  { id: 'a39', article: '39', category: CAT_LIEGE, label: 'أخذ الفلين الملقى على الأرض', fine: '12 - 120 درهم/قنطار', prison: 'ممكن 8 أيام إلى شهرين', extra: 'حجز المواد والوسائل', transaction: '40%', transactionable: true, details: 'أخذ الفلين الملقى على الأرض بكمية ...', symbol: { kind: 'dots', color: '#92400e' } },
+  { id: 'a41a', article: '41', category: CAT_LIEGE, label: 'الرعي نهارا من طرف المنتفعين', fine: '2-9.6 د (غنم/عجل/خنزير) ؛ 4-24 د (بقر/ماعز/فرس/حمار/بغل) ؛ 20-72 د (جمل)', prison: 'عند الاقتضاء 3 إلى 15 يوما للراعي', extra: 'التعويض عن الخسائر', transaction: '40%', transactionable: true, details: 'الرعي غير المرخص بقطيع مكون من ... رأسا', symbol: { kind: 'dots', color: '#a16207' } },
+  { id: 'a41b', article: '41', category: CAT_LIEGE, label: 'الرعي من غير المنتفعين أو فوق العدد المسموح', fine: 'ضعف عقوبات الرعي العادية', prison: 'عند الاقتضاء', extra: 'التكرار: غير قابلة للتصالح', transaction: '60%', transactionable: true, details: 'الرعي من طرف غير المنتفعين بقطيع مكون من ... رأسا', symbol: { kind: 'dots', color: '#a16207' } },
+  { id: 'a41n', article: '41', category: CAT_LIEGE, label: 'الرعي ليلا أو في مناطق الأشجار الصغيرة', fine: 'أقصى العقوبات مرتين', prison: 'عند الاقتضاء', extra: 'اجتماع ظرفين: أقصى العقوبات 3 مرات (تصالح 70%)', transaction: '50%', transactionable: true, details: 'الرعي ليلا/بمنطقة أشجار صغيرة بقطيع مكون من ... رأسا', symbol: { kind: 'dots', color: '#a16207' } },
+  { id: 'a42', article: '42', category: CAT_LIEGE, label: 'رعي زائد من المشتري بالسمسرة أو خارج القسم المحدد', fine: 'عقوبات الفصل 41 (الفقرة الثانية فما يليها)', prison: 'عند الاقتضاء', extra: '—', transaction: '50%', transactionable: true, details: 'رعي عدد زائد من المواشي/خارج القسم الغابوي المحدد', symbol: { kind: 'dots', color: '#a16207' } },
+  { id: 'a43c', article: '43', category: CAT_LIEGE, label: 'تقليد المطارق الغابوية أو استعمالها زورا', fine: '—', prison: '6 أشهر إلى سنتين', extra: 'التعويض عن الخسائر', transaction: 'غير قابلة للتصالح', transactionable: false, details: 'تقليد مطارق الإدارة أو استعمال مطارق مقلدة', symbol: { kind: 'outline', color: '#dc2626' } },
+  { id: 'a43d', article: '43', category: CAT_LIEGE, label: 'إتلاف علامات المطارق', fine: '—', prison: '3 أشهر إلى سنة', extra: 'التعويض عن الخسائر', transaction: '50%', transactionable: true, details: 'إتلاف علامات المطارق الغابوية', symbol: { kind: 'outline', color: '#dc2626' } },
+  // ── 5) النار والحريق ──
+  { id: 'a4655', article: '46-47-55', category: CAT_FEU, label: 'استعمال النار خلال فترة المنع (1 يوليوز - 31 أكتوبر)', fine: '240 - 4800 درهم', prison: '6 أيام إلى 3 أشهر (عند نشوب حريق: 3 أشهر إلى عامين)', extra: 'تعويض الخسائر عند الحريق', transaction: 'غير قابلة للتصالح', transactionable: false, details: 'استعمال النار داخل الغابة أو على مسافة تقل عن 200 متر خلال فترة المنع', symbol: { kind: 'solid', color: '#ef4444' } },
+  { id: 'a4849', article: '48-49', category: CAT_FEU, label: 'الامتناع عن المشاركة في إخماد حريق رغم التعبئة', fine: '240 - 2400 درهم', prison: '5 أيام إلى 3 أشهر', extra: '—', transaction: 'غير قابلة للتصالح', transactionable: false, details: 'الامتناع دون عذر مقبول عن المشاركة في إخماد حريق الغابة', symbol: { kind: 'solid', color: '#ef4444' } },
+  { id: 'a50', article: '50', category: CAT_FEU, label: 'الرعي في مساحة محروقة قبل مرور 6 سنوات', fine: 'عقوبات الفصل 41', prison: '—', extra: '—', transaction: 'غير قابلة للتصالح', transactionable: false, details: 'مزاولة الرعي داخل مساحة أتت عليها النار قبل مرور 6 سنوات', symbol: { kind: 'dots', color: '#ef4444' } },
+  { id: 'a52', article: '52', category: CAT_FEU, label: 'معمل نار أو تخزين مواد ملتهبة دون 500 متر', fine: '1200 - 7200 درهم', prison: '—', extra: 'هدم البناء خلال 3 أشهر من صدور الحكم', transaction: 'غير قابلة للتصالح', transactionable: false, details: 'إحداث معمل تستعمل فيه النار/تخزين مواد ملتهبة على مسافة تقل عن 500 متر', symbol: { kind: 'solid', color: '#f97316' } },
+  { id: 'a53', article: '53', category: CAT_FEU, label: 'خيمة أو بناء بمواد ملتهبة دون 100 متر', fine: '120 - 1200 درهم', prison: '—', extra: 'هدم ما بني خلال الشهر الموالي للحكم', transaction: '30%', transactionable: true, details: 'نصب خيمة/تشييد بناء بمواد قابلة للاشتعال داخل الغابة أو دون 100 متر', symbol: { kind: 'dots', color: '#f97316' } },
+  { id: 'a56', article: '56', category: CAT_FEU, label: 'إيقاد النار عمدا أو محاولة إيقادها', fine: '—', prison: 'الأشغال الشاقة لمدة محدودة', extra: 'أخطر عقوبة — إخبار رئيس المركز فورا', transaction: 'غير قابلة للتصالح', transactionable: false, details: 'إيقاد النار عمدا داخل الغابة', symbol: { kind: 'solid', color: '#b91c1c' } },
+]
+
+export const CATALOG_CATEGORIES = [CAT_EXPLOIT, CAT_TRAMI, CAT_COUPE, CAT_LIEGE, CAT_FEU]
+
+/** استثناءات التصالح العامة + الشرط الخاص بالترامي (نص الدورية 4787). */
+export const TRANSACTION_RULES_NOTE =
+  'لا تصالح في: جرائم العصابات المنظمة ، تقليد/إتلاف المطارق الغابوية ، جنح إيقاد النار ، ومخالفات الاستغلال (الفصول 11-15). ' +
+  'الترامي على الملك الغابوي: لا تصالح إلا بعد إفراغ المكان وإدلاء المترامي بتعهد مكتوب مصادق على إمضائه يقر فيه بحق الدولة ويلتزم بالكف عن الاستغلال.'
+
 // ──────────────────────────────────────────────────────
 // 4-bis) TYPOLOGIE LÉGALE (Dahir 10/10/1917) → génération du وصف الجنحة
 //   Ordre canonique conforme aux modèles officiels et à la typologie du Dahir :
@@ -330,8 +409,10 @@ export function renderInvestigationStep(s: InvestigationStep): string {
       return `تقدم إلينا بعين المكان شخص قدم نفسه على أنه المسؤول عن هذا الترامي ${s.text ? '، حيث ' + s.text : ''} ، فأخبرناه أن ما قام به يعد مخالفا للقوانين الغابوية الجاري بها العمل ، وأنه ستتم متابعته وتحرير تقرير جنحة في حقه ، ثم طلبنا منه الإدلاء بهويته الكاملة.`
     case 'coordination_surete':
       return `بتاريخ ${d} ، وبالتنسيق مع مصالح ولاية أمن تطوان ، تم تزويدنا بالهوية الكاملة للمخالف.`
+    case 'coordination_autorite':
+      return `وبتنسيق مع السلطة المحلية${s.name ? ' ممثلة في ' + s.name : ''}${s.date ? ' بتاريخ ' + arDateShort(s.date) : ''} ، ${nz(s.text, 'تم ربط الاتصال بالمخالف وإشعاره بضرورة الامتثال')}.`
     case 'avertissement':
-      return 'فأخبرناه أن ما قام به يعد مخالفا للقوانين الغابوية الجاري بها العمل وأنه سيتم اتخاذ الإجراءات القانونية اللازمة في حقه ، وأمرناه بالتخلي عن القطعة وإيقاف الأشغال بها.'
+      return `${s.text && s.text.trim() ? 'وقد صرحنا للمخالف بموضوع الجنح المنسوبة إليه ، حيث ' + s.text.trim() + ' ، و' : 'ف'}أخبرناه أن ما قام به يعد مخالفا للقوانين الغابوية الجاري بها العمل وأنه سيتم اتخاذ الإجراءات القانونية اللازمة في حقه ، وأمرناه بالتخلي عن القطعة وإيقاف الأشغال بها.`
     case 'source_information':
       return `قادتنا الأبحاث إلى أن المسؤول عن هذا الترامي هو المدعو "${nz(s.name)}" ${s.text ? '، حيث ' + s.text : ''}.`
     case 'libre':
@@ -344,7 +425,8 @@ export const INVESTIGATION_STEP_LABELS: Record<InvestigationStepType, string> = 
   rencontre_declaration: 'الالتقاء بشخص وتصريحه',
   presentation_spontanee: 'تقدم المعني بالأمر من تلقاء نفسه بعين المكان',
   coordination_surete: 'التنسيق مع مصالح الأمن (الهوية الكاملة)',
-  avertissement: 'إخباره بالمخالفة وأمره بإيقاف الأشغال',
+  coordination_autorite: 'التنسيق مع السلطة المحلية',
+  avertissement: 'التصريح للمخالف بالمخالفة وإنذاره',
   source_information: 'مصدر إخباري حدد المسؤول',
   libre: 'فقرة حرة',
 }
@@ -436,7 +518,7 @@ export function composePV(inp: PVComposeInput, parcelCoordPoints: PVCoordPoint[]
 
   // — Paragraphe 2 : témoignage (heure, forêt, canton, délimitation, lieu) —
   const witness =
-    `نشهد انه حوالي الساعة ${nz(inp.heureText)} ، بالغابة ${nz(inp.foret)} ، قسم ${nz(inp.canton)} ` +
+    `نشهد انه حوالي الساعة ${nz(inp.heureText)} ، بـ${nz(inp.foret)} ، قسم ${nz(inp.canton)} ` +
     `${delimPhrase(inp)} بموجب المرسوم الوزاري عدد ${nz(inp.decreeNum)} المؤرخ في ${nz(inp.decreeDate)} ، ` +
     `بالضبط بالمكان المسمى "${nz(inp.placeName)}" التابع ترابيا لجماعة وقيادة ${nz(inp.commune)} ، ${nz(inp.province)}.`
 
@@ -462,7 +544,7 @@ export function composePV(inp: PVComposeInput, parcelCoordPoints: PVCoordPoint[]
 
   // — Clôture : حرر / حرر وختم selon complétude de l'identité —
   const sealed = inp.identityMode === 'complete'
-  const closingLine = `${sealed ? 'حرر وختم' : 'حرر'} بـ${nz(inp.redactionLieu, residence)} في ${isoDashed(inp.dateRedaction)}`
+  const closingLine = `${sealed ? 'حرر وختم' : 'حرر'} بـ${nz(inp.redactionLieu, 'المضيق')} في ${isoDashed(inp.dateRedaction)}`
 
   const overlapLine = inp.includeOverlapLine && inp.overlap
     ? {

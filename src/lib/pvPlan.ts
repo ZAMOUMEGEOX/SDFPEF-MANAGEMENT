@@ -257,17 +257,19 @@ export function buildPlanSvg(input: PlanInput): PlanResult | null {
     <text x="${(barX + barPx + 26).toFixed(1)}" y="${barY + 7}" text-anchor="middle" font-size="12">متر</text>
   </g>`
 
-  // — encadré des surfaces (haut, côté droit RTL) —
+  // — encadré des surfaces (haut-droite) : largeur DYNAMIQUE selon la plus
+  //   longue ligne pour que rien ne déborde du cadre —
   let areaBox = ''
   if (input.areaSummaryLines.length) {
     const lineH = 19
-    const boxW = 330
+    const maxLen = Math.max(...input.areaSummaryLines.map(l => l.length))
+    const boxW = Math.min(Math.round(W * 0.42), Math.max(240, maxLen * 7.6 + 28))
     const boxH = input.areaSummaryLines.length * lineH + 16
     const bx = W - M - innerPad - boxW, by = M + 56
     areaBox =
       `<rect x="${bx}" y="${by}" width="${boxW}" height="${boxH}" fill="#ffffff" fill-opacity="0.92" stroke="#111" stroke-width="1.4"/>` +
       input.areaSummaryLines.map((l, i) =>
-        `<text x="${bx + boxW - 10}" y="${by + 16 + i * lineH}" text-anchor="end" direction="rtl" font-size="13.5" font-family="Arial" font-weight="bold">${escXml(l)}</text>`
+        `<text x="${bx + boxW - 10}" y="${by + 16 + i * lineH}" text-anchor="end" direction="rtl" font-size="12.5" font-family="Arial" font-weight="bold">${escXml(l)}</text>`
       ).join('')
   }
 
@@ -279,17 +281,20 @@ export function buildPlanSvg(input: PlanInput): PlanResult | null {
       swatch: (x: number, y: number) => legendSwatch(x, y, `pv-pat-${i}`, f.symbol),
     })),
   ]
+  // — largeur DYNAMIQUE : le swatch (26px) reste à l'intérieur du cadre et le
+  //   libellé le plus long détermine la largeur (fin du débordement observé) —
   const legLineH = 22
-  const legW = 250
-  const legH = legendEntries.length * legLineH + 30
+  const maxLegLen = Math.max(...legendEntries.map(e => e.label.length))
+  const legW = Math.min(340, Math.max(200, maxLegLen * 7.4 + 64))
+  const legH = legendEntries.length * legLineH + 34
   const lx = W - M - innerPad - legW, ly = H - M - innerPad - legH
   const legend =
     `<rect x="${lx}" y="${ly}" width="${legW}" height="${legH}" fill="#fff" fill-opacity="0.95" stroke="#111" stroke-width="1.4"/>` +
     `<text x="${lx + legW - 10}" y="${ly + 20}" text-anchor="end" direction="rtl" font-size="14" font-weight="bold" font-family="Arial">المفتاح</text>` +
     legendEntries.map((e, i) => {
-      const y = ly + 30 + i * legLineH
-      return e.swatch(lx + 10, y) +
-        `<text x="${lx + legW - 10}" y="${y + 11}" text-anchor="end" direction="rtl" font-size="12.5" font-family="Arial">${escXml(e.label)}</text>`
+      const y = ly + 32 + i * legLineH
+      return e.swatch(lx + 8, y) +
+        `<text x="${lx + legW - 10}" y="${y + 11}" text-anchor="end" direction="rtl" font-size="12" font-family="Arial">${escXml(e.label)}</text>`
     }).join('')
 
   const title = `رسم بياني للقطعة المترامى عليها موضوع المحضر عدد ${input.pvNum}`

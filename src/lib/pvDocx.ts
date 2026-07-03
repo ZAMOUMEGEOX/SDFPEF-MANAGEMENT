@@ -40,6 +40,29 @@ interface PreparedPV {
   planH: number
 }
 
+// ── Formulaire officiel « إعلام واستدعاء » comme IMAGE (public/images) ──
+const CONVOCATION_URLS = ['/images/convocation.png', '/images/convocation.jpg', '/images/convocation.jpeg']
+interface ConvImage { bytes: Uint8Array; width: number; height: number; type: 'png' | 'jpg' }
+
+async function loadConvocationImage(): Promise<ConvImage | null> {
+  if (typeof document === 'undefined') return null
+  for (const url of CONVOCATION_URLS) {
+    try {
+      const res = await fetch(url, { cache: 'force-cache' })
+      if (!res.ok) continue
+      const blob = await res.blob()
+      const objUrl = URL.createObjectURL(blob)
+      try {
+        const img = new Image()
+        await new Promise<void>((ok, ko) => { img.onload = () => ok(); img.onerror = () => ko(new Error('img')); img.src = objUrl })
+        const buf = new Uint8Array(await blob.arrayBuffer())
+        return { bytes: buf, width: img.naturalWidth || 700, height: img.naturalHeight || 1100, type: url.endsWith('.png') ? 'png' : 'jpg' }
+      } finally { URL.revokeObjectURL(objUrl) }
+    } catch { /* essayer l'URL suivante */ }
+  }
+  return null
+}
+
 function prepare(inp: PVComposeInput, parcelCoordPoints: PVCoordPoint[], parcelGeojson: any | null): PreparedPV {
   const c = composePV(inp, parcelCoordPoints)
   const plan = buildPlanSvg({
@@ -132,7 +155,16 @@ function midColumn(c: ComposedPV): (Paragraph | Table)[] {
   return out
 }
 
-function summonsColumn(c: ComposedPV): Paragraph[] {
+function summonsColumn(c: ComposedPV, conv: ConvImage | null): Paragraph[] {
+  if (conv) {
+    // largeur cellule ≈ 4200 twips ≈ 280px ; hauteur au ratio, plafonnée à la page
+    const targetW = 266
+    const targetH = Math.min(672, Math.round(targetW * (conv.height / conv.width)))
+    return [new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [new ImageRun({ data: conv.bytes, transformation: { width: targetW, height: targetH }, type: conv.type })],
+    })]
+  }
   const out: Paragraph[] = [
     par([run(c.summonsTitle, { bold: true, size: 18, underline: true })], { align: AlignmentType.CENTER, after: 120 }),
   ]
@@ -144,7 +176,7 @@ function summonsColumn(c: ComposedPV): Paragraph[] {
   return out
 }
 
-function page1Table(c: ComposedPV): Table {
+function page1Table(c: ComposedPV, conv: ConvImage | null): Table {
   const cell = (children: (Paragraph | Table)[], leftBorder: boolean) =>
     new TableCell({
       verticalAlign: VerticalAlign.TOP,
@@ -164,7 +196,7 @@ function page1Table(c: ComposedPV): Table {
         children: [
           cell(bodyColumn(c), false),   // gauche
           cell(midColumn(c), true),     // milieu (séparateur à sa gauche)
-          cell(summonsColumn(c), true), // droite (séparateur à sa gauche)
+          cell(summonsColumn(c, conv), true), // droite (séparateur à sa gauche)
         ],
       }),
     ],
@@ -262,6 +294,7 @@ async function page2Design(p: PreparedPV): Promise<(Paragraph | Table)[]> {
 }
 
 async function renderDocx(p: PreparedPV): Promise<Blob> {
+  const conv = await loadConvocationImage()
   const doc = new Document({
     styles: { default: { document: { run: { font: FONT, size: 16 } } } },
     sections: [{
@@ -272,7 +305,7 @@ async function renderDocx(p: PreparedPV): Promise<Blob> {
         },
       },
       children: [
-        page1Table(p.c),
+        page1Table(p.c, conv),
         ...(await page2Design(p)),
       ],
     }],
@@ -346,6 +379,7 @@ function renderHtml(p: PreparedPV): string {
   .desc-t { text-align:center; font-weight:bold; text-decoration:underline; font-size:10.5pt; margin:2mm 0 1mm; }
   .desc-v { text-align:center; font-weight:bold; font-size:12pt; margin:0 0 2mm; }
   .midfoot { font-size:7.5pt; color:#555; text-align:justify; margin-top:2mm; }
+  .conv { display:block; width:100%; height:auto; max-height:186mm; object-fit:contain; }
   .sum-t { text-align:center; font-weight:bold; font-size:12pt; text-decoration:underline; margin:0 0 2.5mm; }
   .sline { font-size:8.5pt; line-height:1.7; margin:0; }
   .attest { text-align:center; font-weight:bold; font-size:9pt; margin:2mm 0; }
@@ -371,10 +405,13 @@ function renderHtml(p: PreparedPV): string {
     <div class="topbar"><span class="ind">الرقم الاستدلالي ${esc(c.indicatif)}</span><span class="ind" style="font-weight:bold">${esc(c.title)}</span></div>
     <table class="grid"><tr>
       <td class="col c-sum">
-        <div class="sum-t">${esc(c.summonsTitle)}</div>
-        ${summons}
-        <div class="attest">${esc(c.attestation)}</div>
-        <div class="sumfoot">${esc(c.summonsFootnote)}</div>
+        <img class="conv" src="${CONVOCATION_URLS[0]}" alt="" onerror="this.remove();var t=document.getElementById('convtxt');if(t)t.removeAttribute('hidden')" />
+        <div id="convtxt" hidden>
+          <div class="sum-t">${esc(c.summonsTitle)}</div>
+          ${summons}
+          <div class="attest">${esc(c.attestation)}</div>
+          <div class="sumfoot">${esc(c.summonsFootnote)}</div>
+        </div>
       </td>
       <td class="col c-mid">
         ${ministry}

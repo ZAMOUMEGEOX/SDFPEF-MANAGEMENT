@@ -6,16 +6,18 @@ import 'leaflet/dist/leaflet.css';
 import { loadInfractions, updateInfractionStatut, updateInfraction, deleteInfraction, formatPVNumber, toNum, type InfractionRecord, type InfractionKPIs, type PVNarrativeJson } from '@/lib/pv';
 import {
   FEATURE_PRESETS, LEGAL_SUGGESTIONS, HEURE_SUGGESTIONS, DELIM_OPTIONS, INVESTIGATION_STEP_LABELS,
+  INFRACTION_CATALOG, CATALOG_CATEGORIES, TRANSACTION_RULES_NOTE,
   renderInvestigationStep, suggestLegalDescription, suggestLegalArticles, featureAreaText,
   type PVFeature, type PVSymbol, type InvestigationStep, type InvestigationStepType,
   type PVSeizure, type IdentityMode, type ConstatContextType, type DelimStatus, type PVComposeInput,
+  type InfractionCatalogItem,
 } from '@/lib/pvModel';
 import { generatePVDocx, generatePVPdf, previewPVHtml, type PVRenderData } from '@/lib/pvDocx';
 import { exportChevauchementDocx } from '@/lib/forestDocx';
 import {
   requestParcelPickForPV, requestParcelPickForFeature, onParcelDelivered, consumePendingParcel,
   consumeFeatureTarget, consumeReturnToPV, hasPendingParcel, savePVParcel, extractCoordPoints,
-  areaToHaAreCa, showPVParcelOnMap, wgs84ToLambert, type DeliveredParcel,
+  areaToHaAreCa, showPVParcelOnMap, wgs84ToLambert, lambertToWgs84, type DeliveredParcel,
 } from '@/lib/pvParcelBridge';
 
 const customIcon = new L.Icon({
@@ -66,6 +68,91 @@ const uid = () =>
   (typeof crypto !== 'undefined' && (crypto as any).randomUUID)
     ? (crypto as any).randomUUID()
     : `id_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+
+
+// ══════════════════════════════════════════════════════
+// FORÊTS & CANTONS depuis la couche forest_limits (public/assets/data)
+// حقل foret بالفرنسية → ترجمة حرفية بالعربية (قاموس + ترجمة صوتية احتياطية)
+// ══════════════════════════════════════════════════════
+const FOREST_LIMITS_URLS = ['/assets/data/forest_limits.geojson', '/assets/data/forest_limits.json']
+
+const FORET_AR_DICT: Record<string, string> = {
+  'haouz': 'الحوز', 'el haouz': 'الحوز', 'azfa': 'عزفة', 'azla': 'أزلا',
+  'mellalyen': 'الملاليين', 'melaliyen': 'الملاليين', 'mellaliyen': 'الملاليين', 'mellalien': 'الملاليين',
+  'jbel dersa': 'جبل درسة', 'jbeldersa': 'جبل درسة', 'dersa': 'درسة',
+  'belyounech': 'بليونش', 'beliounech': 'بليونش', 'bellyounech': 'بليونش', 'beliyounech': 'بليونش',
+  'haloufa': 'الحلوفا', 'el haloufa': 'الحلوفا', 'halloufa': 'الحلوفا',
+  'koudia taifour': 'كدية الطيفور', 'koudiat taifour': 'كدية الطيفور', 'koudiet taifour': 'كدية الطيفور',
+  'beni hassan': 'بني حسان', 'beni idder': 'بني يدر', 'beni yder': 'بني يدر',
+  'anjra': 'أنجرة', 'anjera': 'أنجرة', 'oued laou': 'واد لاو', 'oued lihoud': 'واد ليهود',
+  'zinat': 'زينات', 'zaitoune': 'الزيتون', 'zaytoune': 'الزيتون', 'kalaa': 'القلعة',
+  'ain lahsen': 'عين لحصن', 'ain lahcen': 'عين لحصن', 'souk lqolla': 'سوق القلة',
+  'boujdad': 'بوجداد', 'khemis anjra': 'خميس أنجرة', 'taghramt': 'تغرامت', 'fahs': 'الفحص',
+  'bab taza': 'باب تازة', 'talembote': 'تالمبوط', 'bouhachem': 'بوهاشم', 'tazia': 'التازية',
+}
+
+// ترجمة صوتية احتياطية لأي اسم غير موجود في القاموس (رقمنات أولا ثم أحرف)
+const TRANSLIT_DIGRAPHS: Array<[RegExp, string]> = [
+  [/ch/g, 'ش'], [/kh/g, 'خ'], [/gh/g, 'غ'], [/sh/g, 'ش'], [/th/g, 'ث'], [/dh/g, 'ذ'], [/ou/g, 'و'], [/aa/g, 'ا'], [/ee/g, 'ي'], [/oo/g, 'و'],
+]
+const TRANSLIT_CHARS: Record<string, string> = {
+  a: 'ا', b: 'ب', c: 'ك', d: 'د', e: '', f: 'ف', g: 'گ', h: 'ه', i: 'ي', j: 'ج', k: 'ك', l: 'ل',
+  m: 'م', n: 'ن', o: 'و', p: 'ب', q: 'ق', r: 'ر', s: 'س', t: 'ت', u: 'و', v: 'ف', w: 'و', x: 'كس', y: 'ي', z: 'ز',
+}
+function transliterate(fr: string): string {
+  const key = (fr || '').trim().toLowerCase()
+  if (!key) return ''
+  if (FORET_AR_DICT[key]) return FORET_AR_DICT[key]
+  return key.split(/\s+/).map(word => {
+    if (FORET_AR_DICT[word]) return FORET_AR_DICT[word]
+    let w = word
+    TRANSLIT_DIGRAPHS.forEach(([re, ar]) => { w = w.replace(re, ar) })
+    return w.split('').map(ch => TRANSLIT_CHARS[ch] ?? ch).join('')
+  }).join(' ')
+}
+
+/** الاسم الرسمي داخل نص المحضر: « الغابة المخزنية X » أو « غابة جبل … ». */
+function foretOfficialAr(ar: string): string {
+  const core = ar.trim()
+  if (!core) return ''
+  return core.startsWith('جبل') ? `غابة ${core}` : `الغابة المخزنية ${core}`
+}
+
+interface ForestEntry { fr: string; ar: string; official: string; cantons: Array<{ fr: string; ar: string }> }
+let FOREST_CACHE: ForestEntry[] | null = null
+
+async function loadForestIndex(): Promise<ForestEntry[]> {
+  if (FOREST_CACHE) return FOREST_CACHE
+  for (const url of FOREST_LIMITS_URLS) {
+    try {
+      const res = await fetch(url, { cache: 'force-cache' })
+      if (!res.ok) continue
+      const gj = await res.json()
+      const feats: any[] = gj?.features || []
+      const map = new Map<string, Set<string>>()
+      for (const f of feats) {
+        const props = f?.properties || {}
+        const foret = String(props.foret ?? props.Foret ?? props.FORET ?? '').trim()
+        const canton = String(props.canton ?? props.Canton ?? props.CANTON ?? '').trim()
+        if (!foret) continue
+        if (!map.has(foret)) map.set(foret, new Set())
+        if (canton) map.get(foret)!.add(canton)
+      }
+      FOREST_CACHE = [...map.entries()]
+        .map(([fr, cs]) => {
+          const ar = transliterate(fr)
+          return {
+            fr, ar, official: foretOfficialAr(ar),
+            cantons: [...cs].sort().map(cfr => ({ fr: cfr, ar: transliterate(cfr) })),
+          }
+        })
+        .sort((a, b) => a.fr.localeCompare(b.fr))
+      return FOREST_CACHE
+    } catch { /* essayer l'URL suivante */ }
+  }
+  FOREST_CACHE = []
+  return FOREST_CACHE
+}
 
 // ══════════════════════════════════════════════════════
 // TYPES DU FORMULAIRE
@@ -122,7 +209,7 @@ const EMPTY_FORM: PVFormData = {
   pvNum: '', pvYear: '', brigade: 'BM',
   indicatif: '8 58', serie: 'السلسلة 8 رقم 2',
   dateConstat: new Date().toISOString().split('T')[0], heureText: '',
-  dateRedaction: new Date().toISOString().split('T')[0], redactionLieu: '',
+  dateRedaction: new Date().toISOString().split('T')[0], redactionLieu: 'المضيق',
   nbAgents: 1, activeAgent: 1,
   agent1: { nom: '', grade: 'تقني متخصص للمياه والغابات', residence: '' },
   agent2: { nom: '', grade: 'تقني للمياه والغابات', residence: '' },
@@ -771,6 +858,18 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
   const [mapCoords, setMapCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [forests, setForests] = useState<ForestEntry[]>([]);
+
+  useEffect(() => { loadForestIndex().then(setForests).catch(() => {}); }, []);
+
+  // مركز التحليق نحو موقع المخالفة على خريطة الملك الغابوي:
+  // النقطة المختارة يدويا ، وإلا تحويل عكسي لإحداثيات Lambert المدخلة.
+  const centerForPick = (): { lat: number; lng: number } | undefined => {
+    if (mapCoords) return mapCoords;
+    const x = toNum(form.coordX), y = toNum(form.coordY);
+    if (x > 0 && y > 0) { try { return lambertToWgs84(x, y); } catch {} }
+    return undefined;
+  };
 
   const totalSteps = 8;
   const steps = [
@@ -872,6 +971,17 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
 
   const removeFeature = (id: string) =>
     setForm(f => ({ ...f, features: f.features.filter(ft => ft.id !== id) }));
+
+  // إضافة مخالفة من الكتالوج القانوني (ظهير 1917 + الدورية 4787)
+  const addFromCatalog = (it: InfractionCatalogItem) =>
+    setForm(f => ({
+      ...f,
+      features: [...f.features, {
+        id: uid(), label: it.label, details: it.details, symbol: { ...it.symbol },
+        geojson: null, coordPoints: [], areaM2: 0, showOnPlan: true, showCoordsTable: true,
+        article: it.article, transaction: it.transaction, catalogId: it.id,
+      }],
+    }));
 
   // insère la surface calculée dans le texte du tiret (remplace « ... »)
   const injectAreaInDetails = (ft: PVFeature) => {
@@ -1198,13 +1308,41 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
             <h3 className="text-lg font-serif italic text-emerald-900 mb-6">الموقع والغابة</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2 text-right">
-                <label className="text-xs font-bold text-stone-600">الغابة</label>
-                <select dir="rtl" value={form.foret} onChange={e => set('foret', e.target.value)} className="w-full bg-white border border-stone-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-stone-800 outline-none appearance-none shadow-sm">
+                <label className="text-xs font-bold text-stone-600">الغابة (من طبقة forest_limits — ترجمة حرفية)</label>
+                <select dir="rtl"
+                  value={forests.find(f => form.foret === f.official)?.fr ?? ''}
+                  onChange={e => {
+                    const entry = forests.find(f => f.fr === e.target.value);
+                    if (entry) { set('foret', entry.official); set('canton', ''); }
+                  }}
+                  className="w-full bg-white border border-stone-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-stone-800 outline-none appearance-none shadow-sm">
                   <option value="">— اختر الغابة —</option>
-                  {FORETS_LIST.map(f => <option key={f} value={f}>{f}</option>)}
+                  {forests.map(f => <option key={f.fr} value={f.fr}>{f.ar} — {f.fr}</option>)}
+                  {forests.length === 0 && FORETS_LIST.map(f => <option key={f} value="">{f}</option>)}
                 </select>
+                <input type="text" dir="rtl" value={form.foret} onChange={e => set('foret', e.target.value)}
+                  placeholder="كما ستُكتب في المحضر (قابلة للتعديل)"
+                  className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-emerald-500" />
               </div>
-              <FormInputLight label="القسم (Canton)" type="text" placeholder="قسم الملاليين..." value={form.canton} onChange={(e: any) => set('canton', e.target.value)} />
+              <div className="space-y-2 text-right">
+                <label className="text-xs font-bold text-stone-600">القسم (Canton)</label>
+                <select dir="rtl"
+                  value={(forests.find(f => form.foret === f.official)?.cantons || []).find(c => form.canton === c.ar)?.fr ?? ''}
+                  onChange={e => {
+                    const entry = forests.find(f => form.foret === f.official);
+                    const c = entry?.cantons.find(x => x.fr === e.target.value);
+                    if (c) set('canton', c.ar);
+                  }}
+                  className="w-full bg-white border border-stone-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-stone-800 outline-none appearance-none shadow-sm">
+                  <option value="">— اختر القسم —</option>
+                  {(forests.find(f => form.foret === f.official)?.cantons || []).map(c => (
+                    <option key={c.fr} value={c.fr}>{c.ar} — {c.fr}</option>
+                  ))}
+                </select>
+                <input type="text" dir="rtl" value={form.canton} onChange={e => set('canton', e.target.value)}
+                  placeholder="كما سيُكتب في المحضر (قابل للتعديل)"
+                  className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-emerald-500" />
+              </div>
             </div>
 
             <div className="p-6 border border-stone-200 rounded-xl space-y-6 bg-white shadow-sm">
@@ -1254,7 +1392,7 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                     <p className="text-xs text-stone-500 mt-1">ارسم حدود القطعة الإجمالية ليُحسب المركز والمساحة والتداخل تلقائياً. هندسة كل مخالفة تُرسم لاحقاً في خطوة «المخالفات».</p>
                   </div>
                 </div>
-                <button type="button" onClick={() => requestParcelPickForPV(pvNum)}
+                <button type="button" onClick={() => requestParcelPickForPV(pvNum, centerForPick())}
                   className="flex items-center justify-center gap-2 px-5 py-3 bg-emerald-700 text-white rounded-xl text-xs uppercase tracking-widest font-bold hover:bg-emerald-800 transition-colors shadow-md shadow-emerald-900/10 whitespace-nowrap">
                   <Crosshair className="size-4" /> رسم القطعة الإجمالية
                 </button>
@@ -1297,7 +1435,7 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
 
             <div className="mt-4 rounded-xl overflow-hidden h-[300px] border border-stone-200 relative">
               <div className="absolute inset-0 z-10 p-2 flex flex-col items-start justify-between pointer-events-none">
-                <span className="text-xs bg-white text-stone-700 px-3 py-1.5 rounded-lg shadow-md font-medium border border-stone-100 mt-2 ml-2 self-end">أو انقر يدوياً لتحديد نقطة مركزية — تُحوَّل تلقائياً إلى Lambert</span>
+                <span className="text-xs bg-white text-stone-700 px-3 py-1.5 rounded-lg shadow-md font-medium border border-stone-100 mt-2 ml-2 self-end">انقر لتحديد مركز المخالفة (قمر اصطناعي + مراجع) — يُحوَّل إلى Lambert وتتمركز عليه خريطة الملك الغابوي عند الرسم</span>
                 {mapCoords && (
                   <div className="bg-white/90 backdrop-blur border border-stone-200 p-3 rounded-xl shadow-lg mb-2 mr-2 text-xs flex gap-4 pointer-events-auto">
                     <div><span className="text-stone-500 block mb-1">X (Lambert)</span><span className="font-mono text-stone-800">{form.coordX}</span></div>
@@ -1305,8 +1443,9 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                   </div>
                 )}
               </div>
-              <MapContainer center={[35.5785, -5.3684]} zoom={12} className="h-full w-full z-0 cursor-crosshair">
-                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap" />
+              <MapContainer center={[35.5785, -5.3684]} zoom={13} className="h-full w-full z-0 cursor-crosshair">
+                <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" attribution="Esri &mdash; World Imagery" maxZoom={19} />
+                <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}" attribution="Esri &mdash; References" maxZoom={19} />
                 <LocationPicker />
               </MapContainer>
             </div>
@@ -1380,9 +1519,12 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
               </div>
             </div>
 
-            {/* إضافة من القوالب */}
+            {/* الكتالوج القانوني: ظهير 10/10/1917 + الدورية 4787 */}
+            <CatalogPanel onAdd={addFromCatalog} />
+
+            {/* إضافة من القوالب السريعة (صيغ النماذج الرسمية) */}
             <div className="p-4 bg-white border border-stone-200 rounded-xl shadow-sm">
-              <h4 className="text-xs font-bold text-stone-500 mb-3 flex items-center gap-2"><ListPlus className="size-4" /> إضافة مخالفة (قوالب جاهزة من النماذج الرسمية)</h4>
+              <h4 className="text-xs font-bold text-stone-500 mb-3 flex items-center gap-2"><ListPlus className="size-4" /> قوالب سريعة (صيغ جاهزة من المحاضر النموذجية)</h4>
               <div className="flex flex-wrap gap-2">
                 {FEATURE_PRESETS.map(p => (
                   <button key={p.label} type="button" onClick={() => addFeature(p)}
@@ -1406,7 +1548,15 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                       placeholder="تسمية المخالفة (تظهر في المفتاح ولوائح الإحداثيات)"
                       className="bg-transparent border-b border-stone-200 focus:border-emerald-500 outline-none text-sm font-bold text-stone-800 px-1 py-1 min-w-[220px]" />
                   </div>
-                  <button type="button" onClick={() => removeFeature(ft.id)} className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="size-4" /></button>
+                  <div className="flex items-center gap-2">
+                    {ft.article && <span className="px-2 py-0.5 bg-stone-100 border border-stone-200 text-stone-600 text-[10px] font-bold rounded-full whitespace-nowrap">الفصل {ft.article}</span>}
+                    {ft.transaction && (
+                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full whitespace-nowrap border ${ft.transaction.includes('%') ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                        {ft.transaction.includes('%') ? `تصالح ${ft.transaction}` : ft.transaction}
+                      </span>
+                    )}
+                    <button type="button" onClick={() => removeFeature(ft.id)} className="p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="size-4" /></button>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -1441,7 +1591,7 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                       className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2.5 text-xs font-mono outline-none focus:border-emerald-500" />
                   </div>
                   <div className="flex items-end gap-2">
-                    <button type="button" onClick={() => requestParcelPickForFeature(pvNum, ft.id, ft.label || `مخالفة ${idx + 1}`)}
+                    <button type="button" onClick={() => requestParcelPickForFeature(pvNum, ft.id, ft.label || `مخالفة ${idx + 1}`, centerForPick())}
                       className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-emerald-700 text-white rounded-lg text-xs font-bold hover:bg-emerald-800 transition-colors">
                       <Crosshair className="size-3.5" /> رسم على الخريطة
                     </button>
@@ -1501,9 +1651,60 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <h3 className="text-lg font-serif italic text-emerald-900 mb-6">إجراءات البحث والهوية</h3>
 
+            {/* أسئلة البحث السريعة — boîte de dialogue موجهة */}
+            <div className="p-5 bg-emerald-50/50 border border-emerald-200 rounded-xl space-y-4">
+              <h4 className="text-sm font-bold text-emerald-900">أسئلة البحث السريعة — أجب بنعم/لا وتُدرج الفقرة تلقائيا في المحضر</h4>
+              {([
+                { id: 'q_autorite', type: 'coordination_autorite' as InvestigationStepType, q: 'هل تم التنسيق مع السلطة المحلية (قائد/شيخ/مقدم)؟', fields: ['name', 'date', 'text'] },
+                { id: 'q_rencontre', type: 'rencontre_declaration' as InvestigationStepType, q: 'هل تم الالتقاء بالمخالف؟ (كيف وماذا صرّح)', fields: ['name', 'text'] },
+                { id: 'q_decl', type: 'avertissement' as InvestigationStepType, q: 'هل تم التصريح للمخالف بالمخالفة وإنذاره؟', fields: ['text'] },
+              ]).map(qq => {
+                const st = form.investigationSteps.find(x => x.id === qq.id);
+                return (
+                  <div key={qq.id} className="p-3 bg-white border border-stone-200 rounded-xl space-y-3">
+                    <label className="flex items-center gap-3 cursor-pointer"
+                      onClick={() => st
+                        ? removeStep(qq.id)
+                        : setForm(f => ({ ...f, investigationSteps: [...f.investigationSteps, { id: qq.id, type: qq.type, date: '', name: '', agents: '', text: '' }] }))}>
+                      <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 ${st ? 'bg-emerald-600 border-emerald-600' : 'border-stone-300'}`}>
+                        {st && <Check className="size-3 text-white" />}
+                      </div>
+                      <span className="text-sm font-bold text-stone-700">{qq.q}</span>
+                    </label>
+                    {st && (
+                      <>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                          {qq.fields.includes('name') && (
+                            <FormInputLight label={qq.id === 'q_autorite' ? 'ممثل السلطة (اختياري)' : 'اسم المخالف/المسمى'} type="text"
+                              placeholder={qq.id === 'q_autorite' ? 'شيخ دوار ...' : '"فلان الفلاني"'}
+                              value={st.name || ''} onChange={(e: any) => setStep(qq.id, { name: e.target.value })} />
+                          )}
+                          {qq.fields.includes('date') && (
+                            <FormInputLight label="التاريخ (اختياري)" type="date" value={st.date || ''} onChange={(e: any) => setStep(qq.id, { date: e.target.value })} />
+                          )}
+                          {qq.fields.includes('text') && (
+                            <div className={qq.fields.includes('name') ? '' : 'md:col-span-3'}>
+                              <FormInputLight
+                                label={qq.id === 'q_rencontre' ? 'كيف تم اللقاء وماذا صرّح' : qq.id === 'q_decl' ? 'تفصيل التصريح (اختياري)' : 'التفصيل (اختياري)'}
+                                type="text"
+                                placeholder={qq.id === 'q_rencontre' ? 'أجاب أنه هو المسؤول عن القطعة...' : 'اكتب التفصيل'}
+                                value={st.text || ''} onChange={(e: any) => setStep(qq.id, { text: e.target.value })} />
+                            </div>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-stone-500 leading-relaxed border-r-2 border-emerald-300 pr-2">
+                          <span className="font-bold text-stone-600">معاينة: </span>{renderInvestigationStep(st)}
+                        </p>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
             {/* باني خطوات البحث */}
             <div className="p-5 bg-white border border-stone-200 rounded-xl shadow-sm space-y-4">
-              <h4 className="text-sm font-bold text-stone-700">سرد البحث — أضف الخطوات بترتيب وقوعها (كل محضر له ظروفه)</h4>
+              <h4 className="text-sm font-bold text-stone-700">خطوات إضافية للبحث — بترتيب وقوعها (كل محضر له ظروفه)</h4>
               <div className="flex flex-wrap gap-2">
                 {(Object.keys(INVESTIGATION_STEP_LABELS) as InvestigationStepType[]).map(t => (
                   <button key={t} type="button" onClick={() => addStep(t)}
@@ -1513,7 +1714,7 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                 ))}
               </div>
 
-              {form.investigationSteps.map((s, idx) => (
+              {form.investigationSteps.filter(x => !x.id.startsWith('q_')).map((s, idx) => (
                 <div key={s.id} className="p-4 bg-stone-50 border border-stone-200 rounded-xl space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-emerald-800">{idx + 1}. {INVESTIGATION_STEP_LABELS[s.type]}</span>
@@ -1544,8 +1745,8 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                   </p>
                 </div>
               ))}
-              {form.investigationSteps.length === 0 && (
-                <p className="text-xs text-stone-400 text-center py-3">لم تُضف أي خطوة — المحضر سيقتصر على المعاينة</p>
+              {form.investigationSteps.filter(x => !x.id.startsWith('q_')).length === 0 && (
+                <p className="text-xs text-stone-400 text-center py-3">لا خطوات إضافية — تُستعمل أجوبة الأسئلة السريعة أعلاه</p>
               )}
             </div>
 
@@ -1760,6 +1961,65 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
 // ══════════════════════════════════════════════════════
 // HELPERS
 // ══════════════════════════════════════════════════════
+
+/** لوحة كتالوج الجنح الغابوية: بحث + تصنيف + إضافة بنقرة، مع بيان التصالح. */
+function CatalogPanel({ onAdd }: { onAdd: (it: InfractionCatalogItem) => void }) {
+  const [open, setOpen] = useState(true);
+  const [q, setQ] = useState('');
+  const [cat, setCat] = useState('all');
+  const items = useMemo(() => INFRACTION_CATALOG.filter(it =>
+    (cat === 'all' || it.category === cat) &&
+    (!q.trim() || `${it.label} ${it.article} ${it.details}`.includes(q.trim()))
+  ), [q, cat]);
+  return (
+    <div className="bg-white border border-emerald-200 rounded-xl shadow-sm overflow-hidden">
+      <button type="button" onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-5 py-3.5 bg-emerald-50/70 hover:bg-emerald-50 transition-colors">
+        <span className="text-sm font-bold text-emerald-900 flex items-center gap-2"><Scale className="size-4" /> كتالوج الجنح الغابوية — ظهير 10/10/1917 والدورية 4787</span>
+        <ChevronLeft className={`size-4 text-emerald-700 transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
+      </button>
+      {open && (
+        <div className="p-4 space-y-3">
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800 leading-relaxed">{TRANSACTION_RULES_NOTE}</div>
+          <div className="flex flex-col md:flex-row gap-2">
+            <input type="text" dir="rtl" value={q} onChange={e => setQ(e.target.value)} placeholder="ابحث: تعشيب، رعي، فلين، 34 ..."
+              className="flex-1 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-emerald-500" />
+            <div className="flex flex-wrap gap-1.5">
+              <button type="button" onClick={() => setCat('all')}
+                className={`px-2.5 py-1.5 text-[11px] font-bold rounded-lg border transition-colors ${cat === 'all' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'}`}>الكل</button>
+              {CATALOG_CATEGORIES.map(c => (
+                <button key={c} type="button" onClick={() => setCat(c)}
+                  className={`px-2.5 py-1.5 text-[11px] font-bold rounded-lg border transition-colors ${cat === c ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'}`}>{c}</button>
+              ))}
+            </div>
+          </div>
+          <div className="max-h-72 overflow-y-auto divide-y divide-stone-100 border border-stone-100 rounded-lg">
+            {items.map(it => (
+              <div key={it.id} className="flex items-start justify-between gap-3 p-3 hover:bg-stone-50/70 transition-colors">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-bold text-stone-800">{it.label}</span>
+                    <span className="px-2 py-0.5 bg-stone-100 border border-stone-200 text-stone-600 text-[10px] font-bold rounded-full">الفصل {it.article}</span>
+                    <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full border ${it.transactionable ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                      {it.transactionable ? `تصالح ${it.transaction}` : 'غير قابلة للتصالح'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-stone-500 mt-1">الغرامة: {it.fine}{it.prison !== '—' ? ` ؛ الحبس: ${it.prison}` : ''}{it.extra !== '—' ? ` ؛ ${it.extra}` : ''}</p>
+                </div>
+                <button type="button" onClick={() => onAdd(it)}
+                  className="flex-shrink-0 flex items-center gap-1 px-3 py-1.5 bg-emerald-700 text-white text-xs font-bold rounded-lg hover:bg-emerald-800 transition-colors">
+                  <Plus className="size-3.5" /> إضافة
+                </button>
+              </div>
+            ))}
+            {items.length === 0 && <p className="text-center text-xs text-stone-400 py-6">لا نتائج مطابقة</p>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToggleChip({ checked, onClick, label }: { checked: boolean; onClick: () => void; label: string }) {
   return (
     <label className="flex items-center gap-2 cursor-pointer" onClick={onClick}>
