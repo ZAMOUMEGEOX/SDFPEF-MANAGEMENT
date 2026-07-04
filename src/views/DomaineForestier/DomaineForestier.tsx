@@ -212,7 +212,14 @@ const GeomanSetup = ({ setCustomLayers, onLayerImported }: { setCustomLayers: an
       drawPolyline: true, drawRectangle: true, drawPolygon: true, drawText: false,
       editMode: true, dragMode: true, cutPolygon: false, removalMode: true,
     });
-    map.pm.setGlobalOptions({ measurements: { measurement: true, displayFormat: 'metric' } });
+    // snapping بين المخالفات المرسومة (تفادي التداخل والفراغات) + إبقاء كل شكل مرسوم ظاهرا
+    map.pm.setGlobalOptions({
+      measurements: { measurement: true, displayFormat: 'metric' },
+      snappable: true,
+      snapDistance: 20,
+      snapSegment: true,
+      allowSelfIntersection: false,
+    });
     map.pm.setLang('fr');
 
     const handleCreate = (e: any) => {
@@ -238,10 +245,13 @@ const GeomanSetup = ({ setCustomLayers, onLayerImported }: { setCustomLayers: an
         content += `</div>`;
         layer.bindPopup(content);
         setTimeout(() => { if (layer.openPopup) layer.openPopup(); }, 100);
-        setCustomLayers((prev: any) => [...prev, { id, name: `Couche dessinée (${typeName})`, type: 'drawn', visible: true, color: '#3388ff', leafletLayer: layer, geojson }]);
-        // Run chevauchement analysis on drawn polygons
-        if ((e.shape === 'Polygon' || e.shape === 'Rectangle') && onLayerImported) {
-          onLayerImported(id, `Couche dessinée (${typeName})`, geojson);
+        const geomType = e.shape === 'Marker' || e.shape === 'CircleMarker' ? 'point'
+          : e.shape === 'Line' ? 'line' : 'polygon';
+        setCustomLayers((prev: any) => [...prev, { id, name: `Couche dessinée (${typeName})`, type: 'drawn', visible: true, color: '#3388ff', leafletLayer: layer, geojson, geomType }]);
+        // كل شكل (مضلع/خط/نقطة) يُغذّي lastImportedLayer ليصبح قابلا للإرفاق ؛
+        // تحليل التداخل يُجرى للمضلعات فقط (يُتخطى للخطوط والنقاط).
+        if (onLayerImported) {
+          onLayerImported(id, `Couche dessinée (${typeName})`, geojson, { geomType });
         }
       } catch (err) { console.error("Error creating layer", err); }
     };
@@ -500,6 +510,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 
   // ── Last imported layer for document generation ───────────────────────────
   const [lastImportedLayer, setLastImportedLayer] = useState<{
+    geomType?: 'polygon' | 'line' | 'point';
     id: string; name: string; geojson: any;
     chevauchement: ChevauchementResult | null;
     province?: string | null;
@@ -694,16 +705,22 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
   /** يبني بطاقة تموقع القطعة، يحفظها في domaine.parcels مربوطةً بالملف/المحضر، ثم يُسلّمها لقسم المنازعات. */
   const attachParcelToCase = async () => {
     const layer = lastImportedLayer;
-    if (!layer || !layer.geojson) { addToast({ type: 'warning', title: 'لا توجد قطعة محدّدة', msg: 'ارسم القطعة على الخريطة أولاً' }); return; }
+    if (!layer || !layer.geojson) { addToast({ type: 'warning', title: 'لا توجد هندسة محدّدة', msg: 'ارسم المخالفة (مضلع/خط/نقطة) على الخريطة أولاً' }); return; }
     try {
       const gj = layer.geojson;
       const feat = gj.type === 'FeatureCollection'
-        ? (gj.features.find((f: any) => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')) || gj.features[0])
+        ? (gj.features.find((f: any) => f.geometry) || gj.features[0])
         : gj;
+      const gType = feat?.geometry?.type || 'Polygon';
+      const isPoly = gType === 'Polygon' || gType === 'MultiPolygon';
+      const isLine = gType === 'LineString' || gType === 'MultiLineString';
       const centroid = turf.centroid(feat);
       const [lng, lat] = centroid.geometry.coordinates as [number, number];
-      let areaM2 = 0; try { areaM2 = turf.area(feat); } catch { areaM2 = layer.chevauchement?.importedArea || 0; }
-      let perimeterKm = 0; try { perimeterKm = turf.length(feat, { units: 'kilometers' }); } catch {}
+      let areaM2 = 0, perimeterKm = 0, lengthM = 0;
+      try {
+        if (isPoly) { areaM2 = turf.area(feat); perimeterKm = turf.length(feat, { units: 'kilometers' }); }
+        else if (isLine) { lengthM = turf.length(feat, { units: 'meters' }); }
+      } catch { areaM2 = layer.chevauchement?.importedArea || 0; }
       const lam = calcLambert(lat, lng);
       const chev = layer.chevauchement;
       const overlap = chev ? {
@@ -737,7 +754,8 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
         geojson: feat,
         centroidLat: lat, centroidLng: lng,
         lambertX: parseFloat(lam.x), lambertY: parseFloat(lam.y),
-        areaM2, perimeterKm,
+        areaM2, perimeterKm, lengthM,
+        geomType: isPoly ? 'polygon' : isLine ? 'line' : 'point',
         province: layer.province || null,
         overlap,
         parcelId: parcelId || undefined,
@@ -749,9 +767,13 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       // ── توجيه العودة حسب نوع الهدف ──
       //   • محضر (kind === 'pv')  → قسم الشرطة الغابوية مباشرة (يُعاد فتح المسودة تلقائيا)
       //   • ملف منازعات          → السلوك السابق (anef:return-from-map → contentieux)
+      // ── فصل تام بين المسارين (لا خلط) ──
+      //   • محضر الشرطة الغابوية (kind==='pv') → 'anef:open-police' وحده.
+      //     لا نبث 'anef:return-from-map' إطلاقا لأنه حدث خاص بقسم المنازعات
+      //     ومستمعه في الهيكل يحيل دائما على contentieux.
+      //   • ملف المنازعات (kind==='case' أو غير محدد) → 'anef:return-from-map'.
       if (target?.kind === 'pv') {
         window.dispatchEvent(new CustomEvent('anef:open-police'));
-        window.dispatchEvent(new CustomEvent('anef:return-from-map', { detail: { section: 'police' } }));
       } else {
         window.dispatchEvent(new CustomEvent('anef:return-from-map'));
       }
@@ -768,7 +790,12 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 
   // ── Layer imported (خواص): run chevauchement, auto-load forest if needed ───
   // opts.silent = true : utilisé lors de la ré-analyse en lot (pas de toasts).
-  const handleLayerImported = (layerId: string, name: string, geojson: any, opts: { silent?: boolean } = {}) => {
+  const handleLayerImported = (layerId: string, name: string, geojson: any, opts: { silent?: boolean; geomType?: 'polygon' | 'line' | 'point' } = {}) => {
+    // خطوط ونقاط: لا تحليل تداخل — تُسجَّل مباشرة كطبقة قابلة للإرفاق
+    if (opts.geomType && opts.geomType !== 'polygon') {
+      setLastImportedLayer({ id: layerId, name, geojson, chevauchement: null, province: detectProvinceFromGeojson(geojson), geomType: opts.geomType } as any);
+      return;
+    }
     const runAnalysis = async (forestData: any) => {
       let chev: ChevauchementResult | null = null;
       try {
@@ -793,7 +820,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
         }
       } catch (e) { console.warn('[Chevauchement]', e); }
       const province = detectProvinceFromGeojson(geojson);
-      setLastImportedLayer({ id: layerId, name, geojson, chevauchement: chev, province });
+      setLastImportedLayer({ id: layerId, name, geojson, chevauchement: chev, province, geomType: 'polygon' } as any);
     };
 
     if (_officialGeoData.forest) {

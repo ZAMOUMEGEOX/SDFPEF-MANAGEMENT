@@ -940,7 +940,12 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
       setForm(f => ({
         ...f,
         features: f.features.map(ft => ft.id === featureId
-          ? { ...ft, geojson: loc.geojson, coordPoints: pts, areaM2: loc.areaM2 || ft.areaM2 }
+          ? {
+              ...ft, geojson: loc.geojson, coordPoints: pts,
+              geomType: (loc as any).geomType || ft.geomType || 'polygon',
+              areaM2: (loc as any).geomType === 'polygon' ? (loc.areaM2 || ft.areaM2) : ft.areaM2,
+              lengthM: (loc as any).geomType === 'line' ? ((loc as any).lengthM || ft.lengthM) : ft.lengthM,
+            }
           : ft),
       }));
       return;
@@ -1004,7 +1009,7 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
       features: [...f.features, {
         id: uid(), label: q.label, details: q.details, symbol: { ...q.symbol },
         geojson: null, coordPoints: [], areaM2: 0, showOnPlan: true, showCoordsTable: true,
-        article: q.article, transaction: q.transaction, catalogId: q.catalogId, noArea: q.noArea,
+        article: q.article, transaction: q.transaction, catalogId: q.catalogId, noArea: q.noArea, geomType: q.geomType || 'polygon',
       }],
     }));
 

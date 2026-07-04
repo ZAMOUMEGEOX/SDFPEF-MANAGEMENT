@@ -177,11 +177,13 @@ function summonsColumn(c: ComposedPV, conv: ConvImage | null): Paragraph[] {
 }
 
 function page1Table(c: ComposedPV, conv: ConvImage | null): Table {
-  const cell = (children: (Paragraph | Table)[], leftBorder: boolean) =>
+  const cell = (children: (Paragraph | Table)[], leftBorder: boolean, boxed = false) =>
     new TableCell({
       verticalAlign: VerticalAlign.TOP,
-      margins: { top: 80, bottom: 80, left: 120, right: 120 },
-      borders: { top: NO, bottom: NO, right: NO, left: leftBorder ? THIN : NO },
+      margins: { top: 120, bottom: 120, left: 160, right: 160 },
+      borders: boxed
+        ? { top: THIN, bottom: THIN, left: THIN, right: THIN }   // إطار أسود كامل حول المتن
+        : { top: NO, bottom: NO, right: NO, left: leftBorder ? THIN : NO },
       children,
     })
   return new Table({
@@ -194,7 +196,7 @@ function page1Table(c: ComposedPV, conv: ConvImage | null): Table {
     rows: [
       new TableRow({
         children: [
-          cell(bodyColumn(c), false),   // gauche
+          cell(bodyColumn(c), false, true),   // gauche — داخل إطار أسود
           cell(midColumn(c), true),     // milieu (séparateur à sa gauche)
           cell(summonsColumn(c, conv), true), // droite (séparateur à sa gauche)
         ],
@@ -364,7 +366,7 @@ function renderHtml(p: PreparedPV): string {
   .sheet:last-child { page-break-after:auto; }
   .grid { width:100%; table-layout:fixed; border:1.2px solid #000; border-collapse:collapse; }
   .col { vertical-align:top; padding:2.5mm 3mm; }
-  .c-body { width:48%; }
+  .c-body { width:48%; border:1.5px solid #000; padding:3mm; }
   .c-mid  { width:26%; border-left:1.2px solid #000; }
   .c-sum  { width:26%; border-left:1.2px solid #000; }
   .title { text-align:center; font-weight:bold; font-size:15pt; text-decoration:underline; margin:0 0 3mm; }

@@ -32,6 +32,8 @@ export interface DeliveredParcel {
   lambertY: number
   areaM2: number
   perimeterKm: number
+  lengthM?: number
+  geomType?: 'polygon' | 'line' | 'point'
   province?: string | null
   overlap?: {
     globalPosition: string

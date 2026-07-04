@@ -36,6 +36,8 @@ export interface PVFeature {
   transaction?: string          // « 60% بعد إخلاء المكان » / « غير قابلة للتصالح »
   catalogId?: string
   noArea?: boolean              // مخالفة بلا مساحة (مثل استخراج الأتربة المرتبط بالبناء/البئر)
+  geomType?: 'polygon' | 'line' | 'point'  // مضلع (مساحة) / خط (متر طولي، كالتسييج) / نقطة (كالبئر)
+  lengthM?: number              // الطول بالمتر للمخالفات الخطية
 }
 
 export type InvestigationStepType =
@@ -204,6 +206,8 @@ export function areaSentence(inp: Pick<PVComposeInput, 'areaM2' | 'ha' | 'are' |
 }
 
 export function featureAreaText(f: PVFeature): string {
+  if (f.geomType === 'point') return ''
+  if (f.geomType === 'line') return f.lengthM ? `${Math.round(f.lengthM)} متر طولي` : ''
   if (!f.areaM2) return ''
   return f.areaM2 >= 10000
     ? `${(f.areaM2 / 10000).toFixed(2)} هكتار`
@@ -461,15 +465,17 @@ export interface QuickInfraction {
   label: string; details: string; symbol: PVSymbol
   article?: string; transaction?: string; catalogId?: string
   noArea?: boolean
+  geomType?: 'polygon' | 'line' | 'point'
 }
 export const TOP_INFRACTIONS_NORD: QuickInfraction[] = [
+  { label: 'إعداد بئر', details: 'إعداد بئر بالإحداثيات X: ... Y: ...', symbol: { kind: 'dots', color: '#0ea5e9' }, article: '32', transaction: '40%', catalogId: 'a32', noArea: true, geomType: 'point' },
   { label: 'التعشيب', details: 'التعشيب على مساحة حوالي ... متر مربع', symbol: { kind: 'solid', color: '#a3e635' }, article: '34', transaction: '60% بعد إخلاء المكان', catalogId: 'a34t' },
   { label: 'الحرث', details: 'الحرث داخل الملك الغابوي على مساحة حوالي ...', symbol: { kind: 'hatch', color: '#b45309' }, article: '34', transaction: '60% بعد إخلاء المكان', catalogId: 'a34l' },
   { label: 'قطع العود الحي', details: 'قطع و حمل العود الحي من نوع ... على مساحة حوالي ... متر مربع', symbol: { kind: 'crosshatch', color: '#166534' }, article: '37', transaction: '50%', catalogId: 'a37n' },
   { label: 'استخراج الأتربة', details: 'حفر و استخراج الأتربة', symbol: { kind: 'crosshatch', color: '#475569' }, article: '32', transaction: '40%', catalogId: 'a32', noArea: true },
   { label: 'البناء بمواد قابلة للاشتعال', details: 'تشييد بناء بمواد قابلة للاشتعال على مساحة حوالي ... متر مربع', symbol: { kind: 'dots', color: '#f97316' }, article: '53', transaction: '30%', catalogId: 'a53' },
   { label: 'البناء بمواد صلبة', details: 'تشييد بناية بمواد صلبة و إعداد الأساس بالحفر و استخراج الأتربة على مساحة حوالي ... متر مربع', symbol: { kind: 'solid', color: '#93c5fd' }, article: '32', transaction: '40%' },
-  { label: 'التسييج', details: 'التسييج بأعمدة حديدية و أسلاك على نفس المساحة', symbol: { kind: 'outline', color: '#dc2626' }, article: '34', transaction: '60% بعد إخلاء المكان' },
+  { label: 'التسييج', details: 'التسييج بأعمدة حديدية و أسلاك على طول حوالي ... متر طولي', symbol: { kind: 'outline', color: '#dc2626' }, article: '34', transaction: '60% بعد إخلاء المكان', geomType: 'line' },
 ]
 
 // ──────────────────────────────────────────────────────
@@ -701,8 +707,11 @@ export function composePV(inp: PVComposeInput, parcelCoordPoints: PVCoordPoint[]
   // — Encadré des surfaces (page 2, comme le modèle 17.02.2025) —
   const areaSummaryLines: string[] = [`مساحة القطعة الاجمالية حوالي ${areaText}`]
   inp.features.forEach(f => {
+    if (!f.showOnPlan || f.noArea || f.geomType === 'point') return
     const a = featureAreaText(f)
-    if (a && f.showOnPlan && !f.noArea) areaSummaryLines.push(`مساحة ${f.label} حوالي ${a}`)
+    if (!a) return
+    const prefix = f.geomType === 'line' ? 'طول' : 'مساحة'
+    areaSummaryLines.push(`${prefix} ${f.label} حوالي ${a}`)
   })
 
   return {
