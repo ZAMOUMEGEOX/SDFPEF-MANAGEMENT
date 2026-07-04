@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Shield, Search, FilePlus2, ChevronLeft, Check, FileCode2, Map, Scale, FileText, Gavel, MapPin, Crosshair, Layers, Pencil, Trash2, Download, SlidersHorizontal, X, ArrowUpDown, CheckSquare, Square, Printer, Eye, Plus, Wand2, Stamp, UserX, ListPlus } from 'lucide-react';
-import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, GeoJSON, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { loadInfractions, updateInfractionStatut, updateInfraction, deleteInfraction, formatPVNumber, toNum, type InfractionRecord, type InfractionKPIs, type PVNarrativeJson } from '@/lib/pv';
 import {
-  FEATURE_PRESETS, LEGAL_SUGGESTIONS, HEURE_SUGGESTIONS, DELIM_OPTIONS, INVESTIGATION_STEP_LABELS,
+  FEATURE_PRESETS, LEGAL_SUGGESTIONS, DELIM_OPTIONS, INVESTIGATION_STEP_LABELS,
+  HOUR_WORDS, HOUR_FRACTIONS, HOUR_PERIODS, AUTORITE_ROLES, ACCES_OPTIONS,
+  LIEU_DIT_SUGGESTIONS, SEIZURE_SUGGESTIONS,
   INFRACTION_CATALOG, CATALOG_CATEGORIES, TRANSACTION_RULES_NOTE,
   TOP_INFRACTIONS_NORD, DAMAGE_KIND_LABELS, LOAD_UNITS, SPECIES_SUGGESTIONS,
   renderDamage, trucksFromM3,
@@ -56,7 +58,7 @@ const FORETS_LIST = [
   'الغابة المخزنية بليونش',
 ]
 
-const IMAALA_LIST = ['إقليم تطوان', 'عمالة المضيق-الفنيدق', 'عمالة تطوان']
+const IMAALA_LIST = ['عمالة المضيق-الفنيدق', 'إقليم تطوان', 'عمالة تطوان']
 
 const SYMBOL_KINDS: Array<{ v: PVSymbol['kind']; l: string }> = [
   { v: 'solid', l: 'تعبئة ملونة' },
@@ -124,6 +126,9 @@ function foretOfficialAr(ar: string): string {
 interface ForestEntry { fr: string; ar: string; official: string; cantons: Array<{ fr: string; ar: string }> }
 let FOREST_CACHE: ForestEntry[] | null = null
 
+let FOREST_GJ_CACHE: any | null = null
+export function getForestGeojson(): any | null { return FOREST_GJ_CACHE }
+
 async function loadForestIndex(): Promise<ForestEntry[]> {
   if (FOREST_CACHE) return FOREST_CACHE
   for (const url of FOREST_LIMITS_URLS) {
@@ -132,15 +137,23 @@ async function loadForestIndex(): Promise<ForestEntry[]> {
       if (!res.ok) continue
       const gj = await res.json()
       const feats: any[] = gj?.features || []
+      if (!feats.length) continue
+      // كشف ضبابي لأسماء الحقول (foret/Foret/FORET/forest/nom_foret… وcanton بأي حالة أحرف)
+      const sample = feats.find(f => f?.properties && Object.keys(f.properties).length)?.properties || {}
+      const keys = Object.keys(sample)
+      const fKey = keys.find(k => /for(e|ê)?t|forest/i.test(k)) || keys.find(k => /^nom/i.test(k)) || 'foret'
+      const cKey = keys.find(k => /canton|secteur|section/i.test(k)) || 'canton'
       const map = new Map<string, Set<string>>()
       for (const f of feats) {
         const props = f?.properties || {}
-        const foret = String(props.foret ?? props.Foret ?? props.FORET ?? '').trim()
-        const canton = String(props.canton ?? props.Canton ?? props.CANTON ?? '').trim()
+        const foret = String(props[fKey] ?? props.foret ?? props.Foret ?? props.FORET ?? '').trim()
+        const canton = String(props[cKey] ?? props.canton ?? props.Canton ?? props.CANTON ?? '').trim()
         if (!foret) continue
         if (!map.has(foret)) map.set(foret, new Set())
         if (canton) map.get(foret)!.add(canton)
       }
+      if (!map.size) continue
+      FOREST_GJ_CACHE = gj
       FOREST_CACHE = [...map.entries()]
         .map(([fr, cs]) => {
           const ar = transliterate(fr)
@@ -221,7 +234,7 @@ const EMPTY_FORM: PVFormData = {
   foret: '', canton: '',
   delimStatus: 'en_cours', delimCustom: '',
   decreeNum: '02.84.321', decreeDate: '1984-10-09',
-  placeName: '', commune: '', province: 'إقليم تطوان',
+  placeName: '', commune: '', province: 'عمالة المضيق-الفنيدق',
   coordX: '', coordY: '',
   accompanimentEnabled: false, accompaniment: 'رئيس مركز حماية الغابات للمضيق الفنيدق',
   contextType: 'ratissage', contextNum: '', contextDate: '', contextText: '',
@@ -869,7 +882,10 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
   const [saveError, setSaveError] = useState('');
   const [forests, setForests] = useState<ForestEntry[]>([]);
 
-  useEffect(() => { loadForestIndex().then(setForests).catch(() => {}); }, []);
+  const [forestGj, setForestGj] = useState<any | null>(null);
+  useEffect(() => {
+    loadForestIndex().then(en => { setForests(en); setForestGj(getForestGeojson()); }).catch(() => {});
+  }, []);
 
   // مركز التحليق نحو موقع المخالفة على خريطة الملك الغابوي:
   // النقطة المختارة يدويا ، وإلا تحويل عكسي لإحداثيات Lambert المدخلة.
@@ -988,7 +1004,7 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
       features: [...f.features, {
         id: uid(), label: q.label, details: q.details, symbol: { ...q.symbol },
         geojson: null, coordPoints: [], areaM2: 0, showOnPlan: true, showCoordsTable: true,
-        article: q.article, transaction: q.transaction, catalogId: q.catalogId,
+        article: q.article, transaction: q.transaction, catalogId: q.catalogId, noArea: q.noArea,
       }],
     }));
 
@@ -1027,6 +1043,32 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
     setForm(f => ({ ...f, investigationSteps: f.investigationSteps.map(s => s.id === id ? { ...s, ...patch } : s) }));
   const removeStep = (id: string) =>
     setForm(f => ({ ...f, investigationSteps: f.investigationSteps.filter(s => s.id !== id) }));
+
+  // ── مسار البحث القياسي: تعريف الأسئلة وترتيبها الرسمي داخل المحضر ──
+  const QUICK_DEFS: Array<{ id: string; type: InvestigationStepType; q: string; group: number }> = [
+    { id: 'q_ouverture', type: 'ouverture_enquete', q: 'هل فُتح بحث في الموضوع رفقة باقي المتدخلين؟', group: 1 },
+    { id: 'q_autorite', type: 'coordination_autorite', q: 'هل تم التنسيق مع السلطة المحلية؟', group: 1 },
+    { id: 'q_gendarme', type: 'coordination_gendarmerie', q: 'هل تم التنسيق مع الدرك الملكي؟', group: 1 },
+    { id: 'q_dgsn', type: 'coordination_surete', q: 'هل تم التنسيق مع الأمن الوطني (الهوية الكاملة)؟', group: 1 },
+    { id: 'q_rencontre', type: 'rencontre_declaration', q: 'هل تم الالتقاء بالمخالف واستفساره عمّا نُسب إليه؟', group: 2 },
+    { id: 'q_decl', type: 'avertissement', q: 'هل صُرِّح له بالمخالفة وأُنذر؟', group: 3 },
+  ];
+  const QUICK_GROUPS = [
+    { n: 1, title: 'فتح البحث والتنسيق مع الأجهزة' },
+    { n: 2, title: 'الوصول إلى المخالف والالتقاء به' },
+    { n: 3, title: 'التصريح والإنذار' },
+  ];
+  const Q_ORDER = QUICK_DEFS.map(q => q.id);
+  const toggleQuick = (id: string, type: InvestigationStepType) =>
+    setForm(f => {
+      const exists = f.investigationSteps.some(x => x.id === id);
+      const steps = exists
+        ? f.investigationSteps.filter(x => x.id !== id)
+        : [...f.investigationSteps, { id, type, date: '', name: '', agents: type === 'avertissement' ? '1' : '', text: '' }];
+      const qs = steps.filter(x => Q_ORDER.includes(x.id)).sort((a, b) => Q_ORDER.indexOf(a.id) - Q_ORDER.indexOf(b.id));
+      const rest = steps.filter(x => !Q_ORDER.includes(x.id));
+      return { ...f, investigationSteps: [...qs, ...rest] };
+    });
 
   // ── Saisie (حجز) ──
   const setSeizure = (patch: Partial<PVSeizure>) => setForm(f => ({ ...f, seizure: { ...f.seizure, ...patch } }));
@@ -1225,7 +1267,7 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
 
       <div className="p-4 md:p-8 min-h-[400px]">
 
-        {/* ══ STEP 1 — رقم المحضر + تاريخا المعاينة والتحرير ══ */}
+        {/* ══ STEP 1 — رقم المحضر (ورقة/دفتر/سنة) + تاريخا المعاينة والتحرير ══ */}
         {currentStep === 1 && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
             {isEdit && (
@@ -1234,36 +1276,32 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
               </div>
             )}
             <h3 className="text-lg font-serif italic text-emerald-900 mb-6">رقم المحضر والتواريخ</h3>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-              <FormInputLight label="رقم في الدفتر" type="text" placeholder="مثال: 05" value={form.pvNum} onChange={(e: any) => set('pvNum', e.target.value)} />
-              <div className="md:col-span-2">
-                <FormInputLight label="رقم الدفتر / السنة" type="text" placeholder="مثال: 03/2025" value={form.pvYear} onChange={(e: any) => set('pvYear', e.target.value)} />
+
+            <div className="p-6 bg-white border border-stone-200 rounded-xl shadow-sm space-y-4">
+              <h4 className="text-xs font-bold text-stone-500">كل دفتر يضم 50 ورقة ، والدفاتر تُرقَّم حسب الاستهلاك داخل السنة (1/2025 ، 2/2025 ...)</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <SelectLight label="رقم الورقة (1-50)" value={form.pvNum} onChange={v => set('pvNum', v)}
+                  options={Array.from({ length: 50 }, (_, i) => String(i + 1))} placeholder="الورقة" />
+                <SelectLight label="رقم الدفتر" value={(form.pvYear.split('/')[0] || '')} placeholder="الدفتر"
+                  options={Array.from({ length: 30 }, (_, i) => String(i + 1))}
+                  onChange={v => set('pvYear', `${v}/${form.pvYear.split('/')[1] || new Date().getFullYear()}`)} />
+                <SelectLight label="سنة الدفتر" value={(form.pvYear.split('/')[1] || '')} placeholder="السنة"
+                  options={Array.from({ length: new Date().getFullYear() - 2018 }, (_, i) => String(new Date().getFullYear() - i))}
+                  onChange={v => set('pvYear', `${form.pvYear.split('/')[0] || '1'}/${v}`)} />
+                <FormInputLight label="البريغاد" type="text" placeholder="BM" value={form.brigade} onChange={(e: any) => set('brigade', e.target.value)} />
               </div>
-              <FormInputLight label="البريغاد" type="text" placeholder="مثال: BM" value={form.brigade} onChange={(e: any) => set('brigade', e.target.value)} />
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <FormInputLight label="الرقم الاستدلالي" type="text" placeholder="8 58" value={form.indicatif} onChange={(e: any) => set('indicatif', e.target.value)} />
-              <FormInputLight label="السلسلة (أسفل الصفحة)" type="text" placeholder="السلسلة 8 رقم 2" value={form.serie} onChange={(e: any) => set('serie', e.target.value)} />
+              {form.pvNum && form.pvYear.includes('/') && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-sm text-emerald-700 font-mono">
+                  رقم المحضر: <strong dir="ltr">{pvNum}</strong>
+                </div>
+              )}
             </div>
 
             <div className="p-6 bg-white border border-stone-200 rounded-xl shadow-sm space-y-6">
-              <h4 className="text-xs font-bold text-stone-500">تاريخ المعاينة (يُكتب بالحروف في المحضر)</h4>
+              <h4 className="text-xs font-bold text-stone-500">تاريخ المعاينة (يُكتب بالحروف في المحضر) وساعتها</h4>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <FormInputLight label="تاريخ المعاينة" type="date" value={form.dateConstat} onChange={(e: any) => set('dateConstat', e.target.value)} />
-                <div className="space-y-2 text-right">
-                  <label className="text-xs font-bold text-stone-600">الساعة (نصاً)</label>
-                  <input type="text" dir="rtl" value={form.heureText} onChange={e => set('heureText', e.target.value)}
-                    placeholder="مثال: الثالثة زوالا"
-                    className="w-full bg-white border border-stone-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all outline-none shadow-sm" />
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    {HEURE_SUGGESTIONS.map(h => (
-                      <button key={h} type="button" onClick={() => set('heureText', h)}
-                        className="px-2 py-1 bg-stone-100 border border-stone-200 text-stone-600 text-[11px] rounded-lg hover:bg-emerald-50 hover:text-emerald-700 transition-colors">
-                        {h}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <HeureComposer value={form.heureText} onChange={v => set('heureText', v)} />
               </div>
             </div>
 
@@ -1271,15 +1309,9 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
               <h4 className="text-xs font-bold text-stone-500">التحرير — قد يتأخر عن المعاينة (مثال: معاينة 19 ماي 2025 وتحرير 30-06-2026)</h4>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <FormInputLight label="تاريخ التحرير (حرر في)" type="date" value={form.dateRedaction} onChange={(e: any) => set('dateRedaction', e.target.value)} />
-                <FormInputLight label="مكان التحرير (حرر بـ)" type="text" placeholder="المضيق / بريستنكا..." value={form.redactionLieu} onChange={(e: any) => set('redactionLieu', e.target.value)} />
+                <FormInputLight label="مكان التحرير (حرر بـ)" type="text" placeholder="المضيق" value={form.redactionLieu} onChange={(e: any) => set('redactionLieu', e.target.value)} />
               </div>
             </div>
-
-            {form.pvNum && form.pvYear && (
-              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-sm text-emerald-700 font-mono">
-                رقم المحضر: <strong dir="ltr">{pvNum}</strong>
-              </div>
-            )}
           </div>
         )}
 
@@ -1332,16 +1364,23 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
               <div className="space-y-2 text-right">
                 <label className="text-xs font-bold text-stone-600">الغابة (من طبقة forest_limits — ترجمة حرفية)</label>
                 <select dir="rtl"
-                  value={forests.find(f => form.foret === f.official)?.fr ?? ''}
+                  value={forests.find(f => form.foret === f.official)?.fr ?? (FORETS_LIST.includes(form.foret) ? form.foret : '')}
                   onChange={e => {
-                    const entry = forests.find(f => f.fr === e.target.value);
+                    const v = e.target.value;
+                    const entry = forests.find(f => f.fr === v);
                     if (entry) { set('foret', entry.official); set('canton', ''); }
+                    else if (v) { set('foret', v); set('canton', ''); }
                   }}
                   className="w-full bg-white border border-stone-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-stone-800 outline-none appearance-none shadow-sm">
                   <option value="">— اختر الغابة —</option>
                   {forests.map(f => <option key={f.fr} value={f.fr}>{f.ar} — {f.fr}</option>)}
-                  {forests.length === 0 && FORETS_LIST.map(f => <option key={f} value="">{f}</option>)}
+                  {forests.length === 0 && FORETS_LIST.map(f => <option key={f} value={f}>{f}</option>)}
                 </select>
+                <p className={`text-[10px] font-bold ${forests.length ? 'text-emerald-600' : 'text-amber-600'}`}>
+                  {forests.length
+                    ? `✓ حُمِّلت ${forests.length} غابة و ${forests.reduce((n, f) => n + f.cantons.length, 0)} قسما من طبقة forest_limits`
+                    : '⚠ تعذر تحميل طبقة forest_limits من public/assets/data — تُستعمل القائمة الاحتياطية'}
+                </p>
                 <input type="text" dir="rtl" value={form.foret} onChange={e => set('foret', e.target.value)}
                   placeholder="كما ستُكتب في المحضر (قابلة للتعديل)"
                   className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-emerald-500" />
@@ -1387,7 +1426,15 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
               </div>
             </div>
 
-            <FormInputLight label="المكان المسمى" type="text" placeholder="مثال: بئر الشيخ" value={form.placeName} onChange={(e: any) => set('placeName', e.target.value)} />
+            <div className="space-y-2 text-right">
+              <FormInputLight label="المكان المسمى" type="text" placeholder="مثال: بئر الشيخ" value={form.placeName} onChange={(e: any) => set('placeName', e.target.value)} />
+              <div className="flex flex-wrap gap-1.5">
+                {LIEU_DIT_SUGGESTIONS.map(ld => (
+                  <button key={ld} type="button" onClick={() => set('placeName', ld)}
+                    className="px-2.5 py-1 bg-stone-100 border border-stone-200 text-stone-600 text-[11px] rounded-lg hover:bg-emerald-50 hover:text-emerald-700 transition-colors">{ld}</button>
+                ))}
+              </div>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2 text-right">
                 <label className="text-xs font-bold text-stone-600">الجماعة / القيادة</label>
@@ -1468,6 +1515,10 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
               <MapContainer center={[35.5785, -5.3684]} zoom={13} className="h-full w-full z-0 cursor-crosshair">
                 <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" attribution="Esri &mdash; World Imagery" maxZoom={19} />
                 <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}" attribution="Esri &mdash; References" maxZoom={19} />
+                {forestGj && (
+                  <GeoJSON key="forest-limits" data={forestGj}
+                    style={() => ({ color: '#166534', weight: 2, fillColor: '#22c55e', fillOpacity: 0.08 })} />
+                )}
                 <LocationPicker />
               </MapContainer>
             </div>
@@ -1583,10 +1634,13 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
               <div className="text-center py-10 text-stone-400 text-sm border-2 border-dashed border-stone-200 rounded-xl">لم تُضف أي مخالفة بعد — اختر من القوالب أعلاه</div>
             )}
             {form.features.map((ft, idx) => (
-              <div key={ft.id} className="p-5 bg-white border border-stone-200 rounded-xl shadow-sm space-y-4">
-                <div className="flex items-center justify-between gap-3">
+              <div key={ft.id}
+                className="p-5 bg-white border border-stone-200 rounded-xl shadow-sm space-y-4 border-r-[6px]"
+                style={{ borderRightColor: ft.symbol.color }}>
+                <div className="flex items-center justify-between gap-3 pb-3 border-b border-stone-100">
                   <div className="flex items-center gap-2">
-                    <span className="size-6 rounded-full bg-emerald-100 text-emerald-700 text-xs font-bold flex items-center justify-center">{idx + 1}</span>
+                    <span className="size-6 rounded-full text-white text-xs font-bold flex items-center justify-center shadow-sm"
+                      style={{ backgroundColor: ft.symbol.color }}>{idx + 1}</span>
                     <input type="text" dir="rtl" value={ft.label} onChange={e => setFeature(ft.id, { label: e.target.value })}
                       placeholder="تسمية المخالفة (تظهر في المفتاح ولوائح الإحداثيات)"
                       className="bg-transparent border-b border-stone-200 focus:border-emerald-500 outline-none text-sm font-bold text-stone-800 px-1 py-1 min-w-[220px]" />
@@ -1605,10 +1659,12 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-bold text-stone-600">نص المخالفة في المحضر (السطر بعد «تم الترامي عليها بـ»)</label>
-                    <button type="button" onClick={() => injectAreaInDetails(ft)} disabled={!ft.areaM2}
-                      className="flex items-center gap-1 px-2 py-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors disabled:opacity-40">
-                      <Wand2 className="size-3" /> إدراج المساحة المحسوبة مكان «...»
-                    </button>
+                    {!ft.noArea && (
+                      <button type="button" onClick={() => injectAreaInDetails(ft)} disabled={!ft.areaM2}
+                        className="flex items-center gap-1 px-2 py-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors disabled:opacity-40">
+                        <Wand2 className="size-3" /> إدراج المساحة المحسوبة مكان «...»
+                      </button>
+                    )}
                   </div>
                   <textarea rows={2} dir="rtl" value={ft.details} onChange={e => setFeature(ft.id, { details: e.target.value })}
                     className="w-full bg-stone-50 border border-stone-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all outline-none resize-none" />
@@ -1627,12 +1683,18 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                     <input type="color" value={ft.symbol.color} onChange={e => setFeature(ft.id, { symbol: { ...ft.symbol, color: e.target.value } })}
                       className="w-full h-[38px] bg-white border border-stone-200 rounded-lg p-1 cursor-pointer" />
                   </div>
-                  <div className="space-y-1.5 text-right">
-                    <label className="text-[11px] font-bold text-stone-600">المساحة (م²)</label>
-                    <input type="number" dir="ltr" value={ft.areaM2 || ''} onChange={e => setFeature(ft.id, { areaM2: toNum(e.target.value) })}
-                      placeholder="تلقائي عند الرسم"
-                      className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2.5 text-xs font-mono outline-none focus:border-emerald-500" />
-                  </div>
+                  {!ft.noArea ? (
+                    <div className="space-y-1.5 text-right">
+                      <label className="text-[11px] font-bold text-stone-600">المساحة (م²)</label>
+                      <input type="number" dir="ltr" value={ft.areaM2 || ''} onChange={e => setFeature(ft.id, { areaM2: toNum(e.target.value) })}
+                        placeholder="تلقائي عند الرسم"
+                        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-2.5 text-xs font-mono outline-none focus:border-emerald-500" />
+                    </div>
+                  ) : (
+                    <div className="flex items-end">
+                      <span className="w-full text-center px-2 py-2.5 bg-stone-50 border border-dashed border-stone-300 rounded-lg text-[10px] text-stone-500 font-bold leading-tight">بدون مساحة — مرتبطة بمخالفات أخرى</span>
+                    </div>
+                  )}
                   <div className="flex items-end gap-2">
                     <button type="button" onClick={() => requestParcelPickForFeature(pvNum, ft.id, ft.label || `مخالفة ${idx + 1}`, centerForPick())}
                       className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-emerald-700 text-white rounded-lg text-xs font-bold hover:bg-emerald-800 transition-colors">
@@ -1650,7 +1712,8 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                 <div className="flex flex-wrap items-center gap-4">
                   <ToggleChip checked={ft.showOnPlan} onClick={() => setFeature(ft.id, { showOnPlan: !ft.showOnPlan })} label="يظهر على التصميم والمفتاح" />
                   <ToggleChip checked={ft.showCoordsTable} onClick={() => setFeature(ft.id, { showCoordsTable: !ft.showCoordsTable })} label="لائحة إحداثياته في الصفحة 2" />
-                  {ft.areaM2 > 0 && <span className="text-[11px] text-stone-500 font-mono">≈ {featureAreaText(ft)}</span>}
+                  <ToggleChip checked={!!ft.noArea} onClick={() => setFeature(ft.id, { noArea: !ft.noArea })} label="بدون مساحة" />
+                  {!ft.noArea && ft.areaM2 > 0 && <span className="text-[11px] text-stone-500 font-mono">≈ {featureAreaText(ft)}</span>}
                 </div>
 
                 {/* محرر الإحداثيات اليدوي */}
@@ -1779,55 +1842,97 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <h3 className="text-lg font-serif italic text-emerald-900 mb-6">إجراءات البحث والهوية</h3>
 
-            {/* أسئلة البحث السريعة — boîte de dialogue موجهة */}
-            <div className="p-5 bg-emerald-50/50 border border-emerald-200 rounded-xl space-y-4">
-              <h4 className="text-sm font-bold text-emerald-900">أسئلة البحث السريعة — أجب بنعم/لا وتُدرج الفقرة تلقائيا في المحضر</h4>
-              {([
-                { id: 'q_autorite', type: 'coordination_autorite' as InvestigationStepType, q: 'هل تم التنسيق مع السلطة المحلية (قائد/شيخ/مقدم)؟', fields: ['name', 'date', 'text'] },
-                { id: 'q_rencontre', type: 'rencontre_declaration' as InvestigationStepType, q: 'هل تم الالتقاء بالمخالف؟ (كيف وماذا صرّح)', fields: ['name', 'text'] },
-                { id: 'q_decl', type: 'avertissement' as InvestigationStepType, q: 'هل تم التصريح للمخالف بالمخالفة وإنذاره؟', fields: ['text'] },
-              ]).map(qq => {
-                const st = form.investigationSteps.find(x => x.id === qq.id);
-                return (
-                  <div key={qq.id} className="p-3 bg-white border border-stone-200 rounded-xl space-y-3">
-                    <label className="flex items-center gap-3 cursor-pointer"
-                      onClick={() => st
-                        ? removeStep(qq.id)
-                        : setForm(f => ({ ...f, investigationSteps: [...f.investigationSteps, { id: qq.id, type: qq.type, date: '', name: '', agents: '', text: '' }] }))}>
-                      <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 ${st ? 'bg-emerald-600 border-emerald-600' : 'border-stone-300'}`}>
-                        {st && <Check className="size-3 text-white" />}
-                      </div>
-                      <span className="text-sm font-bold text-stone-700">{qq.q}</span>
-                    </label>
-                    {st && (
-                      <>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                          {qq.fields.includes('name') && (
-                            <FormInputLight label={qq.id === 'q_autorite' ? 'ممثل السلطة (اختياري)' : 'اسم المخالف/المسمى'} type="text"
-                              placeholder={qq.id === 'q_autorite' ? 'شيخ دوار ...' : '"فلان الفلاني"'}
-                              value={st.name || ''} onChange={(e: any) => setStep(qq.id, { name: e.target.value })} />
-                          )}
-                          {qq.fields.includes('date') && (
-                            <FormInputLight label="التاريخ (اختياري)" type="date" value={st.date || ''} onChange={(e: any) => setStep(qq.id, { date: e.target.value })} />
-                          )}
-                          {qq.fields.includes('text') && (
-                            <div className={qq.fields.includes('name') ? '' : 'md:col-span-3'}>
-                              <FormInputLight
-                                label={qq.id === 'q_rencontre' ? 'كيف تم اللقاء وماذا صرّح' : qq.id === 'q_decl' ? 'تفصيل التصريح (اختياري)' : 'التفصيل (اختياري)'}
-                                type="text"
-                                placeholder={qq.id === 'q_rencontre' ? 'أجاب أنه هو المسؤول عن القطعة...' : 'اكتب التفصيل'}
-                                value={st.text || ''} onChange={(e: any) => setStep(qq.id, { text: e.target.value })} />
-                            </div>
-                          )}
-                        </div>
-                        <p className="text-[11px] text-stone-500 leading-relaxed border-r-2 border-emerald-300 pr-2">
-                          <span className="font-bold text-stone-600">معاينة: </span>{renderInvestigationStep(st)}
-                        </p>
-                      </>
-                    )}
+            {/* مسار البحث الاحترافي — ثلاث مراحل مرتبة (تُدرج الفقرات بالترتيب الرسمي) */}
+            <div className="p-5 bg-emerald-50/50 border border-emerald-200 rounded-xl space-y-5">
+              <h4 className="text-sm font-bold text-emerald-900">مسار البحث — فعّل ما تم إنجازه وتُدرج الفقرات في المحضر بترتيبها الرسمي تلقائيا</h4>
+              {QUICK_GROUPS.map(gr => (
+                <div key={gr.n} className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="size-5 rounded-full bg-emerald-600 text-white text-[10px] font-bold flex items-center justify-center">{gr.n}</span>
+                    <span className="text-xs font-bold text-emerald-800">{gr.title}</span>
+                    <div className="flex-1 h-px bg-emerald-200" />
                   </div>
-                );
-              })}
+                  {QUICK_DEFS.filter(q => q.group === gr.n).map(qq => {
+                    const st = form.investigationSteps.find(x => x.id === qq.id);
+                    return (
+                      <div key={qq.id} className="p-3 bg-white border border-stone-200 rounded-xl space-y-3">
+                        <label className="flex items-center gap-3 cursor-pointer" onClick={() => toggleQuick(qq.id, qq.type)}>
+                          <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 ${st ? 'bg-emerald-600 border-emerald-600' : 'border-stone-300'}`}>
+                            {st && <Check className="size-3 text-white" />}
+                          </div>
+                          <span className="text-sm font-bold text-stone-700">{qq.q}</span>
+                        </label>
+                        {st && (
+                          <>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                              {qq.id === 'q_ouverture' && (
+                                <div className="md:col-span-3">
+                                  <FormInputLight label="رفقة (اختياري)" type="text" placeholder="أعوان القوة المساعدة والسلطة المحلية"
+                                    value={st.text || ''} onChange={(e: any) => setStep(qq.id, { text: e.target.value })} />
+                                </div>
+                              )}
+                              {qq.id === 'q_autorite' && (
+                                <>
+                                  <div className="space-y-2 text-right">
+                                    <label className="text-xs font-bold text-stone-600">الصفة</label>
+                                    <select dir="rtl" value={st.agents || ''} onChange={e => setStep(qq.id, { agents: e.target.value })}
+                                      className="w-full bg-white border border-stone-200 rounded-xl px-3 py-3 text-sm outline-none focus:border-emerald-500 appearance-none shadow-sm">
+                                      <option value="">— الصفة —</option>
+                                      {AUTORITE_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                                    </select>
+                                  </div>
+                                  <FormInputLight label="الاسم (اختياري)" type="text" placeholder="فلان الفلاني" value={st.name || ''} onChange={(e: any) => setStep(qq.id, { name: e.target.value })} />
+                                  <FormInputLight label="التاريخ (اختياري)" type="date" value={st.date || ''} onChange={(e: any) => setStep(qq.id, { date: e.target.value })} />
+                                  <div className="md:col-span-3">
+                                    <FormInputLight label="التفصيل (اختياري)" type="text" placeholder="تم ربط الاتصال بالمخالف بحضوره" value={st.text || ''} onChange={(e: any) => setStep(qq.id, { text: e.target.value })} />
+                                  </div>
+                                </>
+                              )}
+                              {qq.id === 'q_gendarme' && (
+                                <>
+                                  <FormInputLight label="مركز الدرك (اختياري)" type="text" placeholder="المضيق" value={st.name || ''} onChange={(e: any) => setStep(qq.id, { name: e.target.value })} />
+                                  <FormInputLight label="التاريخ (اختياري)" type="date" value={st.date || ''} onChange={(e: any) => setStep(qq.id, { date: e.target.value })} />
+                                  <FormInputLight label="التفصيل (اختياري)" type="text" placeholder="تم تعميق الأبحاث في الموضوع" value={st.text || ''} onChange={(e: any) => setStep(qq.id, { text: e.target.value })} />
+                                </>
+                              )}
+                              {qq.id === 'q_dgsn' && (
+                                <FormInputLight label="التاريخ" type="date" value={st.date || ''} onChange={(e: any) => setStep(qq.id, { date: e.target.value })} />
+                              )}
+                              {qq.id === 'q_rencontre' && (
+                                <>
+                                  <div className="space-y-2 text-right">
+                                    <label className="text-xs font-bold text-stone-600">كيف تم التوصل إليه</label>
+                                    <select dir="rtl" value={st.agents || ''} onChange={e => setStep(qq.id, { agents: e.target.value })}
+                                      className="w-full bg-white border border-stone-200 rounded-xl px-3 py-3 text-sm outline-none focus:border-emerald-500 appearance-none shadow-sm">
+                                      <option value="">— اختر —</option>
+                                      {ACCES_OPTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+                                    </select>
+                                  </div>
+                                  <FormInputLight label="اسم المخالف / المسمى" type="text" placeholder='"فلان الفلاني"' value={st.name || ''} onChange={(e: any) => setStep(qq.id, { name: e.target.value })} />
+                                  <FormInputLight label="جوابه عند الاستفسار" type="text" placeholder="أجاب أنه هو المسؤول عنها" value={st.text || ''} onChange={(e: any) => setStep(qq.id, { text: e.target.value })} />
+                                </>
+                              )}
+                              {qq.id === 'q_decl' && (
+                                <>
+                                  <div className="flex items-end pb-1">
+                                    <ToggleChip checked={st.agents === '1'} onClick={() => setStep(qq.id, { agents: st.agents === '1' ? '' : '1' })} label="إنذاره بالتخلي عن القطعة وإيقاف الأشغال" />
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <FormInputLight label="تفصيل إضافي (اختياري)" type="text" placeholder="وطلبنا منه الإدلاء بهويته الكاملة" value={st.text || ''} onChange={(e: any) => setStep(qq.id, { text: e.target.value })} />
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-stone-500 leading-relaxed border-r-2 border-emerald-300 pr-2">
+                              <span className="font-bold text-stone-600">معاينة: </span>{renderInvestigationStep(st)}
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
             </div>
 
             {/* باني خطوات البحث */}
@@ -1898,6 +2003,18 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                   ))}
                   <button type="button" onClick={() => setSeizure({ items: [...form.seizure.items, { label: '', qty: '' }] })}
                     className="text-xs font-bold text-emerald-700 hover:text-emerald-900">+ إضافة محجوز</button>
+                  <div className="flex flex-wrap gap-1.5">
+                    {SEIZURE_SUGGESTIONS.map(sz => (
+                      <button key={sz} type="button" onClick={() => {
+                        const items = [...form.seizure.items];
+                        const empty = items.findIndex(it => !it.label.trim());
+                        if (empty >= 0) items[empty] = { ...items[empty], label: sz };
+                        else items.push({ label: sz, qty: '' });
+                        setSeizure({ items });
+                      }}
+                        className="px-2 py-1 bg-stone-100 border border-stone-200 text-stone-600 text-[11px] rounded-lg hover:bg-emerald-50 hover:text-emerald-700 transition-colors">+ {sz}</button>
+                    ))}
+                  </div>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
                     <FormInputLight label="مكان الإيداع" type="text" placeholder="بالمركز الغابوي بريستنكا / بالمحجز الجماعي" value={form.seizure.depotText} onChange={(e: any) => setSeizure({ depotText: e.target.value })} />
                     <FormInputLight label="رقم شهادة الإيداع" type="text" placeholder="0000510" value={form.seizure.certificateNum} onChange={(e: any) => setSeizure({ certificateNum: e.target.value })} />
@@ -2243,6 +2360,56 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+
+
+/** قائمة منسدلة موحدة الشكل (نفس مظهر FormInputLight). */
+function SelectLight({ label, value, onChange, options, placeholder }: {
+  label: string; value: string; onChange: (v: string) => void;
+  options: string[]; placeholder?: string;
+}) {
+  return (
+    <div className="space-y-2 text-right w-full">
+      <label className="text-xs font-bold text-stone-600">{label}</label>
+      <select dir="rtl" value={value} onChange={e => onChange(e.target.value)}
+        className="w-full bg-white border border-stone-200 rounded-xl px-3 py-3 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-stone-800 outline-none appearance-none shadow-sm text-center font-mono">
+        <option value="">{placeholder || '—'}</option>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+}
+
+/** مركّب الساعة الرسمي: [الساعة] ثم [الكسر] ثم [الفترة] → « الثالثة والنصف زوالا »
+ *  مع خانة حرة متزامنة للتدقيق اليدوي. */
+function HeureComposer({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [h, setH] = useState('');
+  const [f, setF] = useState('');
+  const [pr, setPr] = useState('زوالا');
+  const emit = (hh: string, ff: string, pp: string) => {
+    if (hh && pp) onChange(`${hh}${ff ? ' ' + ff : ''} ${pp}`);
+  };
+  const cls = 'w-full bg-white border border-stone-200 rounded-xl px-2 py-3 text-sm outline-none focus:border-emerald-500 appearance-none shadow-sm text-center';
+  return (
+    <div className="space-y-2 text-right w-full">
+      <label className="text-xs font-bold text-stone-600">الساعة (تُكتب نصا في المحضر)</label>
+      <div className="grid grid-cols-3 gap-2" dir="rtl">
+        <select dir="rtl" className={cls} value={h} onChange={e => { setH(e.target.value); emit(e.target.value, f, pr); }}>
+          <option value="">الساعة</option>
+          {HOUR_WORDS.map(w => <option key={w} value={w}>{w}</option>)}
+        </select>
+        <select dir="rtl" className={cls} value={f} onChange={e => { setF(e.target.value); emit(h, e.target.value, pr); }}>
+          {HOUR_FRACTIONS.map(fr => <option key={fr || 'exact'} value={fr}>{fr || 'تماما'}</option>)}
+        </select>
+        <select dir="rtl" className={cls} value={pr} onChange={e => { setPr(e.target.value); emit(h, f, e.target.value); }}>
+          {HOUR_PERIODS.map(pp => <option key={pp} value={pp}>{pp}</option>)}
+        </select>
+      </div>
+      <input type="text" dir="rtl" value={value} onChange={e => onChange(e.target.value)}
+        placeholder="الثالثة زوالا"
+        className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-emerald-500" />
+    </div>
+  );
+}
 
 /** منتقي تاريخ ثلاثي (سنة تنازلية من الحاضر إلى 1930 ، ثم الشهر ، ثم اليوم) —
  *  أسرع بكثير من input type=date لمواليد الأربعينات والخمسينات.

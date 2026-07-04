@@ -35,14 +35,17 @@ export interface PVFeature {
   article?: string              // « 34 » / « 46-47-55 »
   transaction?: string          // « 60% بعد إخلاء المكان » / « غير قابلة للتصالح »
   catalogId?: string
+  noArea?: boolean              // مخالفة بلا مساحة (مثل استخراج الأتربة المرتبط بالبناء/البئر)
 }
 
 export type InvestigationStepType =
   | 'transfert_domicile'    // انتقال إلى محل السكن بعد إخبارية
   | 'rencontre_declaration' // التقاء بالمخالف + تصريحه
   | 'presentation_spontanee'// تقدم المعني من تلقاء نفسه بعين المكان
-  | 'coordination_surete'   // التنسيق مع مصالح الأمن للهوية الكاملة
-  | 'coordination_autorite' // التنسيق مع السلطة المحلية (قائد/شيخ/مقدم)
+  | 'coordination_surete'   // التنسيق مع مصالح الأمن الوطني للهوية الكاملة
+  | 'coordination_autorite' // التنسيق مع السلطة المحلية (مقدم/شيخ/قائد/خليفة)
+  | 'coordination_gendarmerie' // التنسيق مع الدرك الملكي
+  | 'ouverture_enquete'     // فتح البحث رفقة باقي المتدخلين
   | 'avertissement'         // التصريح للمخالف بالمخالفة وإنذاره
   | 'source_information'    // مصدرنا الإخباري أفاد بأن...
   | 'libre'                 // فقرة حرة
@@ -210,6 +213,16 @@ export function featureAreaText(f: PVFeature): string {
 // ──────────────────────────────────────────────────────
 // 4) BIBLIOTHÈQUES DE CHOIX (UI) — dérivées des modèles réels
 // ──────────────────────────────────────────────────────
+// مكوّنات الساعة المركّبة (قائمة سلسة: الساعة ثم الكسر ثم الفترة)
+export const HOUR_WORDS = ['الواحدة', 'الثانية', 'الثالثة', 'الرابعة', 'الخامسة', 'السادسة', 'السابعة', 'الثامنة', 'التاسعة', 'العاشرة', 'الحادية عشرة', 'الثانية عشرة']
+export const HOUR_FRACTIONS = ['', 'والربع', 'والنصف', 'إلا ربع']
+export const HOUR_PERIODS = ['صباحا', 'زوالا', 'مساء', 'ليلا']
+
+export const AUTORITE_ROLES = ['مقدم الدوار', 'شيخ', 'قائد', 'خليفة', 'باشا']
+export const ACCES_OPTIONS = ['بعد التوصل بإخبارية', 'عبر مصدرنا الإخباري', 'بعين المكان أثناء الدورية', 'بتوجيه من السلطة المحلية', 'بعد أبحاث ميدانية معمقة']
+export const LIEU_DIT_SUGGESTIONS = ['زمزم', 'البيين', 'الكوف', 'بلوازن', 'بوجميل', 'فرسيوة', 'كاسبولينا', 'بئر الشيخ', 'اغنيوات', 'حيضرة']
+export const SEIZURE_SUGGESTIONS = ['جرار', 'طراكس', 'مجرفة', 'معول', 'شاقور', 'فأس', 'منشار كهربائي', 'كيس اسمنت', 'عربة مجرورة', 'دابة', 'أسلاك شائكة', 'أعمدة حديدية']
+
 export const HEURE_SUGGESTIONS = [
   'الثامنة صباحا', 'العاشرة صباحا', 'الحادية عشرة صباحا', 'الثانية عشرة زوالا',
   'الواحدة زوالا', 'الثانية زوالا', 'الثالثة زوالا', 'الرابعة مساء', 'الخامسة مساء',
@@ -447,12 +460,13 @@ export const DAMAGE_KIND_LABELS: Record<DamageKind, string> = {
 export interface QuickInfraction {
   label: string; details: string; symbol: PVSymbol
   article?: string; transaction?: string; catalogId?: string
+  noArea?: boolean
 }
 export const TOP_INFRACTIONS_NORD: QuickInfraction[] = [
   { label: 'التعشيب', details: 'التعشيب على مساحة حوالي ... متر مربع', symbol: { kind: 'solid', color: '#a3e635' }, article: '34', transaction: '60% بعد إخلاء المكان', catalogId: 'a34t' },
   { label: 'الحرث', details: 'الحرث داخل الملك الغابوي على مساحة حوالي ...', symbol: { kind: 'hatch', color: '#b45309' }, article: '34', transaction: '60% بعد إخلاء المكان', catalogId: 'a34l' },
   { label: 'قطع العود الحي', details: 'قطع و حمل العود الحي من نوع ... على مساحة حوالي ... متر مربع', symbol: { kind: 'crosshatch', color: '#166534' }, article: '37', transaction: '50%', catalogId: 'a37n' },
-  { label: 'استخراج الأتربة', details: 'حفر و استخراج الأتربة على مساحة حوالي ... متر مربع', symbol: { kind: 'crosshatch', color: '#475569' }, article: '32', transaction: '40%', catalogId: 'a32' },
+  { label: 'استخراج الأتربة', details: 'حفر و استخراج الأتربة', symbol: { kind: 'crosshatch', color: '#475569' }, article: '32', transaction: '40%', catalogId: 'a32', noArea: true },
   { label: 'البناء بمواد قابلة للاشتعال', details: 'تشييد بناء بمواد قابلة للاشتعال على مساحة حوالي ... متر مربع', symbol: { kind: 'dots', color: '#f97316' }, article: '53', transaction: '30%', catalogId: 'a53' },
   { label: 'البناء بمواد صلبة', details: 'تشييد بناية بمواد صلبة و إعداد الأساس بالحفر و استخراج الأتربة على مساحة حوالي ... متر مربع', symbol: { kind: 'solid', color: '#93c5fd' }, article: '32', transaction: '40%' },
   { label: 'التسييج', details: 'التسييج بأعمدة حديدية و أسلاك على نفس المساحة', symbol: { kind: 'outline', color: '#dc2626' }, article: '34', transaction: '60% بعد إخلاء المكان' },
@@ -493,18 +507,29 @@ function contextPhrase(inp: PVComposeInput): string {
 export function renderInvestigationStep(s: InvestigationStep): string {
   const d = s.date ? arDateShort(s.date) : DOTS
   switch (s.type) {
+    case 'ouverture_enquete':
+      return `فتحنا بحثا في الموضوع${s.text && s.text.trim() ? ' رفقة ' + s.text.trim() : ''} قصد التوصل إلى هوية المسؤول عن هذه الجنح.`
+    case 'coordination_gendarmerie':
+      return `وبتنسيق مع مصالح الدرك الملكي${s.name ? ' بـ' + s.name : ''}${s.date ? ' بتاريخ ' + arDateShort(s.date) : ''} ، ${nz(s.text, 'تم تعميق الأبحاث في الموضوع')}.`
     case 'transfert_domicile':
       return `فتحنا بحثا من أجل التوصل لهوية المخالف ، بتاريخ ${d} انتقل ${nz(s.agents, 'الأعوان الموقعون أسفله')} إلى محل سكنى المخالف بعد التوصل بإخبارية تفيد ذلك.`
     case 'rencontre_declaration':
-      return `حيث التقينا بالمسمى "${nz(s.name)}" ، وعند استفساره حول الجنح السالفة الذكر ${nz(s.text, 'أجاب أنه هو المسؤول عن تلك القطعة وما بداخلها ، دون أن يدلي بهويته الكاملة')}.`
+      return `و${s.agents && s.agents.trim() ? s.agents.trim() + ' ، ' : 'بعد الأبحاث المنجزة ، '}التقينا بالمسمى "${nz(s.name)}" ، وعند استفساره حول الجنح المنسوبة إليه ${nz(s.text, 'أجاب أنه هو المسؤول عنها')}.`
     case 'presentation_spontanee':
       return `تقدم إلينا بعين المكان شخص قدم نفسه على أنه المسؤول عن هذا الترامي ${s.text ? '، حيث ' + s.text : ''} ، فأخبرناه أن ما قام به يعد مخالفا للقوانين الغابوية الجاري بها العمل ، وأنه ستتم متابعته وتحرير تقرير جنحة في حقه ، ثم طلبنا منه الإدلاء بهويته الكاملة.`
     case 'coordination_surete':
       return `بتاريخ ${d} ، وبالتنسيق مع مصالح ولاية أمن تطوان ، تم تزويدنا بالهوية الكاملة للمخالف.`
-    case 'coordination_autorite':
-      return `وبتنسيق مع السلطة المحلية${s.name ? ' ممثلة في ' + s.name : ''}${s.date ? ' بتاريخ ' + arDateShort(s.date) : ''} ، ${nz(s.text, 'تم ربط الاتصال بالمخالف وإشعاره بضرورة الامتثال')}.`
-    case 'avertissement':
-      return `${s.text && s.text.trim() ? 'وقد صرحنا للمخالف بموضوع الجنح المنسوبة إليه ، حيث ' + s.text.trim() + ' ، و' : 'ف'}أخبرناه أن ما قام به يعد مخالفا للقوانين الغابوية الجاري بها العمل وأنه سيتم اتخاذ الإجراءات القانونية اللازمة في حقه ، وأمرناه بالتخلي عن القطعة وإيقاف الأشغال بها.`
+    case 'coordination_autorite': {
+      const rep = s.agents && s.agents.trim()
+        ? ` في شخص ${s.agents.trim()}${s.name ? ' ' + s.name : ''}`
+        : (s.name ? ` ممثلة في ${s.name}` : '')
+      return `وبتنسيق مع السلطة المحلية${rep}${s.date ? ' بتاريخ ' + arDateShort(s.date) : ''} ، ${nz(s.text, 'تم ربط الاتصال بالمخالف وإشعاره بضرورة الامتثال')}.`
+    }
+    case 'avertissement': {
+      const warn = s.agents === '1' ? ' ، وأنذرناه بالتخلي عن القطعة المترامى عليها وإيقاف جميع الأشغال بها' : ''
+      const extra = s.text && s.text.trim() ? ' ، ' + s.text.trim() : ''
+      return `صرحنا للمخالف أن ما قام به يعد مخالفا للقوانين الغابوية الجاري بها العمل ، وأنه سيتم تحرير تقرير جنحة في حقه${warn}${extra}.`
+    }
     case 'source_information':
       return `قادتنا الأبحاث إلى أن المسؤول عن هذا الترامي هو المدعو "${nz(s.name)}" ${s.text ? '، حيث ' + s.text : ''}.`
     case 'libre':
@@ -516,9 +541,11 @@ export const INVESTIGATION_STEP_LABELS: Record<InvestigationStepType, string> = 
   transfert_domicile: 'انتقال إلى محل سكنى المخالف (بعد إخبارية)',
   rencontre_declaration: 'الالتقاء بشخص وتصريحه',
   presentation_spontanee: 'تقدم المعني بالأمر من تلقاء نفسه بعين المكان',
-  coordination_surete: 'التنسيق مع مصالح الأمن (الهوية الكاملة)',
+  coordination_surete: 'التنسيق مع الأمن الوطني (الهوية الكاملة)',
   coordination_autorite: 'التنسيق مع السلطة المحلية',
-  avertissement: 'التصريح للمخالف بالمخالفة وإنذاره',
+  coordination_gendarmerie: 'التنسيق مع الدرك الملكي',
+  ouverture_enquete: 'فتح البحث (رفقة باقي المتدخلين)',
+  avertissement: 'التصريح للمخالف وإنذاره',
   source_information: 'مصدر إخباري حدد المسؤول',
   libre: 'فقرة حرة',
 }
@@ -675,7 +702,7 @@ export function composePV(inp: PVComposeInput, parcelCoordPoints: PVCoordPoint[]
   const areaSummaryLines: string[] = [`مساحة القطعة الاجمالية حوالي ${areaText}`]
   inp.features.forEach(f => {
     const a = featureAreaText(f)
-    if (a && f.showOnPlan) areaSummaryLines.push(`مساحة ${f.label} حوالي ${a}`)
+    if (a && f.showOnPlan && !f.noArea) areaSummaryLines.push(`مساحة ${f.label} حوالي ${a}`)
   })
 
   return {
