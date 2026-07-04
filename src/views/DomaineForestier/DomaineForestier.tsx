@@ -177,6 +177,35 @@ async function rebuildForestReferenceFromLayers(remainingForestLayers: any[]): P
 }
 
 // ─── Map helper components (unchanged) ───────────────────────────────────────
+
+/** يعرض هندسات السياق غير المضلّعة (خطوط ونقاط) للمحضر كطبقة مرجعية L.geoJSON
+ *  قابلة للالتصاق (snapping). المضلعات تُعرض عبر static_polygon. */
+const ContextNonPolygons = ({ features }: { features: Array<{ label: string; geojson: any; color?: string }> }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (!map) return;
+    const group = L.geoJSON(undefined, {
+      style: (f: any) => ({ color: f?.properties?.__color || '#6b7280', weight: 3, opacity: 0.7, dashArray: '5,4' }),
+      pointToLayer: (f: any, latlng: any) => L.circleMarker(latlng, {
+        radius: 6, color: f?.properties?.__color || '#6b7280', weight: 2, fillOpacity: 0.5,
+      }),
+    });
+    features.forEach(cf => {
+      const t = cf.geojson?.type === 'Feature' ? cf.geojson.geometry?.type : cf.geojson?.type;
+      if (t && t !== 'Polygon' && t !== 'MultiPolygon') {
+        const feat = cf.geojson.type === 'Feature'
+          ? { ...cf.geojson, properties: { ...(cf.geojson.properties || {}), __color: cf.color, __label: cf.label } }
+          : { type: 'Feature', geometry: cf.geojson, properties: { __color: cf.color, __label: cf.label } };
+        try { group.addData(feat as any); } catch {}
+      }
+    });
+    group.bindTooltip((l: any) => l?.feature?.properties?.__label || 'مرجع', { sticky: true });
+    group.addTo(map);
+    return () => { try { map.removeLayer(group); } catch {} };
+  }, [map, features]);
+  return null;
+};
+
 function MapResizeHandler() {
   const map = useMap();
   useEffect(() => {
@@ -606,8 +635,13 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 
   // ── الربط المكاني مع قسم المنازعات عبر window (لا استيراد ⇒ لا خطأ مسار) — النقطة 1 ──
   const [pickingForCase, setPickingForCase] = useState<boolean>(() => { try { return !!(window as any).__anefParcelPicking; } catch { return false; } });
+  const readTargetKind = (): 'pv' | 'case' | null => {
+    try { const r = sessionStorage.getItem('anef_parcel_target'); return r ? (JSON.parse(r).kind ?? null) : null; } catch { return null; }
+  };
+  const [pickTargetKind, setPickTargetKind] = useState<'pv' | 'case' | null>(readTargetKind());
+  const [contextNonPoly, setContextNonPoly] = useState<Array<{ label: string; geojson: any; color?: string }>>([]);
   useEffect(() => {
-    const sync = () => { try { setPickingForCase(!!(window as any).__anefParcelPicking); } catch {} };
+    const sync = () => { try { setPickingForCase(!!(window as any).__anefParcelPicking); setPickTargetKind(readTargetKind()); } catch {} };
     sync();
     window.addEventListener('parcel:pick-requested', sync);
     window.addEventListener('parcel:pick-cancelled', sync);
@@ -621,6 +655,9 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 
   const cancelParcelPick = () => {
     try { (window as any).__anefParcelPicking = false; } catch {}
+    try { sessionStorage.removeItem('anef_pv_context_features'); } catch {}
+    setCustomLayers((curr: any[]) => curr.filter((l: any) => !String(l.id).startsWith('pv-context-')));
+    setContextNonPoly([]);
     window.dispatchEvent(new CustomEvent('parcel:pick-cancelled'));
     setPickingForCase(false);
   };
@@ -672,9 +709,33 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addToast]);
 
-  // عند التحميل + عند كل طلب فتح خريطة: استهلك طلب «معاينة القطعة» إن وُجد.
+  /** يرسم هندسات المخالفات الأخرى لنفس المحضر كطبقات مرجعية (للـ snapping وتفادي التداخل). */
+  const showContextFeatures = useCallback(() => {
+    let ctx: Array<{ label: string; geojson: any; color?: string }> = [];
+    try { const r = sessionStorage.getItem('anef_pv_context_features'); ctx = r ? JSON.parse(r) : []; } catch {}
+    // خطوط ونقاط السياق تُعرض عبر ContextNonPolygons ؛ المضلعات عبر static_polygon
+    setContextNonPoly(ctx.filter(cf => {
+      const t = cf.geojson?.type === 'Feature' ? cf.geojson.geometry?.type : cf.geojson?.type;
+      return t && t !== 'Polygon' && t !== 'MultiPolygon';
+    }));
+    setCustomLayers((curr: any[]) => {
+      const without = curr.filter((l: any) => !String(l.id).startsWith('pv-context-'));
+      const layers = ctx.map((cf, i) => {
+        const areaCoords = geojsonToAreaCoords(cf.geojson);
+        if (!areaCoords || areaCoords.length < 3) return null;
+        return {
+          id: `pv-context-${i}`, name: `مرجع: ${cf.label}`, type: 'static_polygon',
+          areaCoords, color: cf.color || '#6b7280', visible: true, opacity: 0.6, isContext: true,
+        };
+      }).filter(Boolean);
+      return [...without, ...layers];
+    });
+  }, []);
+
+  // عند التحميل + عند كل طلب فتح خريطة: استهلك «معاينة القطعة» واعرض سياق المخالفات.
   useEffect(() => {
     const consume = () => {
+      showContextFeatures();
       try {
         const raw = sessionStorage.getItem('anef_show_parcel');
         if (raw) {
@@ -699,8 +760,12 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     };
     consume();
     window.addEventListener('anef:open-map', consume);
-    return () => window.removeEventListener('anef:open-map', consume);
-  }, [showLinkedParcel]);
+    window.addEventListener('parcel:pick-requested', consume);
+    return () => {
+      window.removeEventListener('anef:open-map', consume);
+      window.removeEventListener('parcel:pick-requested', consume);
+    };
+  }, [showLinkedParcel, showContextFeatures]);
 
   /** يبني بطاقة تموقع القطعة، يحفظها في domaine.parcels مربوطةً بالملف/المحضر، ثم يُسلّمها لقسم المنازعات. */
   const attachParcelToCase = async () => {
@@ -762,6 +827,9 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
         capturedAt: new Date().toISOString(),
       };
       try { (window as any).__anefParcelPicking = false; } catch {}
+      try { sessionStorage.removeItem('anef_pv_context_features'); } catch {}
+      setCustomLayers((curr: any[]) => curr.filter((l: any) => !String(l.id).startsWith('pv-context-')));
+      setContextNonPoly([]);
       try { sessionStorage.setItem('anef_parcel_pending', JSON.stringify(location)); } catch {}
       window.dispatchEvent(new CustomEvent('parcel:delivered', { detail: location }));
       // ── توجيه العودة حسب نوع الهدف ──
@@ -918,6 +986,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
 
           <FeatureGroup ref={featureGroupRef} />
           <GeomanSetup setCustomLayers={setCustomLayers} onLayerImported={handleLayerImported} />
+          {contextNonPoly.length > 0 && <ContextNonPolygons features={contextNonPoly} />}
           <MeasureSetup />
           <MapEvents setCoords={setCoords} onIdentify={handleIdentify} customLayersRef={customLayersRef} />
           <MapResizeTracker isPanelCollapsed={isPanelCollapsed} />
@@ -961,11 +1030,13 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
             <div className="flex items-center gap-3 bg-emerald-600 text-white rounded-2xl shadow-2xl px-4 py-2.5">
               <MapPin className="w-4 h-4 shrink-0" />
               <p className="text-[12px] font-bold flex-1 leading-snug">
-                وضع تحديد القطعة لملف قضائي — ارسم القطعة (يُحسب التداخل تلقائياً){lastImportedLayer ? ' ثم أرفقها' : ''}.
+                {pickTargetKind === 'pv'
+                  ? <>وضع رسم مخالفة للمحضر — ارسم الشكل (مضلع/خط/نقطة){lastImportedLayer ? ' ثم أرفقه بالمحضر' : ''}. المخالفات السابقة معروضة كمرجع للالتصاق (snapping).</>
+                  : <>وضع تحديد القطعة لملف قضائي — ارسم القطعة (يُحسب التداخل تلقائياً){lastImportedLayer ? ' ثم أرفقها' : ''}.</>}
               </p>
               <button onClick={attachParcelToCase} disabled={!lastImportedLayer}
                 className="shrink-0 bg-white text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed font-bold text-[12px] px-3 py-1.5 rounded-lg transition-colors">
-                إرفاق القطعة بالملف
+                {pickTargetKind === 'pv' ? 'إرفاق بالمحضر' : 'إرفاق القطعة بالملف'}
               </button>
               <button onClick={cancelParcelPick} title="إلغاء"
                 className="shrink-0 text-white/80 hover:text-white transition-colors">

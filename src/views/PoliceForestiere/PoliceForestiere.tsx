@@ -22,7 +22,8 @@ import { exportChevauchementDocx } from '@/lib/forestDocx';
 import {
   requestParcelPickForPV, requestParcelPickForFeature, onParcelDelivered, consumePendingParcel,
   consumeFeatureTarget, consumeReturnToPV, hasPendingParcel, savePVParcel, extractCoordPoints,
-  areaToHaAreCa, showPVParcelOnMap, wgs84ToLambert, lambertToWgs84, type DeliveredParcel,
+  areaToHaAreCa, showPVParcelOnMap, wgs84ToLambert, lambertToWgs84,
+  type DeliveredParcel, type PVContextFeature,
 } from '@/lib/pvParcelBridge';
 
 const customIcon = new L.Icon({
@@ -345,17 +346,36 @@ export function PoliceForestiere() {
     setIsLoading(false);
   };
 
-  useEffect(() => {
-    fetchData();
-    setDraftAvailable(hasDraft());
-    // Retour depuis la carte (drapeau posé au départ) OU livraison en attente
-    // → ROUVRIR automatiquement le brouillon du PV, à la même étape, avec la
-    //   parcelle dessinée. Plus AUCUNE perte en passant par le Domaine Forestier.
+  // يفتح مسودة المحضر إن وُجد سبب للعودة (علم العودة / تسليم قطعة معلّق).
+  const resumeIfNeeded = () => {
     if ((consumeReturnToPV() || hasPendingParcel()) && hasDraft()) {
       setEditRecord(null);
       setResumeDraft(true);
       setShowForm(true);
+      return true;
     }
+    return false;
+  };
+
+  useEffect(() => {
+    fetchData();
+    setDraftAvailable(hasDraft());
+    // عند التركيب: عودة مباشرة من الخريطة.
+    resumeIfNeeded();
+
+    // مستمع حيّ: قسم الملك الغابوي يبثّ 'anef:open-police' بعد «إرفاق بالمحضر».
+    // نلتقطه هنا داخل الوحدة نفسها فنفتح المحضر مباشرة عند المخالفة التالية،
+    // دون الاعتماد على مستمع في ملف الهيكل (استقلال تام للوحدة).
+    const onOpenPolice = () => { setTimeout(resumeIfNeeded, 0); };
+    window.addEventListener('anef:open-police', onOpenPolice);
+    // احتياط: إن رُكّب القسم بعد وصول الحدث، نلتقط العودة عند استعادة التبويب.
+    const onVisible = () => { if (document.visibilityState === 'visible') resumeIfNeeded(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('anef:open-police', onOpenPolice);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const openNew = () => { clearDraft(); setDraftAvailable(false); setEditRecord(null); setResumeDraft(false); setShowForm(true); };
@@ -889,6 +909,17 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
 
   // مركز التحليق نحو موقع المخالفة على خريطة الملك الغابوي:
   // النقطة المختارة يدويا ، وإلا تحويل عكسي لإحداثيات Lambert المدخلة.
+  // هندسات المخالفات الأخرى المرسومة سلفا (طبقات مرجعية رمادية للـ snapping) +
+  // القطعة الإجمالية إن وُجدت. تُستثنى المخالفة المستهدفة نفسها.
+  const contextFor = (excludeId?: string): PVContextFeature[] => {
+    const ctx: PVContextFeature[] = [];
+    if (form.parcelGeojson) ctx.push({ label: 'القطعة الإجمالية', geojson: form.parcelGeojson, color: '#000000' });
+    form.features.forEach(ft => {
+      if (ft.id !== excludeId && ft.geojson) ctx.push({ label: ft.label || 'مخالفة', geojson: ft.geojson, color: ft.symbol.color });
+    });
+    return ctx;
+  };
+
   const centerForPick = (): { lat: number; lng: number } | undefined => {
     if (mapCoords) return mapCoords;
     const x = toNum(form.coordX), y = toNum(form.coordY);
@@ -1466,7 +1497,7 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                     <p className="text-xs text-stone-500 mt-1">ارسم حدود القطعة الإجمالية ليُحسب المركز والمساحة والتداخل تلقائياً. هندسة كل مخالفة تُرسم لاحقاً في خطوة «المخالفات».</p>
                   </div>
                 </div>
-                <button type="button" onClick={() => requestParcelPickForPV(pvNum, centerForPick())}
+                <button type="button" onClick={() => requestParcelPickForPV(pvNum, centerForPick(), contextFor())}
                   className="flex items-center justify-center gap-2 px-5 py-3 bg-emerald-700 text-white rounded-xl text-xs uppercase tracking-widest font-bold hover:bg-emerald-800 transition-colors shadow-md shadow-emerald-900/10 whitespace-nowrap">
                   <Crosshair className="size-4" /> رسم القطعة الإجمالية
                 </button>
@@ -1701,7 +1732,7 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                     </div>
                   )}
                   <div className="flex items-end gap-2">
-                    <button type="button" onClick={() => requestParcelPickForFeature(pvNum, ft.id, ft.label || `مخالفة ${idx + 1}`, centerForPick())}
+                    <button type="button" onClick={() => requestParcelPickForFeature(pvNum, ft.id, ft.label || `مخالفة ${idx + 1}`, centerForPick(), contextFor(ft.id))}
                       className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-emerald-700 text-white rounded-lg text-xs font-bold hover:bg-emerald-800 transition-colors">
                       <Crosshair className="size-3.5" /> رسم على الخريطة
                     </button>

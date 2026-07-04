@@ -54,6 +54,7 @@ export interface DeliveredParcel {
 
 const FEATURE_TARGET_KEY = 'anef_pv_feature_target'
 const RETURN_KEY = 'anef_return_to_pv'
+const CONTEXT_KEY = 'anef_pv_context_features'  // هندسات المخالفات الأخرى (للـ snapping)
 
 /** WGS84 → Lambert Nord Maroc (pour le clic manuel sur la mini-carte). */
 export function wgs84ToLambert(lat: number, lng: number): { x: number; y: number } {
@@ -70,6 +71,23 @@ export function lambertToWgs84(x: number, y: number): { lat: number; lng: number
 /** Centre demandé pour la carte : DomaineForestier le lit au montage et fait
  *  flyTo dessus (voir snippet d'intégration). */
 export interface MapFlyTo { lat: number; lng: number; zoom?: number }
+
+/** Géométrie de contexte à afficher en gris (référence de snapping) : les autres
+ *  entités déjà dessinées du MÊME PV. Écrite par le PV, lue par DomaineForestier. */
+export interface PVContextFeature { label: string; geojson: any; color?: string }
+function setContextFeatures(feats?: PVContextFeature[]) {
+  try {
+    if (feats && feats.length) sessionStorage.setItem(CONTEXT_KEY, JSON.stringify(feats))
+    else sessionStorage.removeItem(CONTEXT_KEY)
+  } catch {}
+}
+
+/** Lue par DomaineForestier au montage / à l'ouverture de la carte. Ne consomme pas
+ *  (le nettoyage se fait explicitement via clearContextFeatures au retour). */
+export function getContextFeatures(): PVContextFeature[] {
+  try { const r = sessionStorage.getItem(CONTEXT_KEY); return r ? JSON.parse(r) : [] } catch { return [] }
+}
+export function clearContextFeatures() { try { sessionStorage.removeItem(CONTEXT_KEY) } catch {} }
 function setFlyTo(center?: MapFlyTo) {
   try {
     if (center) sessionStorage.setItem('anef_map_flyto', JSON.stringify({ zoom: 17, ...center }))
@@ -79,9 +97,10 @@ function setFlyTo(center?: MapFlyTo) {
 
 /** Demande à la carte le dessin de la PARCELLE GLOBALE du PV.
  *  id volontairement vide : l'écriture domaine.parcels se fera après save. */
-export function requestParcelPickForPV(ref: string, center?: MapFlyTo): void {
+export function requestParcelPickForPV(ref: string, center?: MapFlyTo, context?: PVContextFeature[]): void {
   try {
     setFlyTo(center)
+    setContextFeatures(context)
     sessionStorage.removeItem(FEATURE_TARGET_KEY) // livraison destinée à la parcelle globale
     sessionStorage.setItem(RETURN_KEY, '1')       // au retour → rouvrir le brouillon PV
     sessionStorage.setItem('anef_parcel_target', JSON.stringify({ kind: 'pv' as const, id: '', ref }))
@@ -93,9 +112,10 @@ export function requestParcelPickForPV(ref: string, center?: MapFlyTo): void {
 
 /** Demande à la carte le dessin de la géométrie d'UNE ENTITÉ (infraction).
  *  La carte suit le protocole inchangé ; le PV route la livraison via featureId. */
-export function requestParcelPickForFeature(ref: string, featureId: string, featureLabel: string, center?: MapFlyTo): void {
+export function requestParcelPickForFeature(ref: string, featureId: string, featureLabel: string, center?: MapFlyTo, context?: PVContextFeature[]): void {
   try {
     setFlyTo(center)
+    setContextFeatures(context)
     sessionStorage.setItem(FEATURE_TARGET_KEY, featureId)
     sessionStorage.setItem(RETURN_KEY, '1')
     sessionStorage.setItem('anef_parcel_target', JSON.stringify({ kind: 'pv' as const, id: '', ref: `${ref} — ${featureLabel}` }))
@@ -142,6 +162,7 @@ export function cancelParcelPick(): void {
     sessionStorage.removeItem('anef_parcel_target')
     sessionStorage.removeItem(FEATURE_TARGET_KEY)
     sessionStorage.removeItem(RETURN_KEY)
+    sessionStorage.removeItem(CONTEXT_KEY)
   } catch {}
   window.dispatchEvent(new CustomEvent('parcel:pick-cancelled'))
 }
