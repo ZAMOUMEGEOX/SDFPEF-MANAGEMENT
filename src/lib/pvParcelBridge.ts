@@ -88,6 +88,15 @@ export function getContextFeatures(): PVContextFeature[] {
   try { const r = sessionStorage.getItem(CONTEXT_KEY); return r ? JSON.parse(r) : [] } catch { return [] }
 }
 export function clearContextFeatures() { try { sessionStorage.removeItem(CONTEXT_KEY) } catch {} }
+
+/** هندسة مخالفة مرسومة سلفا لتحميلها قابلة للتعديل في الخريطة (تُستهلك مرة). */
+export function consumeEditGeojson(): any | null {
+  try {
+    const r = sessionStorage.getItem('anef_edit_geojson')
+    if (r) { sessionStorage.removeItem('anef_edit_geojson'); return JSON.parse(r) }
+  } catch {}
+  return null
+}
 function setFlyTo(center?: MapFlyTo) {
   try {
     if (center) sessionStorage.setItem('anef_map_flyto', JSON.stringify({ zoom: 17, ...center }))
@@ -112,10 +121,13 @@ export function requestParcelPickForPV(ref: string, center?: MapFlyTo, context?:
 
 /** Demande à la carte le dessin de la géométrie d'UNE ENTITÉ (infraction).
  *  La carte suit le protocole inchangé ; le PV route la livraison via featureId. */
-export function requestParcelPickForFeature(ref: string, featureId: string, featureLabel: string, center?: MapFlyTo, context?: PVContextFeature[]): void {
+export function requestParcelPickForFeature(ref: string, featureId: string, featureLabel: string, center?: MapFlyTo, context?: PVContextFeature[], existingGeojson?: any): void {
   try {
     setFlyTo(center)
     setContextFeatures(context)
+    // إن كانت المخالفة مرسومة سلفا: نمرّر هندستها لتُحمّل قابلة للتعديل في الخريطة
+    if (existingGeojson) sessionStorage.setItem('anef_edit_geojson', JSON.stringify(existingGeojson))
+    else sessionStorage.removeItem('anef_edit_geojson')
     sessionStorage.setItem(FEATURE_TARGET_KEY, featureId)
     sessionStorage.setItem(RETURN_KEY, '1')
     sessionStorage.setItem('anef_parcel_target', JSON.stringify({ kind: 'pv' as const, id: '', ref: `${ref} — ${featureLabel}` }))
@@ -163,6 +175,7 @@ export function cancelParcelPick(): void {
     sessionStorage.removeItem(FEATURE_TARGET_KEY)
     sessionStorage.removeItem(RETURN_KEY)
     sessionStorage.removeItem(CONTEXT_KEY)
+    sessionStorage.removeItem('anef_edit_geojson')
   } catch {}
   window.dispatchEvent(new CustomEvent('parcel:pick-cancelled'))
 }

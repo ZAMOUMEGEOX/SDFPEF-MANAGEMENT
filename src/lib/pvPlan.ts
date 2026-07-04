@@ -257,25 +257,24 @@ export function buildPlanSvg(input: PlanInput): PlanResult | null {
     <text x="${(barX + barPx + 26).toFixed(1)}" y="${barY + 7}" text-anchor="middle" font-size="12">متر</text>
   </g>`
 
-  // — إطار «المساحات» : صندوق معنون أعلى اليمين تحت العنوان مباشرة —
-  //   جذر مشكلة الخروج عن الإطار: canvas لا يدعم direction/rtl مع text-anchor=end
-  //   → الحل الحتمي: توسيط كل سطر داخل عرض محسوب من أطول سطر (بلا direction).
+  // — إطار «المساحات» مصغّر في أعلى اليمين، مُزاح عن منطقة الرسم (لا يغطّي القطعة) —
+  //   canvas لا يدعم direction/rtl مع text-anchor=end → توسيط داخل عرض محسوب.
   let areaBox = ''
   if (input.areaSummaryLines.length) {
-    const AR_CHAR = 8.6           // عرض تقريبي لحرف عربي غليظ بحجم 12
-    const lineH = 19
+    const AR_CHAR = 7.0          // مصغّر (حجم 9.5)
+    const lineH = 15
     const maxLen = Math.max(...input.areaSummaryLines.map(l => l.length))
-    const boxW = Math.min(Math.round(W * 0.46), Math.max(250, Math.round(maxLen * AR_CHAR) + 36))
-    const headH = 24
-    const boxH = headH + input.areaSummaryLines.length * lineH + 12
-    const bx = W - M - innerPad - boxW, by = M + 46
+    const boxW = Math.min(Math.round(W * 0.33), Math.max(200, Math.round(maxLen * AR_CHAR) + 22))
+    const headH = 18
+    const boxH = headH + input.areaSummaryLines.length * lineH + 8
+    const bx = W - M - innerPad - boxW, by = M + 44
     const cx = bx + boxW / 2
     areaBox =
-      `<rect x="${bx}" y="${by}" width="${boxW}" height="${boxH}" fill="#ffffff" fill-opacity="0.95" stroke="#111" stroke-width="1.4"/>` +
-      `<text x="${cx}" y="${by + 17}" text-anchor="middle" font-size="13.5" font-weight="bold" font-family="Arial" text-decoration="underline">المساحات</text>` +
-      `<line x1="${bx}" y1="${by + headH}" x2="${bx + boxW}" y2="${by + headH}" stroke="#111" stroke-width="0.8"/>` +
+      `<rect x="${bx}" y="${by}" width="${boxW}" height="${boxH}" fill="#ffffff" fill-opacity="0.96" stroke="#111" stroke-width="1"/>` +
+      `<text x="${cx}" y="${by + 13}" text-anchor="middle" font-size="10.5" font-weight="bold" font-family="Arial" text-decoration="underline">المساحات</text>` +
+      `<line x1="${bx}" y1="${by + headH}" x2="${bx + boxW}" y2="${by + headH}" stroke="#111" stroke-width="0.7"/>` +
       input.areaSummaryLines.map((l, i) =>
-        `<text x="${cx}" y="${by + headH + 14 + i * lineH}" text-anchor="middle" font-size="12" font-family="Arial" font-weight="bold">${escXml(l)}</text>`
+        `<text x="${cx}" y="${by + headH + 10 + i * lineH}" text-anchor="middle" font-size="9.5" font-family="Arial" font-weight="bold">${escXml(l)}</text>`
       ).join('')
   }
 

@@ -178,6 +178,46 @@ async function rebuildForestReferenceFromLayers(remainingForestLayers: any[]): P
 
 // ─── Map helper components (unchanged) ───────────────────────────────────────
 
+/** يحمّل هندسة مخالفة مرسومة سلفا كطبقة Geoman قابلة للتعديل (تحريك رؤوس/نقل).
+ *  تُغذّي lastImportedLayer عبر onLoaded حتى تُرفَق بعد التعديل. */
+const EditableFeatureLoader = ({ geojson, onLoaded }: {
+  geojson: any; onLoaded: (id: string, geojson: any, geomType: 'polygon' | 'line' | 'point') => void;
+}) => {
+  const map = useMap();
+  useEffect(() => {
+    if (!map || !geojson) return;
+    const layers: any[] = [];
+    const gj = L.geoJSON(geojson, {
+      pointToLayer: (_f: any, latlng: any) => L.marker(latlng),
+      onEachFeature: (_f: any, layer: any) => {
+        layers.push(layer);
+        try { if (layer.pm) layer.pm.enable({ allowSelfIntersection: false }); } catch {}
+      },
+      style: () => ({ color: '#dc2626', weight: 3, fillColor: '#dc2626', fillOpacity: 0.25 }),
+    }).addTo(map);
+    // نوع الهندسة
+    const t = geojson?.type === 'Feature' ? geojson.geometry?.type : geojson?.type;
+    const geomType: 'polygon' | 'line' | 'point' =
+      t === 'LineString' || t === 'MultiLineString' ? 'line'
+      : t === 'Point' || t === 'MultiPoint' ? 'point' : 'polygon';
+    const id = `edit-${L.stamp(gj)}`;
+    onLoaded(id, geojson, geomType);
+    // عند تعديل الرؤوس: حدّث الهندسة المُرفَقة
+    const refresh = () => {
+      try {
+        const feats = layers.map(l => l.toGeoJSON());
+        const merged = feats.length === 1 ? feats[0] : { type: 'FeatureCollection', features: feats };
+        onLoaded(id, merged, geomType);
+      } catch {}
+    };
+    layers.forEach(l => { l.on('pm:edit', refresh); l.on('pm:dragend', refresh); });
+    // تحليق نحو الهندسة
+    try { map.fitBounds(gj.getBounds(), { maxZoom: 18, padding: [40, 40] }); } catch {}
+    return () => { try { map.removeLayer(gj); } catch {} };
+  }, [map, geojson]);
+  return null;
+};
+
 /** يعرض هندسات السياق غير المضلّعة (خطوط ونقاط) للمحضر كطبقة مرجعية L.geoJSON
  *  قابلة للالتصاق (snapping). المضلعات تُعرض عبر static_polygon. */
 const ContextNonPolygons = ({ features }: { features: Array<{ label: string; geojson: any; color?: string }> }) => {
@@ -640,6 +680,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
   };
   const [pickTargetKind, setPickTargetKind] = useState<'pv' | 'case' | null>(readTargetKind());
   const [contextNonPoly, setContextNonPoly] = useState<Array<{ label: string; geojson: any; color?: string }>>([]);
+  const [editGeojson, setEditGeojson] = useState<any | null>(null);
   useEffect(() => {
     const sync = () => { try { setPickingForCase(!!(window as any).__anefParcelPicking); setPickTargetKind(readTargetKind()); } catch {} };
     sync();
@@ -658,6 +699,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     try { sessionStorage.removeItem('anef_pv_context_features'); } catch {}
     setCustomLayers((curr: any[]) => curr.filter((l: any) => !String(l.id).startsWith('pv-context-')));
     setContextNonPoly([]);
+    setEditGeojson(null);
     window.dispatchEvent(new CustomEvent('parcel:pick-cancelled'));
     setPickingForCase(false);
   };
@@ -736,6 +778,12 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
   useEffect(() => {
     const consume = () => {
       showContextFeatures();
+      // هندسة مخالفة مرسومة سلفا → تحميلها قابلة للتعديل
+      try {
+        const eg = sessionStorage.getItem('anef_edit_geojson');
+        if (eg) { sessionStorage.removeItem('anef_edit_geojson'); setEditGeojson(JSON.parse(eg)); }
+        else setEditGeojson(null);
+      } catch {}
       try {
         const raw = sessionStorage.getItem('anef_show_parcel');
         if (raw) {
@@ -830,6 +878,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       try { sessionStorage.removeItem('anef_pv_context_features'); } catch {}
       setCustomLayers((curr: any[]) => curr.filter((l: any) => !String(l.id).startsWith('pv-context-')));
       setContextNonPoly([]);
+      setEditGeojson(null);
       try { sessionStorage.setItem('anef_parcel_pending', JSON.stringify(location)); } catch {}
       window.dispatchEvent(new CustomEvent('parcel:delivered', { detail: location }));
       // ── توجيه العودة حسب نوع الهدف ──
@@ -987,6 +1036,9 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
           <FeatureGroup ref={featureGroupRef} />
           <GeomanSetup setCustomLayers={setCustomLayers} onLayerImported={handleLayerImported} />
           {contextNonPoly.length > 0 && <ContextNonPolygons features={contextNonPoly} />}
+          {editGeojson && <EditableFeatureLoader geojson={editGeojson} onLoaded={(id, gj, gt) => {
+            setLastImportedLayer({ id, name: 'تعديل المخالفة', geojson: gj, chevauchement: null, province: null, geomType: gt } as any);
+          }} />}
           <MeasureSetup />
           <MapEvents setCoords={setCoords} onIdentify={handleIdentify} customLayersRef={customLayersRef} />
           <MapResizeTracker isPanelCollapsed={isPanelCollapsed} />

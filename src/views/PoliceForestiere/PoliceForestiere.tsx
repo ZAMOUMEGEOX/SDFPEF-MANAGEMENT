@@ -968,17 +968,40 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
     const featureId = consumeFeatureTarget();
     const pts = extractCoordPoints(loc.geojson);
     if (featureId) {
-      setForm(f => ({
-        ...f,
-        features: f.features.map(ft => ft.id === featureId
+      // نوع الهندسة الوارد: من التسليم أو من نوع النقطة (نقطة واحدة = point).
+      const deliveredType: 'polygon' | 'line' | 'point' =
+        (loc as any).geomType || (pts.length === 1 ? 'point' : 'polygon');
+      setForm(f => {
+        const features = f.features.map(ft => ft.id === featureId
           ? {
               ...ft, geojson: loc.geojson, coordPoints: pts,
-              geomType: (loc as any).geomType || ft.geomType || 'polygon',
-              areaM2: (loc as any).geomType === 'polygon' ? (loc.areaM2 || ft.areaM2) : ft.areaM2,
-              lengthM: (loc as any).geomType === 'line' ? ((loc as any).lengthM || ft.lengthM) : ft.lengthM,
+              geomType: deliveredType,
+              areaM2: deliveredType === 'polygon' ? (loc.areaM2 || ft.areaM2) : 0,
+              lengthM: deliveredType === 'line' ? ((loc as any).lengthM || ft.lengthM) : ft.lengthM,
+              // البئر بالإحداثيات: إدراج X/Y في نص المخالفة تلقائيا
+              details: (deliveredType === 'point' && pts[0] && ft.details.includes('X:'))
+                ? ft.details.replace(/X:\s*\.*\s*Y:\s*\.*/,`X: ${pts[0].x} Y: ${pts[0].y}`)
+                : ft.details,
             }
-          : ft),
-      }));
+          : ft);
+        // مؤشر بصري: علّم المخالفة كمرسومة (يُقرأ في بطاقتها)
+        return { ...f, features };
+      });
+      // ── رجوع تلقائي للمخالفة التالية غير المرسومة (تسهيل الرسم المتسلسل) ──
+      setTimeout(() => {
+        setForm(f => {
+          const idx = f.features.findIndex(ft => ft.id === featureId);
+          const next = f.features.slice(idx + 1).find(ft => !ft.geojson && !ft.noArea);
+          if (next) {
+            // نطلب رسم المخالفة التالية مباشرة (يفتح الخريطة مجددا)
+            setTimeout(() => requestParcelPickForFeature(
+              pvNum, next.id, next.label || 'مخالفة',
+              centerForPick(), contextFor(next.id)
+            ), 400);
+          }
+          return f;
+        });
+      }, 0);
       return;
     }
     const { ha, are, ca } = areaToHaAreCa(loc.areaM2);
@@ -1682,6 +1705,14 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                       className="bg-transparent border-b border-stone-200 focus:border-emerald-500 outline-none text-sm font-bold text-stone-800 px-1 py-1 min-w-[220px]" />
                   </div>
                   <div className="flex items-center gap-2">
+                    {/* مؤشر حالة الرسم على الخريطة */}
+                    {ft.geojson ? (
+                      <span className="px-2 py-0.5 bg-emerald-600 text-white text-[10px] font-bold rounded-full whitespace-nowrap flex items-center gap-1">
+                        <Check className="size-3" /> {ft.geomType === 'point' ? 'نقطة محددة' : ft.geomType === 'line' ? 'خط محدد' : 'محددة على الخريطة'}
+                      </span>
+                    ) : !ft.noArea && (
+                      <span className="px-2 py-0.5 bg-amber-100 text-amber-700 border border-amber-200 text-[10px] font-bold rounded-full whitespace-nowrap">لم تُرسم بعد</span>
+                    )}
                     {ft.article && <span className="px-2 py-0.5 bg-stone-100 border border-stone-200 text-stone-600 text-[10px] font-bold rounded-full whitespace-nowrap">الفصل {ft.article}</span>}
                     {ft.transaction && (
                       <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full whitespace-nowrap border ${ft.transaction.includes('%') ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
@@ -1732,9 +1763,9 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
                     </div>
                   )}
                   <div className="flex items-end gap-2">
-                    <button type="button" onClick={() => requestParcelPickForFeature(pvNum, ft.id, ft.label || `مخالفة ${idx + 1}`, centerForPick(), contextFor(ft.id))}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-emerald-700 text-white rounded-lg text-xs font-bold hover:bg-emerald-800 transition-colors">
-                      <Crosshair className="size-3.5" /> رسم على الخريطة
+                    <button type="button" onClick={() => requestParcelPickForFeature(pvNum, ft.id, ft.label || `مخالفة ${idx + 1}`, centerForPick(), contextFor(ft.id), ft.geojson || undefined)}
+                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-bold transition-colors ${ft.geojson ? 'bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50' : 'bg-emerald-700 text-white hover:bg-emerald-800'}`}>
+                      <Crosshair className="size-3.5" /> {ft.geojson ? 'إعادة الرسم / التعديل' : 'رسم على الخريطة'}
                     </button>
                     {ft.geojson && (
                       <button type="button" title="عرض على الخريطة" onClick={() => showPVParcelOnMap(ft.geojson, `${pvNum} — ${ft.label}`)}
@@ -2180,6 +2211,17 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
             {/* Recap */}
             <div className="p-6 bg-stone-50 border border-stone-200 rounded-xl">
               <h4 className="text-sm font-bold text-stone-700 mb-4">ملخص المحضر</h4>
+              {(() => {
+                // المخالفات التي تتطلب رسما ولم تُرسم (استخراج الأتربة مستثنى لأنه ضرر مرتبط)
+                const undrawn = form.features.filter(ft => !ft.geojson && !ft.noArea);
+                if (!undrawn.length) return null;
+                return (
+                  <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+                    <p className="text-xs font-bold text-amber-800 mb-1">⚠ مخالفات لم تُحدَّد على الخريطة بعد:</p>
+                    <p className="text-[11px] text-amber-700">{undrawn.map(ft => ft.label || 'مخالفة').join(' ، ')} — لن تظهر في التصميم ولا في لوائح الإحداثيات.</p>
+                  </div>
+                );
+              })()}
               <div className="space-y-2 text-sm">
                 <SummaryRow label="رقم المحضر" value={pvNum} />
                 <SummaryRow label="تاريخ المعاينة" value={form.dateConstat} />
