@@ -278,6 +278,7 @@ const GeomanSetup = ({ setCustomLayers, onLayerImported }: { setCustomLayers: an
   useEffect(() => {
     map.pm.addControls({
       position: 'topright', drawCircle: false, drawCircleMarker: false,
+      drawMarker: true, // نقطة (بئر) — ضرورية لإدراج إحداثيات X/Y
       drawPolyline: true, drawRectangle: true, drawPolygon: true, drawText: false,
       editMode: true, dragMode: true, cutPolygon: false, removalMode: true,
     });
@@ -679,10 +680,14 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
     try { const r = sessionStorage.getItem('anef_parcel_target'); return r ? (JSON.parse(r).kind ?? null) : null; } catch { return null; }
   };
   const [pickTargetKind, setPickTargetKind] = useState<'pv' | 'case' | null>(readTargetKind());
+  const readTargetRef = (): string | null => {
+    try { const r = sessionStorage.getItem('anef_parcel_target'); return r ? (JSON.parse(r).ref ?? null) : null; } catch { return null; }
+  };
+  const [pickRef, setPickRef] = useState<string | null>(readTargetRef());
   const [contextNonPoly, setContextNonPoly] = useState<Array<{ label: string; geojson: any; color?: string }>>([]);
   const [editGeojson, setEditGeojson] = useState<any | null>(null);
   useEffect(() => {
-    const sync = () => { try { setPickingForCase(!!(window as any).__anefParcelPicking); setPickTargetKind(readTargetKind()); } catch {} };
+    const sync = () => { try { setPickingForCase(!!(window as any).__anefParcelPicking); setPickTargetKind(readTargetKind()); setPickRef(readTargetRef()); } catch {} };
     sync();
     window.addEventListener('parcel:pick-requested', sync);
     window.addEventListener('parcel:pick-cancelled', sync);
@@ -846,10 +851,15 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       // هدف الربط القادم من قسم المنازعات (ملف/محضر)
       let target: { kind: 'case' | 'pv'; id: string; ref?: string } | null = null;
       try { const raw = sessionStorage.getItem('anef_parcel_target'); if (raw) target = JSON.parse(raw); } catch {}
+      // النوع الفعلي: الهدف المخزَّن ثم حالة React (تبقى حتى لو فُقد التخزين) ثم 'pv' افتراضاً.
+      // هكذا لا يُحال المستخدم أبداً إلى صفحة المنازعات عند رسم مخالفة محضر (النقطة 2).
+      const resolvedKind: 'case' | 'pv' = target?.kind ?? pickTargetKind ?? 'pv';
 
       // حفظ حقيقي في domaine.parcels (idempotent: CTX-CASE-<id> / CTX-PV-<id>)
+      // ملاحظة: مخالفة المحضر (pv) بمعرّف فارغ لا تُحفظ هنا — تُحفظ بعد إنشاء المحضر
+      // عبر savePVParcel في قسم الشرطة الغابوية. نتفادى إنشاء سجل CTX-PV- فارغ.
       let parcelId: string | null = null;
-      if (target?.id) {
+      if (target?.id && resolvedKind === 'case') {
         try {
           parcelId = await saveParcelForTarget({
             target,
@@ -889,7 +899,7 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       //     لا نبث 'anef:return-from-map' إطلاقا لأنه حدث خاص بقسم المنازعات
       //     ومستمعه في الهيكل يحيل دائما على contentieux.
       //   • ملف المنازعات (kind==='case' أو غير محدد) → 'anef:return-from-map'.
-      if (target?.kind === 'pv') {
+      if (resolvedKind === 'pv') {
         window.dispatchEvent(new CustomEvent('anef:open-police'));
       } else {
         window.dispatchEvent(new CustomEvent('anef:return-from-map'));
@@ -897,8 +907,8 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
       setPickingForCase(false);
       addToast({
         type: 'success',
-        title: parcelId ? 'سُجِّلت القطعة وأُرفقت ✓' : 'أُرفقت القطعة ✓',
-        msg: target?.kind === 'pv'
+        title: parcelId ? 'سُجِّلت القطعة وأُرفقت ✓' : 'أُرفقت المخالفة ✓',
+        msg: resolvedKind === 'pv'
           ? 'ستُستكمل تلقائيا داخل محضر الشرطة الغابوية'
           : (parcelId ? 'محفوظة في قاعدة الملك الغابوي ومربوطة بالملف' : 'عُد إلى قسم المنازعات لإكمال الملف'),
       });
@@ -1076,16 +1086,26 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
           </div>
         )}
 
-        {/* ── وضع تحديد قطعة لملف قضائي (النقطة 1) ── */}
-        {pickingForCase && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1003] pointer-events-auto w-[min(92%,560px)]">
+        {/* ── وضع تحديد قطعة لملف قضائي / رسم مخالفة محضر (النقطتان 1 و5) ── */}
+        {pickingForCase && (() => {
+          // اسم المخالفة الجاري رسمها = الجزء بعد « — » في المرجع (ref).
+          const featureLabel = pickTargetKind === 'pv' && pickRef && pickRef.includes(' — ')
+            ? pickRef.split(' — ').slice(1).join(' — ').trim() : null;
+          return (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1003] pointer-events-auto w-[min(92%,600px)]" dir="rtl">
             <div className="flex items-center gap-3 bg-emerald-600 text-white rounded-2xl shadow-2xl px-4 py-2.5">
               <MapPin className="w-4 h-4 shrink-0" />
-              <p className="text-[12px] font-bold flex-1 leading-snug">
-                {pickTargetKind === 'pv'
-                  ? <>وضع رسم مخالفة للمحضر — ارسم الشكل (مضلع/خط/نقطة){lastImportedLayer ? ' ثم أرفقه بالمحضر' : ''}. المخالفات السابقة معروضة كمرجع للالتصاق (snapping).</>
-                  : <>وضع تحديد القطعة لملف قضائي — ارسم القطعة (يُحسب التداخل تلقائياً){lastImportedLayer ? ' ثم أرفقها' : ''}.</>}
-              </p>
+              <div className="flex-1 min-w-0">
+                {/* العنوان = اسم المخالفة ليعرف المستخدم أيّ مخالفة يرسم */}
+                {featureLabel && (
+                  <p className="text-[13px] font-black leading-tight truncate">✎ رسم: {featureLabel}</p>
+                )}
+                <p className="text-[11px] font-medium opacity-95 leading-snug">
+                  {pickTargetKind === 'pv'
+                    ? <>ارسم الشكل (مضلع/خط/نقطة){lastImportedLayer ? ' ثم أرفقه بالمحضر' : ''} — المخالفات السابقة معروضة كمرجع للالتصاق (snapping).</>
+                    : <>وضع تحديد القطعة لملف قضائي — ارسم القطعة (يُحسب التداخل تلقائياً){lastImportedLayer ? ' ثم أرفقها' : ''}.</>}
+                </p>
+              </div>
               <button onClick={attachParcelToCase} disabled={!lastImportedLayer}
                 className="shrink-0 bg-white text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed font-bold text-[12px] px-3 py-1.5 rounded-lg transition-colors">
                 {pickTargetKind === 'pv' ? 'إرفاق بالمحضر' : 'إرفاق القطعة بالملف'}
@@ -1096,7 +1116,8 @@ export function DomaineForestier({ setCurrentView }: DomaineForestierProps) {
               </button>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* ── Undo button ── */}
         {canUndo && (
@@ -2425,6 +2446,38 @@ function CouchesTab({
     if (bounds?.isValid()) window.dispatchEvent(new CustomEvent('flyToBounds', { detail: bounds }));
   };
 
+  // ── تعديل هندسة طبقة مرسومة/مستوردة مباشرة من اللوحة الجانبية (النقطة 5) ──
+  //   يفعّل/يوقف تحرير Geoman (تحريك الرؤوس والنقل) على الطبقة المستهدفة، ويحدّث
+  //   الهندسة المرفَقة عند كل تعديل حتى تُحفظ نسختها المعدّلة.
+  const editLayer = (id: string) => {
+    const layer = customLayers.find((l: any) => l.id === id);
+    const ll: any = layer?.leafletLayer;
+    if (!ll) return;
+    const enable = (t: any) => { try { t?.pm?.enable?.({ allowSelfIntersection: false }); } catch {} };
+    const disable = (t: any) => { try { t?.pm?.disable?.(); } catch {} };
+    const eachSub = (fn: (t: any) => void) => {
+      if (typeof ll.eachLayer === 'function') ll.eachLayer(fn); else fn(ll);
+    };
+    // حالة التحرير مخزَّنة على الكائن نفسه
+    const nowEditing = !(ll.__pmEditing);
+    ll.__pmEditing = nowEditing;
+    eachSub(sub => {
+      nowEditing ? enable(sub) : disable(sub);
+      if (nowEditing && !sub.__pmBound) {
+        sub.__pmBound = true;
+        const refresh = () => {
+          try {
+            const gj = typeof ll.toGeoJSON === 'function' ? ll.toGeoJSON() : sub.toGeoJSON();
+            setCustomLayers((prev: any) => prev.map((l: any) => l.id === id ? { ...l, geojson: gj } : l));
+            onLayerImported?.(id, layer.name, gj);
+          } catch {}
+        };
+        sub.on('pm:edit', refresh); sub.on('pm:dragend', refresh); sub.on('pm:markerdragend', refresh);
+      }
+    });
+    zoomToLayer(id);
+  };
+
   // Auto-load forest on mount
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -2681,6 +2734,7 @@ function CouchesTab({
               onChangeFillMode={(m: string) => changeFillMode(layer.id, m)}
               onChangeSymbol={(s: string) => changeSymbol(layer.id, s)}
               onZoom={() => zoomToLayer(layer.id)}
+              onEdit={layer.leafletLayer ? () => editLayer(layer.id) : undefined}
               onRename={(name: string) => renameLayer(layer.id, name)}
             />
           ));
@@ -3385,15 +3439,17 @@ function StatsPanel({ customLayers, chevauchementResults }: { customLayers: any[
 // ─────────────────────────────────────────────────────────────────────────────
 const PRESET_COLORS = ["#22c55e","#38bdf8","#eab308","#ef4444","#a855f7","#ec4899","#f97316","#06b6d4","#84cc16","#f43f5e"];
 
-function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeColor, onChangeOpacity, onChangeSize, onChangeFillMode, onChangeSymbol, onZoom, onRename }: {
+function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeColor, onChangeOpacity, onChangeSize, onChangeFillMode, onChangeSymbol, onZoom, onEdit, onRename }: {
   layer: any;
   chevauchementResult?: ChevauchementResult;
   onToggle: () => void; onDelete: () => void;
   onChangeColor: (c: string) => void; onChangeOpacity: (o: number) => void;
   onChangeSize: (s: number) => void; onChangeFillMode: (m: string) => void;
   onChangeSymbol: (s: string) => void; onZoom: () => void;
+  onEdit?: () => void;
   onRename?: (name: string) => void;
 }) {
+  const [isEditing, setIsEditing] = useState(false);
   const [showStyle, setShowStyle] = useState(false);
   const [showChev, setShowChev] = useState(false);
   const [showColorPicker, setShowColorPicker] = useState(false);
@@ -3514,6 +3570,16 @@ function LayerItem({ layer, chevauchementResult, onToggle, onDelete, onChangeCol
             className="p-1.5 text-(--text-muted) hover:text-(--text-main) hover:bg-(--bg-surface) rounded-md opacity-0 group-hover/layer:opacity-100 transition-all">
             <Maximize className="w-3.5 h-3.5" />
           </button>
+          {/* Édition géométrie (déplacer sommets / points) — النقطة 5 */}
+          {onEdit && (
+            <button onClick={() => { onEdit(); setIsEditing(v => !v); }}
+              title={isEditing ? 'إنهاء التعديل' : 'تعديل الهندسة (تحريك الرؤوس/النقط)'}
+              className={cn("p-1.5 rounded-md transition-all",
+                isEditing ? "bg-amber-500/15 text-amber-600 border border-amber-500/40"
+                          : "text-(--text-muted) hover:text-amber-600 hover:bg-amber-500/10 opacity-60 hover:opacity-100 group-hover/layer:opacity-100")}>
+              <Edit3 className="w-3.5 h-3.5" />
+            </button>
+          )}
           {/* Rename — always visible pencil icon */}
           {onRename && !isRenaming && (
             <button

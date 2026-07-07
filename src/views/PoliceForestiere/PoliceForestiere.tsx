@@ -82,39 +82,91 @@ const uid = () =>
 // ══════════════════════════════════════════════════════
 const FOREST_LIMITS_URLS = ['/assets/data/forest_limits.geojson', '/assets/data/forest_limits.json']
 
+// ── قاموس ترجمة أسماء الغابات والأقسام (fr → ar) — عمل جذري موسّع ──
+//   المفاتيح كلها بحروف صغيرة وبدون تشكيل. تُطبَّق على أسماء الغابات (foret)
+//   وأسماء الأقسام (canton) على السواء عبر الدالة translateForestName أدناه.
+//   أضِف أي اسم جديد هنا فيُترجَم فوراً في كامل التطبيق (المحضر + القوائم).
 const FORET_AR_DICT: Record<string, string> = {
-  'haouz': 'الحوز', 'el haouz': 'الحوز', 'azfa': 'عزفة', 'azla': 'أزلا',
-  'mellalyen': 'الملاليين', 'melaliyen': 'الملاليين', 'mellaliyen': 'الملاليين', 'mellalien': 'الملاليين',
-  'jbel dersa': 'جبل درسة', 'jbeldersa': 'جبل درسة', 'dersa': 'درسة',
-  'belyounech': 'بليونش', 'beliounech': 'بليونش', 'bellyounech': 'بليونش', 'beliyounech': 'بليونش',
-  'haloufa': 'الحلوفا', 'el haloufa': 'الحلوفا', 'halloufa': 'الحلوفا',
-  'koudia taifour': 'كدية الطيفور', 'koudiat taifour': 'كدية الطيفور', 'koudiet taifour': 'كدية الطيفور',
-  'beni hassan': 'بني حسان', 'beni idder': 'بني يدر', 'beni yder': 'بني يدر',
-  'anjra': 'أنجرة', 'anjera': 'أنجرة', 'oued laou': 'واد لاو', 'oued lihoud': 'واد ليهود',
-  'zinat': 'زينات', 'zaitoune': 'الزيتون', 'zaytoune': 'الزيتون', 'kalaa': 'القلعة',
-  'ain lahsen': 'عين لحصن', 'ain lahcen': 'عين لحصن', 'souk lqolla': 'سوق القلة',
-  'boujdad': 'بوجداد', 'khemis anjra': 'خميس أنجرة', 'taghramt': 'تغرامت', 'fahs': 'الفحص',
-  'bab taza': 'باب تازة', 'talembote': 'تالمبوط', 'bouhachem': 'بوهاشم', 'tazia': 'التازية',
+  // — الغابات الكبرى لنفوذ تطوان / المضيق-الفنيدق —
+  'haouz': 'الحوز', 'el haouz': 'الحوز', 'lhaouz': 'الحوز',
+  'azfa': 'عزفة', 'azla': 'أزلا', 'amsa': 'أمسا',
+  'mellalyen': 'الملاليين', 'melaliyen': 'الملاليين', 'mellaliyen': 'الملاليين', 'mellalien': 'الملاليين', 'mlalien': 'الملاليين', 'oulad mellal': 'أولاد ملال',
+  'jbel dersa': 'جبل درسة', 'jbeldersa': 'جبل درسة', 'dersa': 'درسة', 'derssa': 'درسة',
+  'belyounech': 'بليونش', 'beliounech': 'بليونش', 'bellyounech': 'بليونش', 'beliyounech': 'بليونش', 'belyounch': 'بليونش',
+  'haloufa': 'الحلوفا', 'el haloufa': 'الحلوفا', 'halloufa': 'الحلوفا', 'lhaloufa': 'الحلوفا',
+  'koudia taifour': 'كدية الطيفور', 'koudiat taifour': 'كدية الطيفور', 'koudiet taifour': 'كدية الطيفور', 'koudia taïfour': 'كدية الطيفور', 'kudyat taifour': 'كدية الطيفور',
+  'baba ali': 'بابا علي', 'bab ali': 'بابا علي',
+  'ben karrich': 'بن قريش', 'ben karich': 'بن قريش', 'dar ben karrich': 'دار بن قريش',
+  'saddina': 'صدينة', 'sadina': 'صدينة',
+  // — بني و قبائل —
+  'beni hassan': 'بني حسان', 'beni hozmar': 'بني حزمار', 'beni hosmar': 'بني حزمار',
+  'beni idder': 'بني يدر', 'beni yder': 'بني يدر', 'beni ider': 'بني يدر',
+  'beni said': 'بني سعيد', 'beni saïd': 'بني سعيد', 'beni leit': 'بني ليت', 'beni maadan': 'بني معدن',
+  'beni harchen': 'بني حرشن', 'beni arouss': 'بني عروس', 'beni gorfet': 'بني قرفط', 'beni derkoul': 'بني دركول',
+  // — أنجرة والفحص والقصر الصغير —
+  'anjra': 'أنجرة', 'anjera': 'أنجرة', 'fahs anjra': 'فحص أنجرة', 'fahs': 'الفحص',
+  'khemis anjra': 'خميس أنجرة', 'ksar sghir': 'القصر الصغير', 'ksar essghir': 'القصر الصغير', 'ksar seghir': 'القصر الصغير',
+  'taghramt': 'تغرامت', 'melloussa': 'ملوسة', 'malloussa': 'ملوسة', 'jouamaa': 'الجوامعة', 'jouama': 'الجوامعة',
+  // — الأودية والجبال —
+  'oued laou': 'واد لاو', 'oued lihoud': 'واد ليهود', 'oued el maleh': 'واد المالح', 'oued negro': 'واد نيݣرو', 'oued martil': 'واد مرتيل',
+  'jbel lahbib': 'جبل الحبيب', 'jbel zemzem': 'جبل زمزم', 'zemzem': 'زمزم', 'jbel kelti': 'جبل كلتي', 'jbel bouhachem': 'جبل بوهاشم',
+  'bouhachem': 'بوهاشم', 'bou hachem': 'بوهاشم',
+  // — زينات، عين لحصن، سوق القلة، باب تازة —
+  'zinat': 'زينات', 'zaitoune': 'الزيتونة', 'zaytoune': 'الزيتونة', 'zitoune': 'الزيتونة',
+  'kalaa': 'القلعة', 'kelaa': 'القلعة', 'lqalaa': 'القلعة',
+  'ain lahsen': 'عين لحصن', 'ain lahcen': 'عين لحصن', 'ain hamra': 'العين الحمراء',
+  'souk lqolla': 'سوق القلة', 'souk el qolla': 'سوق القلة', 'souk kolla': 'سوق القلة',
+  'bab taza': 'باب تازة', 'bab berred': 'باب برد', 'talembote': 'تالمبوط', 'talambote': 'تالمبوط',
+  'tazia': 'التازية', 'tazroute': 'تازروت', 'boujdad': 'بوجداد', 'boujmil': 'بوجميل',
+  // — أماكن مسمّاة متكرّرة (أقسام / lieux-dits) —
+  'zemij': 'زميج', 'zemzem forest': 'زمزم', 'lqouf': 'الكوف', 'kouf': 'الكوف', 'blouzen': 'بلوازن', 'blouazen': 'بلوازن',
+  'fersioua': 'فرسيوة', 'kasbolina': 'كاسبولينا', 'bir cheikh': 'بئر الشيخ', 'ghniouat': 'اغنيوات', 'hidra': 'حيضرة',
+  'kef': 'الكاف', 'jorf': 'الجرف', 'rmel': 'الرمل', 'marja': 'المرجة', 'khendek': 'الخندق',
+  'oulad ali': 'أولاد علي', 'oulad mimoun': 'أولاد ميمون', 'dar bni karrich': 'دار بن قريش',
 }
 
 // ترجمة صوتية احتياطية لأي اسم غير موجود في القاموس (رقمنات أولا ثم أحرف)
 const TRANSLIT_DIGRAPHS: Array<[RegExp, string]> = [
-  [/ch/g, 'ش'], [/kh/g, 'خ'], [/gh/g, 'غ'], [/sh/g, 'ش'], [/th/g, 'ث'], [/dh/g, 'ذ'], [/ou/g, 'و'], [/aa/g, 'ا'], [/ee/g, 'ي'], [/oo/g, 'و'],
+  [/tch/g, 'تش'], [/sch/g, 'ش'],
+  [/ch/g, 'ش'], [/kh/g, 'خ'], [/gh/g, 'غ'], [/sh/g, 'ش'], [/th/g, 'ث'], [/dh/g, 'ذ'],
+  [/ph/g, 'ف'], [/gn/g, 'ن'],
+  [/oua/g, 'وا'], [/oui/g, 'وي'], [/aou/g, 'او'], [/ou/g, 'و'], [/ai/g, 'اي'], [/ei/g, 'اي'],
+  [/aa/g, 'ا'], [/ee/g, 'ي'], [/oo/g, 'و'], [/ss/g, 'س'], [/ll/g, 'ل'], [/nn/g, 'ن'], [/tt/g, 'ت'],
 ]
 const TRANSLIT_CHARS: Record<string, string> = {
-  a: 'ا', b: 'ب', c: 'ك', d: 'د', e: '', f: 'ف', g: 'گ', h: 'ه', i: 'ي', j: 'ج', k: 'ك', l: 'ل',
+  a: 'ا', b: 'ب', c: 'ك', d: 'د', e: '', f: 'ف', g: 'ݣ', h: 'ه', i: 'ي', j: 'ج', k: 'ك', l: 'ل',
   m: 'م', n: 'ن', o: 'و', p: 'ب', q: 'ق', r: 'ر', s: 'س', t: 'ت', u: 'و', v: 'ف', w: 'و', x: 'كس', y: 'ي', z: 'ز',
 }
-function transliterate(fr: string): string {
-  const key = (fr || '').trim().toLowerCase()
+/** إزالة التشكيل اللاتيني (é è ê ç ï ô …) وتوحيد الشكل قبل الترجمة الصوتية. */
+function stripAccents(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[''`]/g, '').replace(/[œ]/g, 'oe').replace(/[æ]/g, 'ae')
+}
+/** يزيل أدوات التعريف الفرنسية/الأمازيغية الشائعة في بداية الاسم قبل النقل الصوتي. */
+function dropArticle(word: string): string {
+  return word.replace(/^(le|la|les|el|al|l|d|di)\-?/i, m => (m.length <= 2 ? '' : word.slice(m.length)))
+}
+export function transliterate(fr: string): string {
+  const key = stripAccents((fr || '').trim().toLowerCase())
   if (!key) return ''
   if (FORET_AR_DICT[key]) return FORET_AR_DICT[key]
-  return key.split(/\s+/).map(word => {
+  return key.split(/[\s\-_/]+/).filter(Boolean).map(word => {
     if (FORET_AR_DICT[word]) return FORET_AR_DICT[word]
-    let w = word
+    let w = dropArticle(word)
+    if (FORET_AR_DICT[w]) return FORET_AR_DICT[w]
     TRANSLIT_DIGRAPHS.forEach(([re, ar]) => { w = w.replace(re, ar) })
     return w.split('').map(ch => TRANSLIT_CHARS[ch] ?? ch).join('')
-  }).join(' ')
+  }).filter(Boolean).join(' ')
+}
+/** الترجمة الموحّدة المستعملة للغابة والقسم معاً (قاموس ثم نقل صوتي). */
+export function translateForestName(fr: string): string { return transliterate(fr) }
+
+/** هل تحتاج المخالفة إلى تحديد على الخريطة؟
+ *  النقطة (بئر) والخط (تسييج) يحتاجان دائماً حتى لو كانا «بدون مساحة».
+ *  «استخراج الأتربة/الرعي/إيقاد النار» أضرار مصاحبة بلا هندسة ⇒ لا تُطلَب على الخريطة. */
+function featureNeedsMark(ft: { noArea?: boolean; geomType?: 'polygon' | 'line' | 'point' }): boolean {
+  if (ft.geomType === 'point' || ft.geomType === 'line') return true
+  return !ft.noArea
 }
 
 /** الاسم الرسمي داخل نص المحضر: « الغابة المخزنية X » أو « غابة جبل … ». */
@@ -971,19 +1023,36 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
       // نوع الهندسة الوارد: من التسليم أو من نوع النقطة (نقطة واحدة = point).
       const deliveredType: 'polygon' | 'line' | 'point' =
         (loc as any).geomType || (pts.length === 1 ? 'point' : 'polygon');
+      const newArea = deliveredType === 'polygon' ? (loc.areaM2 || 0) : 0;
+      const newLen = deliveredType === 'line' ? ((loc as any).lengthM || 0) : 0;
       setForm(f => {
-        const features = f.features.map(ft => ft.id === featureId
-          ? {
-              ...ft, geojson: loc.geojson, coordPoints: pts,
-              geomType: deliveredType,
-              areaM2: deliveredType === 'polygon' ? (loc.areaM2 || ft.areaM2) : 0,
-              lengthM: deliveredType === 'line' ? ((loc as any).lengthM || ft.lengthM) : ft.lengthM,
-              // البئر بالإحداثيات: إدراج X/Y في نص المخالفة تلقائيا
-              details: (deliveredType === 'point' && pts[0] && ft.details.includes('X:'))
-                ? ft.details.replace(/X:\s*\.*\s*Y:\s*\.*/,`X: ${pts[0].x} Y: ${pts[0].y}`)
-                : ft.details,
+        const features = f.features.map(ft => {
+          if (ft.id !== featureId) return ft;
+          const merged: PVFeature = {
+            ...ft, geojson: loc.geojson, coordPoints: pts,
+            geomType: deliveredType,
+            areaM2: deliveredType === 'polygon' ? (newArea || ft.areaM2) : 0,
+            lengthM: deliveredType === 'line' ? (newLen || ft.lengthM) : ft.lengthM,
+          };
+          // ── إدراج القياس تلقائيا في نص المخالفة (لا حاجة للزر اليدوي) ──
+          let details = ft.details;
+          if (deliveredType === 'point' && pts[0]) {
+            // البئر/النقطة: إحلال X/Y مهما كانت صيغة الفراغ (نقاط/فراغات/شرطات)
+            if (/X\s*[:=]/i.test(details) && /Y\s*[:=]/i.test(details)) {
+              details = details
+                .replace(/X\s*[:=]\s*[.\-–—…\s]*/i, `X: ${pts[0].x} `)
+                .replace(/Y\s*[:=]\s*[.\-–—…\s]*/i, `Y: ${pts[0].y}`);
+            } else {
+              details = `${details.replace(/\s*$/,'')} بالإحداثيات X: ${pts[0].x} Y: ${pts[0].y}`;
             }
-          : ft);
+          } else if (!ft.noArea) {
+            const measure = deliveredType === 'line'
+              ? (newLen ? `${Math.round(newLen)} متر طولي` : '')
+              : (newArea ? (newArea >= 10000 ? `${(newArea / 10000).toFixed(2)} هكتار` : `${Math.round(newArea)} متر مربع`) : '');
+            if (measure && details.includes('...')) details = details.replace('...', measure);
+          }
+          return { ...merged, details };
+        });
         // مؤشر بصري: علّم المخالفة كمرسومة (يُقرأ في بطاقتها)
         return { ...f, features };
       });
@@ -991,7 +1060,7 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
       setTimeout(() => {
         setForm(f => {
           const idx = f.features.findIndex(ft => ft.id === featureId);
-          const next = f.features.slice(idx + 1).find(ft => !ft.geojson && !ft.noArea);
+          const next = f.features.slice(idx + 1).find(ft => !ft.geojson && featureNeedsMark(ft));
           if (next) {
             // نطلب رسم المخالفة التالية مباشرة (يفتح الخريطة مجددا)
             setTimeout(() => requestParcelPickForFeature(
@@ -1047,6 +1116,8 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
         symbol: { ...preset.symbol },
         geojson: null, coordPoints: [], areaM2: 0,
         showOnPlan: true, showCoordsTable: true,
+        noArea: preset.noArea, geomType: preset.geomType || 'polygon',
+        article: preset.article, transaction: preset.transaction, catalogId: preset.catalogId,
       }],
     }));
 
@@ -1647,6 +1718,31 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
             <h3 className="text-lg font-serif italic text-emerald-900 mb-2">المخالفات المعاينة على القطعة</h3>
             <p className="text-xs text-stone-500">كل مخالفة = كيان مستقل بنصّه في المحضر، ورمزه على التصميم، وهندسته، ولائحة إحداثياته الخاصة. القطعة الواحدة قد تحمل عدة مخالفات.</p>
 
+            {/* تنبيه: المخالفات التي تتطلب تحديدا على الخريطة ولم تُرسم بعد (استخراج الأتربة مستثنى) */}
+            {(() => {
+              const undrawn = form.features.filter(ft => !ft.geojson && featureNeedsMark(ft));
+              if (!undrawn.length) return null;
+              return (
+                <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl" dir="rtl">
+                  <MapPin className="size-4 text-amber-600 mt-0.5 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-xs font-bold text-amber-800">
+                      {undrawn.length === 1 ? 'مخالفة واحدة لم تُحدَّد على الخريطة بعد:' : `${undrawn.length} مخالفات لم تُحدَّد على الخريطة بعد:`}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {undrawn.map(ft => (
+                        <button key={ft.id} type="button"
+                          onClick={() => requestParcelPickForFeature(pvNum, ft.id, ft.label || 'مخالفة', centerForPick(), contextFor(ft.id), ft.geojson || undefined)}
+                          className="px-2 py-0.5 bg-white border border-amber-300 text-amber-700 text-[11px] font-bold rounded-full hover:bg-amber-100 transition-colors flex items-center gap-1">
+                          <Crosshair className="size-3" /> {ft.label || 'مخالفة'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             <div className="p-6 bg-stone-50 border border-stone-200 rounded-xl">
               <h4 className="text-xs font-bold text-stone-500 mb-4">المساحة الإجمالية للقطعة</h4>
               <div className="grid grid-cols-3 gap-6">
@@ -2212,8 +2308,8 @@ function PVForm({ onClose, onSaved, initial, resume }: { onClose: () => void; on
             <div className="p-6 bg-stone-50 border border-stone-200 rounded-xl">
               <h4 className="text-sm font-bold text-stone-700 mb-4">ملخص المحضر</h4>
               {(() => {
-                // المخالفات التي تتطلب رسما ولم تُرسم (استخراج الأتربة مستثنى لأنه ضرر مرتبط)
-                const undrawn = form.features.filter(ft => !ft.geojson && !ft.noArea);
+                // المخالفات التي تتطلب رسما ولم تُرسم (استخراج الأتربة/الرعي/إيقاد النار مستثناة كأضرار مرتبطة)
+                const undrawn = form.features.filter(ft => !ft.geojson && featureNeedsMark(ft));
                 if (!undrawn.length) return null;
                 return (
                   <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl">

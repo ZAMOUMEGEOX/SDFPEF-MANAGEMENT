@@ -159,9 +159,24 @@ export function buildPlanSvg(input: PlanInput): PlanResult | null {
   minY -= spanY0 * 0.08; maxY += spanY0 * 0.08
   const spanX = maxX - minX, spanY = maxY - minY
 
-  // zone de dessin (réserve titre en haut / échelle en bas)
+  // ── Réserve d'une COLONNE DROITE pour l'encadré «المساحات» + المفتاح, afin
+  //    qu'ils ne recouvrent JAMAIS le dessin (النقطة 4 : خانة المساحات لا تغطي التصميم).
+  //    On calcule leurs largeurs AVANT de dimensionner la zone de dessin, puis on
+  //    rétrécit la zone de dessin de cette bande. Le dessin reste ainsi à gauche.
+  const AR_CHAR_BOX = 6.4                  // مصغّر (خط 9)
+  const AR_CHAR_LEG = 7.8
+  const legendLabels = ['حدود القطعة الاجمالية', ...featShapes.map(fs => fs.f.label || '')]
+  const maxLegLenPre = Math.max(1, ...legendLabels.map(l => l.length))
+  const boxMaxLenPre = input.areaSummaryLines.length
+    ? Math.max(...input.areaSummaryLines.map(l => l.length)) : 0
+  const boxWpre = input.areaSummaryLines.length
+    ? Math.min(Math.round(W * 0.30), Math.max(190, Math.round(boxMaxLenPre * AR_CHAR_BOX) + 20)) : 0
+  const legWpre = Math.min(Math.round(W * 0.40), Math.max(200, Math.round(maxLegLenPre * AR_CHAR_LEG) + 68))
+  const rightReserve = Math.max(boxWpre, legWpre) + 18   // largeur bande droite + gouttière
+
+  // zone de dessin (réserve titre en haut / échelle en bas / bande des encadrés à droite)
   const drawX = M + innerPad, drawY = M + 58
-  const drawW = W - 2 * (M + innerPad), drawH = H - drawY - (M + 40)
+  const drawW = W - 2 * (M + innerPad) - rightReserve, drawH = H - drawY - (M + 40)
   const scale = Math.min(drawW / spanX, drawH / spanY) // px par mètre
   const usedW = spanX * scale, usedH = spanY * scale
   const offX = drawX + (drawW - usedW) / 2
@@ -261,20 +276,18 @@ export function buildPlanSvg(input: PlanInput): PlanResult | null {
   //   canvas لا يدعم direction/rtl مع text-anchor=end → توسيط داخل عرض محسوب.
   let areaBox = ''
   if (input.areaSummaryLines.length) {
-    const AR_CHAR = 7.0          // مصغّر (حجم 9.5)
-    const lineH = 15
-    const maxLen = Math.max(...input.areaSummaryLines.map(l => l.length))
-    const boxW = Math.min(Math.round(W * 0.33), Math.max(200, Math.round(maxLen * AR_CHAR) + 22))
-    const headH = 18
-    const boxH = headH + input.areaSummaryLines.length * lineH + 8
+    const lineH = 13             // مصغّر أكثر
+    const boxW = boxWpre
+    const headH = 16
+    const boxH = headH + input.areaSummaryLines.length * lineH + 7
     const bx = W - M - innerPad - boxW, by = M + 44
     const cx = bx + boxW / 2
     areaBox =
-      `<rect x="${bx}" y="${by}" width="${boxW}" height="${boxH}" fill="#ffffff" fill-opacity="0.96" stroke="#111" stroke-width="1"/>` +
-      `<text x="${cx}" y="${by + 13}" text-anchor="middle" font-size="10.5" font-weight="bold" font-family="Arial" text-decoration="underline">المساحات</text>` +
+      `<rect x="${bx}" y="${by}" width="${boxW}" height="${boxH}" rx="3" fill="#ffffff" fill-opacity="0.97" stroke="#111" stroke-width="1"/>` +
+      `<text x="${cx}" y="${by + 12}" text-anchor="middle" font-size="9.5" font-weight="bold" font-family="Arial" text-decoration="underline">المساحات</text>` +
       `<line x1="${bx}" y1="${by + headH}" x2="${bx + boxW}" y2="${by + headH}" stroke="#111" stroke-width="0.7"/>` +
       input.areaSummaryLines.map((l, i) =>
-        `<text x="${cx}" y="${by + headH + 10 + i * lineH}" text-anchor="middle" font-size="9.5" font-family="Arial" font-weight="bold">${escXml(l)}</text>`
+        `<text x="${cx}" y="${by + headH + 9 + i * lineH}" text-anchor="middle" font-size="8.5" font-family="Arial" font-weight="bold">${escXml(l)}</text>`
       ).join('')
   }
 
@@ -286,13 +299,11 @@ export function buildPlanSvg(input: PlanInput): PlanResult | null {
       swatch: (x: number, y: number) => legendSwatch(x, y, `pv-pat-${i}`, f.symbol),
     })),
   ]
-  // — المفتاح: المربع داخل الإطار يسارا والنص مُوسَّط في المنطقة المتبقية —
-  const AR_CHAR_LEG = 8.2
-  const legLineH = 22
-  const maxLegLen = Math.max(...legendEntries.map(e => e.label.length))
-  const SWATCH_ZONE = 26 + 18            // المربع + فراغ
-  const legW = Math.min(Math.round(W * 0.42), Math.max(210, Math.round(maxLegLen * AR_CHAR_LEG) + SWATCH_ZONE + 24))
-  const legH = legendEntries.length * legLineH + 34
+  // — المفتاح: داخل البند المحجوز يمينا (لا يغطّي الرسم) —
+  const legLineH = 21
+  const SWATCH_ZONE = 26 + 16            // المربع + فراغ
+  const legW = legWpre
+  const legH = legendEntries.length * legLineH + 32
   const lx = W - M - innerPad - legW, ly = H - M - innerPad - legH
   const textCx = lx + SWATCH_ZONE + (legW - SWATCH_ZONE - 12) / 2
   const legend =

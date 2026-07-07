@@ -239,22 +239,30 @@ export const DELIM_OPTIONS: Array<{ v: DelimStatus; label: string }> = [
   { v: 'libre', label: 'صيغة أخرى (نص حر)' },
 ]
 
-export const FEATURE_PRESETS: Array<{ label: string; symbol: PVSymbol; details: string }> = [
-  { label: 'التسييج', symbol: { kind: 'outline', color: '#dc2626' }, details: 'التسييج بأعمدة حديدية و أسلاك و مواد قابلة للاشتعال على نفس المساحة' },
-  { label: 'منزل', symbol: { kind: 'hatch', color: '#6b7280' }, details: 'بناية للسكن بمواد صلبة على مساحة حوالي ... متر مربع' },
-  { label: 'بناية', symbol: { kind: 'solid', color: '#93c5fd' }, details: 'تشييد بناية بمواد صلبة على مساحة حوالي ... متر مربع' },
-  { label: 'صهريج', symbol: { kind: 'crosshatch', color: '#475569' }, details: 'حفر، استخراج الأتربة و إعداد صهريج مائي اصطناعي على مساحة حوالي ... متر مربع' },
-  { label: 'بئر', symbol: { kind: 'dots', color: '#16a34a' }, details: 'إعداد بئر بالإحداثيات X: ... Y: ...' },
-  { label: 'الغرس', symbol: { kind: 'veg', color: '#16a34a' }, details: 'غرس أشجار مثمرة (زيتون..) على مساحة حوالي ...' },
-  { label: 'تعشيب وقطع العود الحي', symbol: { kind: 'solid', color: '#a3e635' }, details: 'التعشيب و قطع و حمل العود الحي من نوع البلوط الفليني على مساحة حوالي ... متر مربع' },
-  { label: 'الحرث', symbol: { kind: 'hatch', color: '#b45309' }, details: 'الحرث على مساحة حوالي ...' },
-  { label: 'براكة', symbol: { kind: 'dots', color: '#f97316' }, details: 'وضع براكة بمواد قابلة للاشتعال على مساحة حوالي ... متر مربع' },
-  { label: 'حظيرة للدجاج', symbol: { kind: 'solid', color: '#f9a8d4' }, details: 'بناية للدجاج مساحتها الإجمالية حوالي ... متر مربع' },
-  { label: 'بناية للماشية', symbol: { kind: 'crosshatch', color: '#334155' }, details: 'بناية للماشية بمواد قابلة للاشتعال على مساحة حوالي ... متر مربع' },
-  { label: 'أعمدة حديدية غير مسقفة', symbol: { kind: 'solid', color: '#fdba74' }, details: 'تشييد بناية حديدية غير مسقفة على مساحة حوالي ... متر مربع' },
-  { label: 'سور اسمنتي', symbol: { kind: 'outline', color: '#7c3aed' }, details: 'بناء سور اسمنتي على طول حوالي ... متر طولي، و كذا باب رئيسي من حديد' },
-  { label: 'الرعي', symbol: { kind: 'dots', color: '#a16207' }, details: 'الرعي غير المرخص داخل الملك الغابوي' },
-  { label: 'إيقاد النار', symbol: { kind: 'solid', color: '#ef4444' }, details: 'إيقاد النار داخل الملك الغابوي' },
+export interface FeaturePreset {
+  label: string; symbol: PVSymbol; details: string
+  noArea?: boolean
+  geomType?: 'polygon' | 'line' | 'point'
+  article?: string; transaction?: string; catalogId?: string
+}
+export const FEATURE_PRESETS: FeaturePreset[] = [
+  { label: 'التسييج', symbol: { kind: 'outline', color: '#dc2626' }, details: 'التسييج بأعمدة حديدية و أسلاك و مواد قابلة للاشتعال على طول حوالي ... متر طولي', geomType: 'line', article: '34', transaction: '60% بعد إخلاء المكان' },
+  { label: 'منزل', symbol: { kind: 'hatch', color: '#6b7280' }, details: 'بناية للسكن بمواد صلبة على مساحة حوالي ... متر مربع', article: '52-53', transaction: '30%' },
+  { label: 'بناية', symbol: { kind: 'solid', color: '#93c5fd' }, details: 'تشييد بناية بمواد صلبة على مساحة حوالي ... متر مربع', article: '52-53', transaction: '30%' },
+  { label: 'صهريج', symbol: { kind: 'crosshatch', color: '#475569' }, details: 'حفر، استخراج الأتربة و إعداد صهريج مائي اصطناعي على مساحة حوالي ... متر مربع', article: '32', transaction: '40%', catalogId: 'a32' },
+  { label: 'بئر', symbol: { kind: 'dots', color: '#0ea5e9' }, details: 'إعداد بئر بالإحداثيات X: ... Y: ...', geomType: 'point', noArea: true, article: '32', transaction: '40%', catalogId: 'a32' },
+  // استخراج الأتربة — ضرر مصاحب: لا مساحة له (مرتبط بالبناء/البئر/الصهريج)
+  { label: 'استخراج الأتربة', symbol: { kind: 'crosshatch', color: '#78716c' }, details: 'حفر و استخراج الأتربة', noArea: true, article: '32', transaction: '40%', catalogId: 'a32' },
+  { label: 'الغرس', symbol: { kind: 'veg', color: '#16a34a' }, details: 'غرس أشجار مثمرة (زيتون..) على مساحة حوالي ...', article: '34', transaction: '60% بعد إخلاء المكان', catalogId: 'a34l' },
+  { label: 'تعشيب وقطع العود الحي', symbol: { kind: 'solid', color: '#a3e635' }, details: 'التعشيب و قطع و حمل العود الحي من نوع البلوط الفليني على مساحة حوالي ... متر مربع', article: '34-37', transaction: '60% بعد إخلاء المكان' },
+  { label: 'الحرث', symbol: { kind: 'hatch', color: '#b45309' }, details: 'الحرث على مساحة حوالي ...', article: '34', transaction: '60% بعد إخلاء المكان', catalogId: 'a34l' },
+  { label: 'براكة', symbol: { kind: 'dots', color: '#f97316' }, details: 'وضع براكة بمواد قابلة للاشتعال على مساحة حوالي ... متر مربع', article: '53', transaction: '30%', catalogId: 'a53' },
+  { label: 'حظيرة للدجاج', symbol: { kind: 'solid', color: '#f9a8d4' }, details: 'بناية للدجاج مساحتها الإجمالية حوالي ... متر مربع', article: '52-53', transaction: '30%' },
+  { label: 'بناية للماشية', symbol: { kind: 'crosshatch', color: '#334155' }, details: 'بناية للماشية بمواد قابلة للاشتعال على مساحة حوالي ... متر مربع', article: '53', transaction: '30%', catalogId: 'a53' },
+  { label: 'أعمدة حديدية غير مسقفة', symbol: { kind: 'solid', color: '#fdba74' }, details: 'تشييد بناية حديدية غير مسقفة على مساحة حوالي ... متر مربع', article: '52-53', transaction: '30%' },
+  { label: 'سور اسمنتي', symbol: { kind: 'outline', color: '#7c3aed' }, details: 'بناء سور اسمنتي على طول حوالي ... متر طولي، و كذا باب رئيسي من حديد', geomType: 'line', article: '34', transaction: '60% بعد إخلاء المكان' },
+  { label: 'الرعي', symbol: { kind: 'dots', color: '#a16207' }, details: 'الرعي غير المرخص داخل الملك الغابوي', noArea: true, article: '41', transaction: '40%', catalogId: 'a41a' },
+  { label: 'إيقاد النار', symbol: { kind: 'solid', color: '#ef4444' }, details: 'إيقاد النار داخل الملك الغابوي', noArea: true, article: '46-47-55', transaction: 'غير قابلة للتصالح', catalogId: 'a4655' },
   { label: 'أخرى', symbol: { kind: 'solid', color: '#0ea5e9' }, details: '' },
 ]
 
